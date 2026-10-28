@@ -64,6 +64,7 @@ brain = Brain(cfg, ha)
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
+answer_lock = threading.Lock()  # a 200 OK is handled either before a call is given up or as a late answer
 OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
@@ -148,9 +149,7 @@ def outbound(number: str, message: str):
                 _wait_ringing(call, wait)
                 if not _ringing(call):
                     break
-            if call.state == CallState.ANSWERED:  # picked up in the same moment
-                call.hangup()
-            elif _ringing(call):
+            if _ringing(call):
                 log.warning("CANCEL not confirmed, the phone may keep ringing")
             return
         if call.state != CallState.ANSWERED:
@@ -170,9 +169,15 @@ def outbound(number: str, message: str):
         if call is not None:
             sip_failed.pop(call.call_id, None)
             phone.sip.pending_invites.pop(call.call_id, None)
-            if not answered:  # pyVoIP never drops unanswered calls -> their RTP port would stay taken
-                abandoned.add(call.call_id)
-                phone.calls.pop(call.call_id, None)
+            if not answered:
+                with answer_lock:  # from here on a 200 OK is ended as a late answer (logged_parse)
+                    abandoned.add(call.call_id)
+                if call.state == CallState.ANSWERED:  # picked up before that, e.g. while cancelling
+                    try:
+                        call.hangup()
+                    except Exception:  # noqa: BLE001
+                        log.exception("Hanging up the cancelled call failed")
+                phone.calls.pop(call.call_id, None)  # pyVoIP never drops unanswered calls -> RTP port stays taken
         report(answered, number, started, session, message)
         busy.release()
 
@@ -223,6 +228,40 @@ def on_incoming(call):
                 f.write("\n".join(session.transcript) + "\n")
             log.info("Call note saved: %s", notes)
         busy.release()
+
+
+_orig_parse = None  # pyVoIP's own parse_message, set in main()
+
+
+def logged_parse(msg):
+    """In front of pyVoIP's response handling: pyVoIP silently swallows error responses (403, 404, 486, 488 …)
+    and gets CANCEL/late answers wrong."""
+    if msg.type == SIPMessageType.MESSAGE:
+        return _orig_parse(msg)
+    try:
+        code = int(msg.status)
+        cid = msg.headers.get("Call-ID", "")
+        cseq = msg.headers.get("CSeq", {})
+        method = cseq.get("method", "") if isinstance(cseq, dict) else ""
+    except Exception:  # noqa: BLE001
+        return _orig_parse(msg)
+    if method != "REGISTER" and code != 100:
+        log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
+    if method == "CANCEL":
+        return None  # pyVoIP would take the 200 OK for an answered call
+    if method == "BYE" and code >= 200 and fritz_sip.bye_confirmed(phone.sip, cid):
+        return None
+    if method == "INVITE" and code == 200:
+        with answer_lock:  # see outbound(): the call is either still ours or already given up
+            if cid in abandoned:
+                return fritz_sip.end_late_answer(phone.sip, msg)
+            return _orig_parse(msg)
+    if method == "INVITE" and code >= 300 and code not in (401, 407):
+        sip_failed[cid] = f"{code} {msg.status.phrase}"
+        # pyVoIP only acknowledges 404/503 (and crashes on them while dialing): ACK every final error here
+        phone.sip.out.sendto(phone.sip.gen_ack(msg).encode("utf8"), (phone.sip.server, phone.sip.port))
+        return None
+    return _orig_parse(msg)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -294,32 +333,8 @@ def main():
     phone = VoIPPhone(cfg.sip_server, int(cfg.sip_port), cfg.sip_user, cfg.sip_password,
                       myIP=local_ip, callCallback=on_incoming, sipPort=int(cfg.sip_local_port),
                       rtpPortLow=int(cfg.rtp_port_min), rtpPortHigh=int(cfg.rtp_port_max))
-    # pyVoIP silently swallows error responses (403, 404, 486, 488 …) -> log them
-    orig_parse = phone.sip.parse_message
-
-    def logged_parse(msg):
-        try:
-            if msg.type != SIPMessageType.MESSAGE:
-                code = int(msg.status)
-                cid = msg.headers.get("Call-ID", "")
-                cseq = msg.headers.get("CSeq", {})
-                method = cseq.get("method", "") if isinstance(cseq, dict) else ""
-                if method != "REGISTER" and code != 100:
-                    log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
-                if method == "CANCEL":
-                    return  # pyVoIP would take the 200 OK for an answered call
-                if method == "INVITE" and code == 200 and cid in abandoned:
-                    fritz_sip.end_late_answer(phone.sip, msg)
-                    return
-                if code >= 300 and code not in (401, 407) and method == "INVITE":
-                    sip_failed[cid] = f"{code} {msg.status.phrase}"
-                    # pyVoIP only acknowledges 404/503 (and crashes on them while dialing): ACK every final error here
-                    phone.sip.out.sendto(phone.sip.gen_ack(msg).encode("utf8"), (phone.sip.server, phone.sip.port))
-                    return
-        except Exception:  # noqa: BLE001
-            pass
-        return orig_parse(msg)
-
+    global _orig_parse
+    _orig_parse = phone.sip.parse_message
     phone.sip.parse_message = logged_parse
     fritz_sip.apply(phone)
     phone.start()
