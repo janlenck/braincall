@@ -138,8 +138,9 @@ def patched_invite(self, number, ms, sendtype):
 
 
 def cancel(sip, call_id: str) -> bool:
-    """Stops a still ringing outbound call: CANCEL with Via branch, CSeq and tags of the last INVITE (RFC 3261 9.1)."""
-    inv = sip.pending_invites.pop(call_id, None)
+    """Stops a still ringing outbound call: CANCEL with Via branch, CSeq and tags of the last INVITE (RFC 3261 9.1).
+    May be sent repeatedly (UDP): retransmissions are identical."""
+    inv = sip.pending_invites.get(call_id)
     if not inv:
         return False
     uri, branch, cseq, tag = inv
@@ -155,6 +156,13 @@ def cancel(sip, call_id: str) -> bool:
     sip.out.sendto(req.encode("utf8"), (sip.server, sip.port))
     log.info("CANCEL sent")
     return True
+
+
+def end_late_answer(sip, resp):
+    """200 OK for a call we already gave up (answered after CANCEL): acknowledge it and hang up right away."""
+    sip.out.sendto(sip.gen_ack(resp).encode("utf8"), (sip.server, sip.port))
+    sip.out.sendto(sip.gen_bye(resp).encode("utf8"), (sip.server, sip.port))
+    log.warning("Call answered after it was cancelled - hung up")
 
 
 def patched_gen_ack(self, resp):
