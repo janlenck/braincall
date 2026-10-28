@@ -1,0 +1,57 @@
+{
+  // Kopieren nach config.json und ausfüllen. config.json wird nicht eingecheckt (.gitignore).
+  // Kommentare (//, /* */) und ein Komma vor ] oder } sind erlaubt.
+
+  // --- FRITZ!Box / SIP (IP-Telefon in der FRITZ!Box anlegen) ---
+  "sip_server": "192.168.178.1",
+  "sip_port": 5060,
+  "sip_user": "BENUTZERNAME_IP_TELEFON",
+  "sip_password": "",                 // alternativ Umgebungsvariable CLAUDE_TELEFON_SIP_PASSWORD
+  "local_ip": "",                     // leer = automatisch
+  "sip_local_port": 5062,
+  "rtp_port_min": 30000,
+  "rtp_port_max": 30100,
+
+  // --- Wer ruft an / wird angerufen ---
+  "default_number": "0151xxxxxxx",
+  "inbound_allowed": ["*"],           // ["*"] = alle annehmen, [] = alle ablehnen, oder Liste von Nummern
+  "trusted_numbers": {                // nur diese Nummern dürfen HA abfragen und schalten
+    "0151xxxxxxx": "Jan Mobil",
+    "**611": "Jan Intern"
+  },
+  "caller_languages": {},             // Sprache je Nummer, z. B. { "0170xxxxxxx": "uk" }
+  "ring_timeout": 90,
+
+  // --- Claude ---
+  "anthropic_api_key": "",            // alternativ Umgebungsvariable ANTHROPIC_API_KEY
+  "claude_model": "claude-haiku-5-5",
+  "assistant_name": "Claudine",
+  "language": "de",                   // "de", "uk", "en" oder "auto"
+  "extra_prompt": "",
+
+  // --- OpenAI Spracherkennung / Stimme ---
+  "openai_api_key": "",               // alternativ Umgebungsvariable OPENAI_API_KEY
+  "stt_model": "gpt-4o-transcribe",
+  "tts_model": "gpt-4o-mini-tts",
+  "tts_voice": "nova",
+  "tts_instructions": "Sprich natürliches Deutsch, gut gelaunt und lebendig, zügiges Tempo wie am Telefon.",
+
+  // --- Spracherkennung (VAD) ---
+  "vad_min_energy": 500,
+  "end_silence_ms": 700,
+  "silence_timeout": 12,
+  "barge_in": true,
+  "barge_in_min_ms": 1000,
+
+  // --- HTTP-Trigger für ausgehende Anrufe ---
+  "http_port": 8099,
+  "api_token": "",                    // leer = nur von 127.0.0.1 erreichbar
+
+  // --- Home Assistant ---
+  "ha_url": "https://homeassistant:8123",
+  "ha_token": "",                     // alternativ Umgebungsvariable HA_TOKEN
+  "ha_verify_ssl": true,
+  "default_calendars": ["calendar.xyz", "feiertag"],
+  "calendar_write": true
+  // control_domains / confirm_domains: siehe app/config.py
+}

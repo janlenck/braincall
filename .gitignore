@@ -1,0 +1,12 @@
+# Geheimnisse und persönliche Einstellungen – NIE committen
+config.json
+
+# Laufzeitdaten (Gesprächsprotokolle, Anrufnotizen)
+logs/
+_upd/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

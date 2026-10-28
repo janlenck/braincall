@@ -1,0 +1,5 @@
+pyVoIP==1.6.8
+anthropic>=0.40
+requests>=2.31
+numpy>=1.26
+tzdata
