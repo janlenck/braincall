@@ -1,4 +1,5 @@
-"""Configuration from config.json (next to the app folder, or referenced from there); API keys may also come from environment variables."""
+"""Configuration from config.json (next to the app folder, or referenced from there).
+API keys may also come from environment variables."""
 import json
 import re
 import os
@@ -70,12 +71,16 @@ def _strip_jsonc(text: str) -> str:
         if in_str:
             out.append(c)
             if c == "\\" and i + 1 < n:
-                out.append(text[i + 1]); i += 2; continue
+                out.append(text[i + 1])
+                i += 2
+                continue
             if c == '"':
                 in_str = False
             i += 1
         elif c == '"':
-            in_str = True; out.append(c); i += 1
+            in_str = True
+            out.append(c)
+            i += 1
         elif text.startswith("//", i):
             while i < n and text[i] not in "\r\n":
                 i += 1
@@ -83,7 +88,8 @@ def _strip_jsonc(text: str) -> str:
             j = text.find("*/", i + 2)
             i = n if j < 0 else j + 2
         else:
-            out.append(c); i += 1
+            out.append(c)
+            i += 1
     return re.sub(r",(\s*[\]}])", r"\1", "".join(out))
 
 
@@ -104,7 +110,7 @@ def _read(path: Path) -> dict:
         line = text.splitlines()[max(0, e.lineno - 2)] if e.lineno > 1 else ""
         raise SystemExit(f"\n\033[91m{path} is not valid JSON: {e.msg} in line {e.lineno}.\033[0m\n"
                          f"Usually a comma is missing at the end of the line before:\n"
-                         f"  line {e.lineno - 1}: {line.strip()[:60]}\n")
+                         f"  line {e.lineno - 1}: {line.strip()[:60]}\n") from None
 
 
 def load() -> Config:

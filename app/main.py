@@ -63,6 +63,7 @@ speech = Speech(cfg)
 brain = Brain(cfg, ha)
 busy = threading.Lock()
 sip_failed: dict = {}
+abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
 OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
@@ -142,8 +143,11 @@ def outbound(number: str, message: str):
         _wait_ringing(call, float(cfg.ring_timeout))
         if _ringing(call):
             log.info("Not answered after %ss, cancelling", cfg.ring_timeout)
-            fritz_sip.cancel(phone.sip, call.call_id)
-            _wait_ringing(call, 5)  # FRITZ!Box answers with 487 Request Terminated
+            for wait in (0.5, 1, 2, 4):  # UDP: repeat until the FRITZ!Box answers with 487 Request Terminated
+                fritz_sip.cancel(phone.sip, call.call_id)
+                _wait_ringing(call, wait)
+                if not _ringing(call):
+                    break
             if call.state == CallState.ANSWERED:  # picked up in the same moment
                 call.hangup()
             elif _ringing(call):
@@ -167,6 +171,7 @@ def outbound(number: str, message: str):
             sip_failed.pop(call.call_id, None)
             phone.sip.pending_invites.pop(call.call_id, None)
             if not answered:  # pyVoIP never drops unanswered calls -> their RTP port would stay taken
+                abandoned.add(call.call_id)
                 phone.calls.pop(call.call_id, None)
         report(answered, number, started, session, message)
         busy.release()
@@ -249,6 +254,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length < 0:
+                raise ValueError("negative Content-Length")  # rfile.read(-1) would read until the client closes
             if length > MAX_BODY:
                 return self._send(413, {"error": "body too large"})
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -301,6 +308,9 @@ def main():
                     log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
                 if method == "CANCEL":
                     return  # pyVoIP would take the 200 OK for an answered call
+                if method == "INVITE" and code == 200 and cid in abandoned:
+                    fritz_sip.end_late_answer(phone.sip, msg)
+                    return
                 if code >= 300 and code not in (401, 407) and method == "INVITE":
                     sip_failed[cid] = f"{code} {msg.status.phrase}"
                     # pyVoIP only acknowledges 404/503 (and crashes on them while dialing): ACK every final error here

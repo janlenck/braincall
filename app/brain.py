@@ -8,7 +8,8 @@ import anthropic
 
 log = logging.getLogger("brain")
 
-BASE_PROMPT = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic), and you are on a phone call right now.
+BASE_PROMPT = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic),
+and you are on a phone call right now.
 The first system note tells you who is on the line; address the person by name as soon as you know it.
 Introduce yourself as {name}. Everything you write is read out loud by speech synthesis.
 
@@ -20,7 +21,8 @@ Phone rules:
 - Entity IDs are often English or technical (Vaillant/ebusd: hwc = hot water, flow = flow temperature,
   hmu = heat pump, ctlv = controller). Search several times with different terms, or use ha_list to get
   e.g. all temperatures (°C) and pick the right one.
-- You can control devices with ha_control. Only switch what the caller explicitly asks for, then briefly say what you did.
+- You can control devices with ha_control. Only switch what the caller explicitly asks for,
+  then briefly say what you did.
   Check the exact entity_id with ha_search first. If it is unclear which device is meant, ask instead of guessing.
 - Lists (shopping list, to-dos) are todo.* entities. ha_state returns their items.
   Change them with ha_control: service add_item (data {"item": "Milk"}), update_item (data {"item": "Eggs",
@@ -63,7 +65,8 @@ TOOL_SEARCH = {
 }
 TOOL_STATE = {
     "name": "ha_state",
-    "description": "Returns the current state of exactly one Home Assistant entity (for todo lists including the items).",
+    "description": "Returns the current state of exactly one Home Assistant entity "
+                   "(for todo lists including the items).",
     "input_schema": {
         "type": "object",
         "properties": {"entity_id": {"type": "string"}},
@@ -73,7 +76,8 @@ TOOL_STATE = {
 TOOL_LIST = {
     "name": "ha_list",
     "description": "Lists ALL entities with a given unit, device class or domain, including state. "
-                   "Examples: '°C', 'W', 'kW', 'kWh', '%', 'temperature', 'power', 'battery', 'climate', 'switch', 'cover'.",
+                   "Examples: '°C', 'W', 'kW', 'kWh', '%', 'temperature', 'power', 'battery', 'climate', "
+                   "'switch', 'cover'.",
     "input_schema": {
         "type": "object",
         "properties": {"filter": {"type": "string"}},
@@ -114,7 +118,8 @@ TOOL_EVENTS = {
 TOOL_CREATE_EVENT = {
     "name": "ha_create_event",
     "description": "Creates an appointment in a Home Assistant calendar. start/end as 2026-10-30T14:00 "
-                   "(without end = 1 hour) or date only 2026-10-30 for all-day. Without calendar = the default calendar. "
+                   "(without end = 1 hour) or date only 2026-10-30 for all-day. "
+                   "Without calendar = the default calendar. "
                    "Only call with confirmed=true after the caller explicitly said yes.",
     "input_schema": {
         "type": "object",

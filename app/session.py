@@ -292,8 +292,8 @@ class CallSession:
                          + (f"When answering you heard: “{heard}”. " if heard else "")
                          + f"You are {owner}'s phone assistant. Introduce yourself (in the conversation language) as: "
                          + f"This is {assistant}, {self.owner or owner}'s assistant. "
-                         + f"First ask for the caller's name, then for the reason of the call and whether {owner} should "
-                         + "call back. " + keep_quiet
+                         + "First ask for the caller's name, then for the reason of the call "
+                         + f"and whether {owner} should call back. " + keep_quiet
                          + "At the end briefly repeat what you noted, say goodbye and hang up. "
                          + f"The conversation is passed on to {owner} as a note.]")
             messages = [{"role": "user", "content": intro}]
@@ -311,7 +311,8 @@ class CallSession:
                         self.say(PHRASES.get(self.language, PHRASES["de"])["silence"])
                         self.wait_spoken()
                         break
-                    messages.append({"role": "user", "content": "[System: The caller has not said anything for a while.]"})
+                    messages.append({"role": "user",
+                                     "content": "[System: The caller has not said anything for a while.]"})
                     continue
                 silence = 0
                 messages.append({"role": "user", "content": text})
