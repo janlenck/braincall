@@ -47,7 +47,9 @@ class CallSession:
         self.restricted = False
         self.seg_voiced = 0
         self.language = cfg.language or "de"
-        self.caller_label = "Jan"
+        self.caller_label = "caller"
+        self.owner = (cfg.owner_name or "").strip()                 # "Jan Lenck"
+        self.owner_first = self.owner.split()[0] if self.owner else "the owner"
         self.codec = rtpfix.setup(call)
         self.play_started_at = 0.0
 
@@ -244,10 +246,13 @@ class CallSession:
 
     def run(self, outbound: bool, message: str = "", caller: str = "", trusted: bool = True,
             language: str = "", caller_name: str = ""):
-        self.restricted = not outbound and not trusted
-        full = caller_name or ("Jan" if trusted else "")
-        self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobil"
+        self.restricted = not trusted  # only trusted_numbers may query and control the house
+        full = caller_name if trusted else ""
+        self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
         name = full.split("(")[0].split()[0] if full.strip() else ""  # to address the person: "Jan"
+        owner = self.owner_first
+        keep_quiet = (f"You have no access to the house in this call. Give no information at all about {owner}, "
+                      f"the house, whether anyone is at home, or about devices. ")
         if language:
             self.language = language
         threads = [threading.Thread(target=f, daemon=True)
@@ -268,9 +273,10 @@ class CallSession:
 
             if outbound:
                 who = (f"{name} (number {caller})" if name
-                       else f"the number {caller or 'unknown'} (name unknown; Jan asked you to make this call — "
+                       else f"the number {caller or 'unknown'} (name unknown; {owner} asked you to make this call — "
                             "politely ask who you are talking to)")
                 intro = (f"[System: You are calling {who}. Reason: {message or 'no specific reason given'}. "
+                         + ("" if trusted else keep_quiet)
                          + (f"When the call was answered you heard: “{heard}”. " if heard
                             else "Nothing was heard when the call was answered. ")
                          + "If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
@@ -282,14 +288,14 @@ class CallSession:
                          + f"Answer briefly and address {name} by name.]")
             else:
                 assistant = self.cfg.assistant_name or "the call assistant"
-                intro = (f"[System: Someone is calling Jan, number {caller or 'withheld'}. This is NOT Jan. "
+                intro = (f"[System: Someone is calling {owner}, number {caller}. This is NOT {owner}. "
                          + (f"When answering you heard: “{heard}”. " if heard else "")
-                         + f"You are Jan's phone assistant. Introduce yourself (in the conversation language) as: "
-                         + f"This is {assistant}, Jan Lenck's assistant. "
-                         + "First ask for the caller's name, then for the reason of the call and whether Jan should "
-                         + "call back. Give no information at all about Jan, his house, whether anyone is at home, "
-                         + "or about devices. At the end briefly repeat what you noted, say goodbye and hang up. "
-                         + "The conversation is passed on to Jan as a note.]")
+                         + f"You are {owner}'s phone assistant. Introduce yourself (in the conversation language) as: "
+                         + f"This is {assistant}, {self.owner or owner}'s assistant. "
+                         + f"First ask for the caller's name, then for the reason of the call and whether {owner} should "
+                         + "call back. " + keep_quiet
+                         + "At the end briefly repeat what you noted, say goodbye and hang up. "
+                         + f"The conversation is passed on to {owner} as a note.]")
             messages = [{"role": "user", "content": intro}]
 
             silence = 0

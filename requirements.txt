@@ -4,3 +4,4 @@ requests>=2.31
 numpy>=1.26
 tzdata
 truststore>=0.9
+audioop-lts; python_version >= "3.13"

@@ -50,13 +50,18 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 
 ## Callers and permissions
 
-- `trusted_numbers` (`{"number": "name"}`): full access, may query and control Home Assistant.
-  The name is used in the log; the first word is used to address the person.
-- Other callers (if `inbound_allowed` contains `"*"`): the assistant asks for their name and reason,
-  gives no information about the house and controls nothing. The conversation is saved to
+- `trusted_numbers` (`{"number": "name"}`): full access, may query and control Home Assistant,
+  incoming and outgoing. The name is used in the log; the first word is used to address the person.
+  Numbers are compared completely; `+49…`, `0049…` and `0…` count as the same (`country_code`).
+- Everyone else (incoming if `inbound_allowed` contains `"*"` or the number, or when the agent calls a
+  number that is not trusted): small talk only. The assistant gives no information about the house and
+  controls nothing. Incoming, it asks for name and reason; the conversation is saved to
   `logs/call-notes.txt` and sent to Home Assistant as an event.
-- Outbound calls always have full access.
+- Withheld numbers are never answered: the call is rejected right away, logged as unknown and reported
+  to Home Assistant (`claude_telefon_call` with `answered: false`).
+- `default_number` is only the target of the test call and grants no rights.
 - `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
+- `owner_name` (e.g. `"Jan Lenck"`) is whose assistant this is; the first name is used in conversations.
 
 ## Home Assistant
 
@@ -87,6 +92,6 @@ After each call the agent fires the HA event `claude_telefon_call`
 ## Limits
 
 - Response time per turn is about 1.5–3 s (STT after end of speech, then Claude, then TTS).
-- pyVoIP cannot cancel ringing; an unanswered call rings until the other side gives up or `ring_timeout`.
+- An unanswered outbound call is cancelled after `ring_timeout` seconds.
 - The machine must be on, awake and in the home network.
 - Costs are billed to your Anthropic and OpenAI API accounts.

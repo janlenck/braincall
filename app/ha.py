@@ -47,6 +47,9 @@ SYNONYMS = {
     "zimmer": ["room"],
 }
 
+# Service data keys that would widen a call beyond the one checked entity (e.g. area_id = whole room)
+TARGET_KEYS = ("entity_id", "area_id", "device_id", "floor_id", "label_id")
+
 WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -211,7 +214,8 @@ class HA:
             return ("Safety check: explicitly ask the caller whether you should really do this, "
                     "and only call the tool again with confirmed=true after a clear yes.")
         service = service.strip().split(".")[-1]
-        body = {"entity_id": entity_id, **(data or {})}
+        body = {k: v for k, v in (data or {}).items() if k not in TARGET_KEYS}
+        body["entity_id"] = entity_id
         log.warning("CONTROL %s.%s %s", domain, service, body)
         r = self.http.post(f"{self.base}/services/{domain}/{service}", json=body,
                            timeout=15, verify=self.verify)

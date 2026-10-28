@@ -1,65 +1,100 @@
 {
-  // Copy to config.json and fill in.
+  // Example configuration for Claude Telefon. Every setting is listed here with its default or a sample value.
   // Comments (//, /* */) and a trailing comma before ] or } are allowed.
   //
-  // Tip: the real configuration can live elsewhere (e.g. OneDrive, so it is backed up and keys never
-  // end up in git). Then config.json in the project folder only holds a pointer (backslashes as-is):
-  //   { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
-  // Alternatively set the environment variable CLAUDE_TELEFON_CONFIG to that path.
+  // ============================================================================================
+  //  WHERE THE CONFIGURATION LIVES: real file vs. pointer
+  // ============================================================================================
+  //  The program (start.bat, test-call.bat) always starts with config.json in the project folder.
+  //  There are two ways to use it:
+  //
+  //  A) Simple: copy this file to config.json in the project folder and fill it in.
+  //     Careful: config.json is tracked by git (it normally holds only a pointer, see B).
+  //     Never commit it with keys in it.
+  //
+  //  B) Recommended: keep the real configuration outside the project, e.g. in OneDrive.
+  //     It is backed up, survives a fresh clone or reinstall, and the keys never end up in git.
+  //     1. Copy this file to e.g.  C:\Users\Name\OneDrive\claude-telefon\config.json
+  //        and fill it in there. That is the real configuration.
+  //     2. config.json in the project folder then contains ONLY the pointer, nothing else:
+  //          { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
+  //        - Backslashes may be single or doubled ("C:\\Users\\…"), both work.
+  //        - Environment variables and ~ are expanded, e.g.
+  //            { "path": "%OneDrive%\claude-telefon\config.json" }
+  //        - If the referenced file does not exist, the program stops with an error message
+  //          (it does NOT silently fall back to defaults).
+  //        - At startup the log shows which file was actually loaded ("Config: …").
+  //     The pointer contains no secrets and may be committed; that is how this repository does it.
+  //
+  //  Instead of the pointer file, the environment variable CLAUDE_TELEFON_CONFIG can hold the path
+  //  of the real configuration. It takes precedence over config.json in the project folder.
+  //
+  //  Secrets can also come from environment variables. If set, they override the value in the file:
+  //    ANTHROPIC_API_KEY, OPENAI_API_KEY, HA_TOKEN, CLAUDE_TELEFON_SIP_PASSWORD, CLAUDE_TELEFON_API_TOKEN
+  //
+  //  Settings that are missing from the file use the default from app/config.py.
+  // ============================================================================================
 
-  // --- FRITZ!Box / SIP (create an IP phone in the FRITZ!Box) ---
-  "sip_server": "192.168.178.1",
+  // --- FRITZ!Box / SIP (Telephony -> Telephony Devices -> new IP phone) ---
+  "sip_server": "192.168.178.1",      // IP address of the FRITZ!Box
   "sip_port": 5060,
-  "sip_user": "IP_PHONE_USERNAME",
+  "sip_user": "IP_PHONE_USERNAME",    // user name of the IP phone in the FRITZ!Box
   "sip_password": "",                 // or environment variable CLAUDE_TELEFON_SIP_PASSWORD
-  "local_ip": "",                     // empty = detect automatically
-  "sip_local_port": 5062,
-  "rtp_port_min": 30000,
+  "local_ip": "",                     // IP of this computer; empty = detect automatically
+  "sip_local_port": 5062,             // if changed: adjust firewall.ps1 as well
+  "rtp_port_min": 30000,              // UDP port range for audio, see firewall.ps1
   "rtp_port_max": 30100,
 
   // --- Who calls / who gets called ---
-  "default_number": "0151xxxxxxx",
-  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = reject all, or a list of numbers
-  "trusted_numbers": {                // only these numbers may query and control Home Assistant
-    "0151xxxxxxx": "Jan Mobile",
-    "**611": "Jan Internal"
+  "default_number": "0151xxxxxxx",    // target of the test call (key A, test-call.bat), grants no rights
+  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = only trusted_numbers, or a list of numbers
+                                      // (withheld numbers are always rejected)
+  "trusted_numbers": {                // only these numbers may query and control Home Assistant;
+    "0151xxxxxxx": "Jan Mobile",      // name for the log, its first word is used to address the person
+    "**611": "Jan Internal"           // internal FRITZ!Box numbers work too
   },
+  "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
   "caller_languages": {},             // language per number, e.g. { "0170xxxxxxx": "uk" }
-  "ring_timeout": 90,
+  "ring_timeout": 90,                 // seconds to ring before an unanswered outbound call is cancelled
 
   // --- Claude ---
   "anthropic_api_key": "",            // or environment variable ANTHROPIC_API_KEY
   "claude_model": "claude-haiku-5-5",
-  "assistant_name": "Claudine",
-  "language": "de",                   // "de", "uk", "en" or "auto"
-  "extra_prompt": "",
+  "assistant_name": "Claudine",       // name the assistant introduces itself with
+  "owner_name": "Jan Lenck",          // whose assistant this is; the first name is used in conversations
+  "language": "de",                   // "de", "uk", "en" or "auto" (answers in the language spoken last)
+  "extra_prompt": "",                 // additional instructions appended to the system prompt
+  "timezone": "Europe/Berlin",        // for "today", "tomorrow" etc.
 
   // --- OpenAI speech recognition / voice ---
   "openai_api_key": "",               // or environment variable OPENAI_API_KEY
   "stt_model": "gpt-4o-transcribe",
   "tts_model": "gpt-4o-mini-tts",
-  "tts_voice": "nova",
+  "tts_voice": "nova",                // e.g. alloy, ash, coral, echo, nova, onyx, sage, shimmer
   "tts_instructions": "Speak natural German, cheerful and lively, brisk pace like on the phone.",
 
   // --- Voice activity detection ---
-  "vad_min_energy": 500,
-  "end_silence_ms": 700,
-  "silence_timeout": 12,
-  "barge_in": true,
+  "vad_min_energy": 500,              // minimum loudness that counts as speech
+  "end_silence_ms": 700,              // silence after which an utterance is considered finished
+  "silence_timeout": 12,              // seconds without speech before asking; twice in a row = hang up
+  "barge_in": true,                   // caller may interrupt the assistant
   "barge_in_min_ms": 1000,            // how long the caller must speak to interrupt
 
-  // --- Logs and call notes (empty = logs\ in the project folder) ---
-  "log_dir": "",
+  // --- Logs and call notes ---
+  "log_dir": "",                      // empty = logs\ in the project folder; environment variables allowed
 
   // --- HTTP trigger for outbound calls ---
-  "http_port": 8099,
-  "api_token": "",                    // empty = only reachable from 127.0.0.1
+  "http_port": 8099,                  // if changed: adjust firewall.ps1 as well
+  "api_token": "",                    // empty = only reachable from 127.0.0.1; set = reachable in the LAN
+                                      // with "Authorization: Bearer <api_token>" (env CLAUDE_TELEFON_API_TOKEN)
 
-  // --- Home Assistant ---
+  // --- Home Assistant (empty ha_url/ha_token = no Home Assistant) ---
   "ha_url": "https://homeassistant:8123",
-  "ha_token": "",                     // or environment variable HA_TOKEN
-  "ha_verify_ssl": true,
-  "default_calendars": ["calendar.xyz", "holiday"],
-  "calendar_write": true
-  // control_domains / confirm_domains: see app/config.py
+  "ha_token": "",                     // long-lived access token, or environment variable HA_TOKEN
+  "ha_verify_ssl": true,              // true/false or path to the CA certificate (.crt/.pem)
+  "default_calendars": ["calendar.xyz", "holiday"],  // entity_ids or name parts; [] = all calendars
+  "calendar_write": true,             // trusted callers may create appointments (after confirmation)
+  "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
+                      "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
+  "confirm_domains": ["cover", "lock", "alarm_control_panel"]  // ask for an explicit "yes" first
 }

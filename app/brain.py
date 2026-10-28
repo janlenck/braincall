@@ -8,7 +8,7 @@ import anthropic
 
 log = logging.getLogger("brain")
 
-BASE_PROMPT = """You are {name}, Jan's AI assistant (technically based on Claude by Anthropic), and you are on a phone call right now.
+BASE_PROMPT = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic), and you are on a phone call right now.
 The first system note tells you who is on the line; address the person by name as soon as you know it.
 Introduce yourself as {name}. Everything you write is read out loud by speech synthesis.
 
@@ -28,7 +28,7 @@ Phone rules:
   Write the item exactly as it appears in the list.
 - Create new appointments with ha_create_event. Convert relative dates like "Thursday" or "tomorrow"
   into a date based on the current time.
-- Read appointments and holidays with ha_events (without calendars = Jan's default calendars).
+- Read appointments and holidays with ha_events (without calendars = the default calendars).
   Say weekdays in the language of the conversation.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
 - When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
@@ -99,7 +99,7 @@ TOOL_CONTROL = {
 }
 TOOL_EVENTS = {
     "name": "ha_events",
-    "description": "Reads appointments from Home Assistant calendars (calendar.*). Without 'calendars' Jan's default "
+    "description": "Reads appointments from Home Assistant calendars (calendar.*). Without 'calendars' the default "
                    "calendars are used. 'calendars' are entity_ids or name parts, e.g. ['molln', 'feiertage']. "
                    "'days' = period starting today (default 7), 'start' = optional start date YYYY-MM-DD.",
     "input_schema": {
@@ -114,7 +114,7 @@ TOOL_EVENTS = {
 TOOL_CREATE_EVENT = {
     "name": "ha_create_event",
     "description": "Creates an appointment in a Home Assistant calendar. start/end as 2026-10-30T14:00 "
-                   "(without end = 1 hour) or date only 2026-10-30 for all-day. Without calendar = Jan's default calendar. "
+                   "(without end = 1 hour) or date only 2026-10-30 for all-day. Without calendar = the default calendar. "
                    "Only call with confirmed=true after the caller explicitly said yes.",
     "input_schema": {
         "type": "object",
@@ -132,6 +132,7 @@ TOOL_CREATE_EVENT = {
 }
 
 _END = re.compile(r"[.!?…:](?=\s)")
+_FAKE_HANGUP = re.compile(r"\[[^\]]*(tool call|hang_up|auflegen)|(hang_up|auflegen)\]")
 
 
 class SentenceSplitter:
@@ -142,8 +143,8 @@ class SentenceSplitter:
         self.fake_hangup = False
 
     def _out(self, s: str):
-        low = s.lower()
-        if "tool call" in low or "hang_up]" in low or "auflegen]" in low:
+        # only bracketed pseudo tool calls like "[Tool call: hang_up]" (possibly split across two sentences)
+        if _FAKE_HANGUP.search(s.lower()):
             self.fake_hangup = True
         s = re.sub(r"\[[^\]]*\]?", "", s)  # never read out "[Tool call: …]" and the like
         s = re.sub(r"^[^\[]*\]", "", s)    # rest of a bracket that was split across two sentences
@@ -189,7 +190,8 @@ class Brain:
 
     def system(self, language: str = "de") -> str:
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
-        prompt = BASE_PROMPT.replace("{now}", now).replace("{name}", self.cfg.assistant_name or "Claude")
+        prompt = (BASE_PROMPT.replace("{now}", now).replace("{name}", self.cfg.assistant_name or "Claude")
+                  .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
         prompt += "\n" + LANG_RULES.get(language, LANG_RULES["auto"])
         if self.cfg.extra_prompt:
             prompt += "\n" + self.cfg.extra_prompt

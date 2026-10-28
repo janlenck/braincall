@@ -5,16 +5,21 @@ Bugs in the original:
 - digest uri does not match the request URI, no qop, no 407/Proxy-Authenticate
 - From header uses the local IP instead of the registrar domain
 - error responses are never surfaced
+- waits for the INVITE answer without a timeout (holding the receive lock -> whole SIP stack hangs)
+- a ringing call cannot be cancelled
 """
 import hashlib
 import logging
 import re
 import secrets
+import time
 
 import pyVoIP
 from pyVoIP import SIP
 
 log = logging.getLogger("sip")
+
+INVITE_TIMEOUT = 10  # seconds to wait for the first answer to an INVITE
 
 
 def _md5(s: str) -> str:
@@ -93,22 +98,30 @@ def patched_invite(self, number, ms, sendtype):
 
     with self.recvLock:
         self.out.sendto(invite.encode("utf8"), (self.server, self.port))
-        while True:
-            raw = self.s.recv(8192)
-            resp = SIP.SIPMessage(raw)
-            if resp.type != SIP.SIPMessageType.RESPONSE or resp.headers.get("Call-ID") != call_id:
+        deadline = time.monotonic() + INVITE_TIMEOUT
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError(f"no answer to INVITE within {INVITE_TIMEOUT}s")
+                self.s.settimeout(left)  # again every round: parse_message() switches the socket to blocking
+                raw = self.s.recv(8192)
+                resp = SIP.SIPMessage(raw)
+                if resp.type != SIP.SIPMessageType.RESPONSE or resp.headers.get("Call-ID") != call_id:
+                    self.parse_message(resp)
+                    continue
+                code = int(resp.status)
+                log.info("SIP %s %s for INVITE", code, resp.status.phrase)
+                if code in (100, 180, 183):
+                    self.pending_invites[call_id] = (uri, branch, cseq, tag)
+                    return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+                if code in (401, 407):
+                    break
+                # final response without auth (e.g. 403/404/486): the status logger records and acknowledges it
                 self.parse_message(resp)
-                continue
-            code = int(resp.status)
-            log.info("SIP %s %s for INVITE", code, resp.status.phrase)
-            if code in (100, 180, 183):
                 return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
-            if code in (401, 407):
-                break
-            # final response without auth (e.g. 403/404/486): pass on to the status logger
-            self.out.sendto(self.gen_ack(resp).encode("utf8"), (self.server, self.port))
-            self.parse_message(resp)
-            return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+        finally:
+            self.s.setblocking(True)  # state the receive loop expects
 
         self.out.sendto(self.gen_ack(resp).encode("utf8"), (self.server, self.port))
         hdr, ch = _challenge(raw)
@@ -119,8 +132,29 @@ def patched_invite(self, number, ms, sendtype):
         cseq = self.inviteCounter.next()
         invite, _ = _build_invite(self, number, str(sess_id), ms, sendtype, branch, call_id, cseq, tag, auth)
         self.out.sendto(invite.encode("utf8"), (self.server, self.port))
+        self.pending_invites[call_id] = (uri, branch, cseq, tag)
         log.info("INVITE with credentials sent")
         return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+
+
+def cancel(sip, call_id: str) -> bool:
+    """Stops a still ringing outbound call: CANCEL with Via branch, CSeq and tags of the last INVITE (RFC 3261 9.1)."""
+    inv = sip.pending_invites.pop(call_id, None)
+    if not inv:
+        return False
+    uri, branch, cseq, tag = inv
+    req = f"CANCEL {uri} SIP/2.0\r\n"
+    req += f"Via: SIP/2.0/UDP {sip.myIP}:{sip.myPort};branch={branch};rport\r\n"
+    req += "Max-Forwards: 70\r\n"
+    req += f"To: <{uri}>\r\n"
+    req += f"From: <sip:{sip.username}@{sip.server}>;tag={tag}\r\n"
+    req += f"Call-ID: {call_id}\r\n"
+    req += f"CSeq: {cseq} CANCEL\r\n"
+    req += "User-Agent: claude-telefon\r\n"
+    req += "Content-Length: 0\r\n\r\n"
+    sip.out.sendto(req.encode("utf8"), (sip.server, sip.port))
+    log.info("CANCEL sent")
+    return True
 
 
 def patched_gen_ack(self, resp):
@@ -148,5 +182,6 @@ def patched_gen_ack(self, resp):
 
 def apply(phone):
     import types
+    phone.sip.pending_invites = {}  # call_id -> (uri, branch, cseq, tag) of the last INVITE, for CANCEL
     phone.sip.invite = types.MethodType(patched_invite, phone.sip)
     phone.sip.gen_ack = types.MethodType(patched_gen_ack, phone.sip)
