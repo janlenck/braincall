@@ -4,6 +4,7 @@ import json
 import re
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DEFAULTS = {
     # SIP / FRITZ!Box
@@ -93,6 +94,14 @@ def _strip_jsonc(text: str) -> str:
     return re.sub(r",(\s*[\]}])", r"\1", "".join(out))
 
 
+def _valid_timezone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+        return bool(name)
+    except Exception:  # noqa: BLE001  (also POSIX strings like "CET-1CEST" and empty names)
+        return False
+
+
 class Config(dict):
     __getattr__ = dict.get
 
@@ -154,5 +163,8 @@ def load() -> Config:
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
+    # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ
+    if not data.get("timezone") and _valid_timezone(os.environ.get("TZ", "")):
+        cfg["timezone"] = os.environ["TZ"]
     cfg["log_dir"] = str(Path(os.path.expandvars(cfg.log_dir)).expanduser()) if cfg.log_dir else str(ROOT / "logs")
     return cfg
