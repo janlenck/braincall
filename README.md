@@ -1,101 +1,92 @@
 # Claude Telefon
 
-Claude ruft dich über die FRITZ!Box an und spricht mit dir. Du kannst ihn auch anrufen.
-Läuft unter Windows (Python 3.12) oder auf Linux/Raspberry Pi. Codec: G.711 über pyVoIP.
+A phone voice agent: Claude calls you through a FRITZ!Box and talks with you, and you can call it.
+It can read and control Home Assistant (states, lights, lists, calendars) during the call.
+
+Runs on Windows (Python 3.12) or Linux. Audio is G.711 over SIP using pyVoIP (with fixes for the FRITZ!Box).
 
 ```
-Auslöser (HA-Automation, Skript, call.py)
-   │ HTTP POST /call {"message": "..."}
+Trigger (HA automation, script, test-call.bat)
+   │ HTTP POST /call {"message": "...", "number": "..."}
    ▼
-app/main.py ── SIP/RTP ──► FRITZ!Box ──► dein Handy
+app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
    │
-   ├─ Sprach-Erkennung (VAD) ─► OpenAI STT (gpt-4o-transcribe)
-   ├─ Claude (Streaming, Tools: HA lesen, auflegen)
-   └─ OpenAI TTS (gpt-4o-mini-tts) ─► Telefon
+   ├─ voice activity detection ─► OpenAI STT (gpt-4o-transcribe)
+   ├─ Claude (streaming, tools: Home Assistant, hang up)
+   └─ OpenAI TTS (gpt-4o-mini-tts) ─► phone
 ```
 
-## 1. FRITZ!Box
+## Files
 
-Telefonie → Telefoniegeräte → dein IP-Telefon (bzw. „Neues Gerät einrichten“ → Telefon → LAN/WLAN):
+| Path | Purpose |
+|---|---|
+| `app/main.py` | entry point: SIP phone, HTTP trigger, incoming/outgoing calls |
+| `app/session.py` | one call: listening, barge-in, turn taking |
+| `app/brain.py` | Claude prompt, tools, sentence streaming |
+| `app/ha.py` | Home Assistant: search, state, control, lists, calendars |
+| `app/speech.py` | OpenAI speech-to-text and text-to-speech |
+| `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
+| `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
+| `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
+| `firewall.ps1` | Windows firewall rules (run as administrator) |
 
-- **Benutzername / Kennwort** notieren → `sip_user` / `sip_password`
-- **Ausgehende Rufnummer** zuweisen, am besten eine eigene MSN, damit du auf dem Handy siehst, dass der Bot anruft
-- **Ankommende Rufnummern:** nur diese MSN, wenn du den Bot auch anrufen willst
-- „Anmeldung aus dem Internet erlauben“ bleibt **aus**
+## Setup (Windows)
 
-## 2. Einrichten (Windows)
-
-1. `config.example.json` → `config.json` kopieren und ausfüllen. Pflicht sind `sip_user`, `sip_password`, `anthropic_api_key`, `openai_api_key` und `default_number`.
-   Die Keys kannst du statt in die Datei auch als Umgebungsvariablen setzen (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `HA_TOKEN`) – der Ordner liegt in OneDrive.
-2. PowerShell **als Administrator**: `powershell -ExecutionPolicy Bypass -File firewall.ps1`
-   (UDP 5062 + 30000–30100, TCP 8099, nur Profil „Privat“. Dein WLAN muss als privates Netz eingestuft sein.)
-3. `start.bat` ausführen. Beim ersten Start wird das venv unter `%LOCALAPPDATA%\claude-telefon\venv` angelegt.
-   Im Log muss stehen: `SIP-Status: REGISTERED`.
-4. Testanruf, in zweitem Fenster:
+1. **FRITZ!Box:** Telephony → Telephony Devices → new IP phone. Note user name and password,
+   assign an outgoing number (ideally its own MSN) and the incoming numbers it should answer.
+   Leave "allow login from the internet" off.
+2. **Configuration:** copy `config.example.json` to `config.json` and fill it in, or keep the real
+   config somewhere backed up and let `config.json` only point to it:
+   ```json
+   { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
    ```
-   %LOCALAPPDATA%\claude-telefon\venv\Scripts\python app\call.py "Das ist ein Testanruf" **611
-   ```
-   `**611` ist das erste DECT-Telefon der FRITZ!Box (intern, kostenlos). Ohne Nummer wird `default_number` angerufen.
+3. **Firewall** (PowerShell as administrator): `powershell -ExecutionPolicy Bypass -File firewall.ps1`
+4. **Start:** `start.bat`. The first start creates the virtual environment in
+   `%LOCALAPPDATA%\claude-telefon\venv`; missing packages are installed automatically
+   (or run `install.bat`). The log must show `SIP status: REGISTERED`.
+5. **Test:** press `A` in the agent window, or run `test-call.bat [number]`.
 
-## 3. Home Assistant
+Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open the log file.
 
-**Lesender Zugriff** (damit Claude am Telefon Werte nachschauen kann): in HA unter Profil → Sicherheit ein
-Langzeit-Token erzeugen → `ha_token`, dazu `ha_url`. Bei eigenem Zertifikat `ha_verify_ssl` auf den Pfad
-zur CA-Datei setzen (oder `false`).
+## Callers and permissions
 
-**Anruf aus HA auslösen:** `api_token` in config.json setzen (dann lauscht der Trigger im LAN), in HA:
+- `trusted_numbers` (`{"number": "name"}`): full access, may query and control Home Assistant.
+  The name is used in the log; the first word is used to address the person.
+- Other callers (if `inbound_allowed` contains `"*"`): the assistant asks for their name and reason,
+  gives no information about the house and controls nothing. The conversation is saved to
+  `logs/call-notes.txt` and sent to Home Assistant as an event.
+- Outbound calls always have full access.
+- `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
+
+## Home Assistant
+
+Read access needs `ha_url` and a long-lived `ha_token`. Certificates from the Windows certificate store
+(own CA) are trusted automatically.
+
+Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 
 ```yaml
-# secrets.yaml
-claude_telefon_auth: "Bearer DEIN_API_TOKEN"
-
-# configuration.yaml
 rest_command:
-  claude_anrufen:
-    url: "http://jan8:8099/call"      # Rechnername oder IP des Laptops
+  claude_call:
+    url: "http://<agent-host>:8099/call"
     method: post
     headers:
-      Authorization: !secret claude_telefon_auth
+      Authorization: !secret claude_telefon_auth   # "Bearer <api_token>"
     content_type: "application/json"
     payload: '{"message": {{ message | tojson }}}'
 ```
 
-```yaml
-# Beispiel-Automation
-automation:
-  - alias: "Garage offen → Claude ruft an"
-    trigger:
-      - platform: state
-        entity_id: cover.garageleft
-        to: "open"
-        for: "00:30:00"
-    action:
-      - service: rest_command.claude_anrufen
-        data:
-          message: "Das linke Garagentor steht seit 30 Minuten offen."
-```
+After each call the agent fires the HA event `claude_telefon_call`
+(`number`, `answered`, `reason`, `duration_s`, `transcript`).
 
-Nach jedem Anruf feuert der Agent das HA-Event `claude_telefon_anruf`
-(`angenommen`, `dauer_s`, `transkript`). Damit kannst du z. B. bei `angenommen: false` eine Push-Nachricht nachschieben.
+## Languages
 
-## 4. Optionen (Auszug)
+`language`: `de`, `uk`, `en` or `auto` (answers in the language the caller spoke last).
+`caller_languages` sets the language per number. Fixed phrases exist in German, Ukrainian and English.
 
-| Option | Bedeutung |
-|---|---|
-| `inbound_allowed` | Nummern, von denen der Bot Anrufe annimmt. Leer = alle ablehnen |
-| `extra_prompt` | Zusatzwissen/Regeln für Claude, z. B. wichtige Entity-IDs |
-| `claude_model` | Standard `claude-haiku-5-5` (schnell, günstig); Sonnet ist klüger, aber langsamer |
-| `tts_voice` | OpenAI-Stimme, z. B. `onyx`, `nova`, `alloy` |
-| `vad_min_energy` | Schwelle der Spracherkennung; höher, wenn Hintergrundgeräusche als Sprache zählen |
-| `end_silence_ms` | Pause, nach der deine Äußerung als beendet gilt |
-| `barge_in` | Du kannst Claude ins Wort fallen |
+## Limits
 
-## Grenzen
-
-- **Antwortzeit** pro Wechsel ca. 1,5–3 s (STT nach Satzende, dann Claude, dann TTS). Kein Echtzeit-Duplex.
-- **Mailbox:** Geht die Handy-Mailbox ran, erkennt Claude das am Ansagetext und spricht eine kurze Nachricht drauf.
-- **Klingeln abbrechen** kann pyVoIP nicht. Nimmst du nicht ab, klingelt es, bis die Gegenseite aufgibt.
-- Der Rechner muss **an, wach und im Heimnetz** sein (Energieoptionen: Ruhezustand am Netzteil aus).
-  Für Dauerbetrieb ist ein Raspberry Pi o. Ä. die bessere Wahl; der Code läuft dort unverändert (`python3 app/main.py`).
-- Der Bot am Telefon ist eine eigene Claude-Instanz über die API. Er kennt diesen Chat und dein Claude-Gedächtnis nicht, nur was im Prompt, im Anlass und in HA steht.
-- Kosten laufen über deine API-Konten (Anthropic + OpenAI), getrennt vom Claude-Abo.
+- Response time per turn is about 1.5–3 s (STT after end of speech, then Claude, then TTS).
+- pyVoIP cannot cancel ringing; an unanswered call rings until the other side gives up or `ring_timeout`.
+- The machine must be on, awake and in the home network.
+- Costs are billed to your Anthropic and OpenAI API accounts.

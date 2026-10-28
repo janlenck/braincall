@@ -4,31 +4,31 @@ cd /d "%~dp0"
 title Claude Telefon - Installation
 set "VENV=%LOCALAPPDATA%\claude-telefon\venv"
 
-echo Python-Umgebung: %VENV%
+echo Python environment: %VENV%
 if not exist "%VENV%\Scripts\python.exe" (
-  echo Lege virtuelles Environment an ...
+  echo Creating virtual environment ...
   py -3.12 -m venv "%VENV%" || goto :fail
 )
 
 echo.
-echo Aktualisiere pip ...
+echo Updating pip ...
 "%VENV%\Scripts\python.exe" -m pip install --upgrade pip --disable-pip-version-check || goto :fail
 
 echo.
-echo Installiere / aktualisiere Pakete aus requirements.txt ...
+echo Installing / updating packages from requirements.txt ...
 "%VENV%\Scripts\python.exe" -m pip install -r requirements.txt --disable-pip-version-check || goto :fail
 
 echo.
-echo Pruefe Importe ...
-"%VENV%\Scripts\python.exe" -c "import pyVoIP, anthropic, requests, numpy, truststore, zoneinfo; zoneinfo.ZoneInfo('Europe/Berlin'); print('Alles da.')" || goto :fail
+echo Checking imports ...
+"%VENV%\Scripts\python.exe" -c "import pyVoIP, anthropic, requests, numpy, truststore, zoneinfo; zoneinfo.ZoneInfo('Europe/Berlin'); print('All good.')" || goto :fail
 
 echo.
-echo Fertig. Jetzt start.bat starten.
+echo Done. Now run start.bat.
 pause
 exit /b 0
 
 :fail
 echo.
-echo FEHLER bei der Installation - siehe Ausgabe oben.
+echo Installation FAILED - see the output above.
 pause
 exit /b 1

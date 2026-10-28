@@ -1,10 +1,10 @@
-"""Korrigiertes INVITE für pyVoIP 1.6.8 (ausgehende Anrufe über die FRITZ!Box).
+"""Fixed INVITE for pyVoIP 1.6.8 (outbound calls via the FRITZ!Box).
 
-Fehler im Original:
-- das authentifizierte INVITE nutzt dieselbe Via-branch wie das erste -> wird als Wiederholung verworfen
-- Digest-uri passt nicht zur Request-URI, kein qop, kein 407/Proxy-Authenticate
-- From-Header mit eigener IP statt Registrar-Domain
-- Fehlerantworten werden nirgends sichtbar
+Bugs in the original:
+- the authenticated INVITE reuses the Via branch of the first one -> discarded as a retransmission
+- digest uri does not match the request URI, no qop, no 407/Proxy-Authenticate
+- From header uses the local IP instead of the registrar domain
+- error responses are never surfaced
 """
 import hashlib
 import logging
@@ -100,12 +100,12 @@ def patched_invite(self, number, ms, sendtype):
                 self.parse_message(resp)
                 continue
             code = int(resp.status)
-            log.info("SIP %s %s auf INVITE", code, resp.status.phrase)
+            log.info("SIP %s %s for INVITE", code, resp.status.phrase)
             if code in (100, 180, 183):
                 return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
             if code in (401, 407):
                 break
-            # endgültige Antwort ohne Auth (z. B. 403/404/486): an den Status-Logger weitergeben
+            # final response without auth (e.g. 403/404/486): pass on to the status logger
             self.out.sendto(self.gen_ack(resp).encode("utf8"), (self.server, self.port))
             self.parse_message(resp)
             return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
@@ -113,18 +113,18 @@ def patched_invite(self, number, ms, sendtype):
         self.out.sendto(self.gen_ack(resp).encode("utf8"), (self.server, self.port))
         hdr, ch = _challenge(raw)
         if not hdr:
-            log.warning("Auth-Challenge nicht lesbar:\n%s", raw.decode("utf8", "replace"))
+            log.warning("Auth challenge not readable:\n%s", raw.decode("utf8", "replace"))
         auth = _digest(self, hdr or "Authorization", ch, uri)
         branch = "z9hG4bK" + secrets.token_hex(12)
         cseq = self.inviteCounter.next()
         invite, _ = _build_invite(self, number, str(sess_id), ms, sendtype, branch, call_id, cseq, tag, auth)
         self.out.sendto(invite.encode("utf8"), (self.server, self.port))
-        log.info("INVITE mit Anmeldung gesendet")
+        log.info("INVITE with credentials sent")
         return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
 
 
 def patched_gen_ack(self, resp):
-    """ACK mit dem To-Tag der Antwort (Original erfindet einen neuen -> FRITZ!Box verwirft das ACK)."""
+    """ACK with the To tag of the response (the original invents a new one -> FRITZ!Box drops the ACK)."""
     tag = self.tagLibrary.get(resp.headers["Call-ID"], self.gen_tag())
     to_tag = resp.headers["To"].get("tag", "")
     to = resp.headers["To"]["raw"] + (f";tag={to_tag}" if to_tag else "")

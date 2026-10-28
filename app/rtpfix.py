@@ -1,10 +1,10 @@
-"""Bessere Tonqualität für pyVoIP 1.6.8.
+"""Better audio quality for pyVoIP 1.6.8.
 
-Original-Problem:
-- Ausgehender Ton läuft über 8-Bit-Linear (hörbares Rauschen) bevor er G.711 kodiert wird.
-- Wird PCMA (A-law, bei der FRITZ!Box für eingehende Anrufe üblich) ausgehandelt,
-  kodiert pyVoIP trotzdem µ-law -> verzerrter, „kaputter“ Klang.
-Lösung: Wir kodieren 16-Bit-Audio selbst passend zum ausgehandelten Codec und reichen es durch.
+Original problems:
+- Outgoing audio goes through 8-bit linear (audible noise) before being encoded to G.711.
+- If PCMA (A-law, usual for incoming calls on the FRITZ!Box) is negotiated,
+  pyVoIP still encodes µ-law -> distorted, "broken" sound.
+Fix: we encode 16-bit audio ourselves for the negotiated codec and pass it through unchanged.
 """
 import logging
 import time
@@ -33,7 +33,7 @@ def setup(call) -> str:
     for client in getattr(call, "RTPClients", []):
         pref = client.preference
         codec = "PCMA" if pref == RTP.PayloadType.PCMA else "PCMU"
-        client.encode_packet = lambda payload: payload  # schon fertig kodiert
+        client.encode_packet = lambda payload: payload  # already encoded
         client.pmout.read = _padded_reader(client.pmout, SILENCE[codec])
-    log.info("Audio-Codec: %s", codec)
+    log.info("Audio codec: %s", codec)
     return codec

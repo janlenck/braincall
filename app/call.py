@@ -1,4 +1,4 @@
-"""Testanruf auslösen:  python app\\call.py "Testnachricht" [nummer]"""
+"""Trigger a test call:  python app\\call.py "test message" [number]"""
 import json
 import sys
 import urllib.request
@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
 
 cfg = config.load()
-body = {"message": sys.argv[1] if len(sys.argv) > 1 else "Testanruf"}
+body = {"message": sys.argv[1] if len(sys.argv) > 1 else "Test call"}
 if len(sys.argv) > 2:
     body["number"] = sys.argv[2]
 req = urllib.request.Request(
@@ -23,7 +23,7 @@ try:
 except urllib.error.HTTPError as e:
     result = f"{e.code} {e.read().decode()}"
 except Exception as e:  # noqa: BLE001
-    result = f"FEHLER {e!r}"
+    result = f"ERROR {e!r}"
 print(result)
 logdir = Path(cfg.log_dir)
 logdir.mkdir(parents=True, exist_ok=True)

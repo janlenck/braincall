@@ -1,9 +1,6 @@
-# Geheimnisse und persönliche Einstellungen – NIE committen
-config.json
-
-# Laufzeitdaten (Gesprächsprotokolle, Anrufnotizen)
+# Runtime data (call logs, call notes)
 logs/
-_upd/
+.staging/
 
 # Python
 __pycache__/

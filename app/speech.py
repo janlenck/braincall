@@ -1,4 +1,4 @@
-"""STT und TTS über die OpenAI-API."""
+"""STT and TTS via the OpenAI API."""
 import logging
 import unicodedata
 
@@ -12,10 +12,13 @@ log = logging.getLogger("speech")
 STT_URL = "https://api.openai.com/v1/audio/transcriptions"
 TTS_URL = "https://api.openai.com/v1/audio/speech"
 
-# typische Erfindungen der Spracherkennung bei Rauschen/Echo
+# Context hint for the transcription in "auto" mode. Deliberately German/Ukrainian:
+# it describes the spoken languages and prevents misdetection as Polish, Serbian, Chinese …
 STT_HINT = "Telefongespräch auf Deutsch oder Ukrainisch (українською)."
 
-HALLUCINATIONS = ("telefongespräch auf deutsch", "українською)", "telefonat mit jan", "untertitel", "vielen dank fürs zuschauen", "danke fürs zuschauen",
+# Typical phrases the speech recognition invents from noise or echo (they occur in German, hence German text)
+HALLUCINATIONS = ("telefongespräch auf deutsch", "українською)", "telefonat mit jan", "untertitel",
+                  "vielen dank fürs zuschauen", "danke fürs zuschauen",
                   "copyright", "amara.org", "www.", "musik", "♪")
 
 
@@ -31,7 +34,7 @@ class Speech:
         if language and language != "auto":
             data["language"] = language
         else:
-            data["prompt"] = STT_HINT  # verhindert Fehl-Erkennung als Polnisch, Serbisch, Chinesisch …
+            data["prompt"] = STT_HINT  # see STT_HINT
         r = self.http.post(STT_URL, files=files, data=data, timeout=30)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()
@@ -40,7 +43,7 @@ class Speech:
         ok = sum(unicodedata.name(c, "").startswith(("LATIN", "CYRILLIC")) for c in letters)
         if not norm or any(h in norm for h in HALLUCINATIONS) or len(norm) < 2 or ok < len(letters) / 2:
             if text:
-                log.info("(verworfen: %s)", text)
+                log.info("(discarded: %s)", text)
             return ""
         return text
 
@@ -55,9 +58,11 @@ class Speech:
             instr = self.cfg.tts_instructions or ""
             letters = [c for c in text if c.isalpha()]
             cyr = sum(unicodedata.name(c, "").startswith("CYRILLIC") for c in letters)
-            if letters and cyr > len(letters) / 2:  # ukrainischer Text -> ukrainische Aussprache
-                instr = (instr.replace("Deutsch", "Ukrainisch") if "Deutsch" in instr
-                         else instr + " Sprache: Ukrainisch, muttersprachliche Aussprache.")
+            if letters and cyr > len(letters) / 2:  # Ukrainian text -> Ukrainian pronunciation
+                if "Deutsch" in instr or "German" in instr:  # user instructions may be German or English
+                    instr = instr.replace("Deutsch", "Ukrainisch").replace("German", "Ukrainian")
+                else:
+                    instr += " Language: Ukrainian, native pronunciation."
             if instr:
                 body["instructions"] = instr
         r = self.http.post(TTS_URL, json=body, timeout=30)

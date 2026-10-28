@@ -1,4 +1,4 @@
-"""Ein laufendes Telefonat: Audio lesen, Sprache erkennen, Claude antworten lassen, vorlesen."""
+"""One running call: read audio, detect speech, let Claude answer, speak the answer."""
 import collections
 import logging
 import queue
@@ -13,6 +13,7 @@ import rtpfix
 
 log = logging.getLogger("session")
 
+# Fixed phrases spoken without the model, per conversation language
 PHRASES = {
     "de": {"silence": "Ich höre nichts mehr, ich lege auf. Tschüss!",
            "error": "Bei mir ist gerade ein Fehler aufgetreten. Ich lege auf."},
@@ -54,9 +55,9 @@ class CallSession:
     def alive(self) -> bool:
         return self.active and self.call.state == CallState.ANSWERED
 
-    # ------------------------------------------------------------------ Eingang
+    # ------------------------------------------------------------------ input
     def _reader(self):
-        """Liest alle 20 ms ein Frame (nicht blockierend, pyVoIP blockiert sonst bei digitaler Stille)."""
+        """Reads one frame every 20 ms (non-blocking; pyVoIP would otherwise block on digital silence)."""
         end_frames = max(10, int(self.cfg.end_silence_ms / 20))
         noise = 200.0
         voiced = 0
@@ -65,19 +66,19 @@ class CallSession:
         started_while_playing = False
         self.seg_voiced = 0
         buf: list[np.ndarray] = []
-        pre = collections.deque(maxlen=15)  # 300 ms Vorlauf
+        pre = collections.deque(maxlen=15)  # 300 ms pre-roll
         next_t = time.monotonic()
 
         while self.alive():
             try:
                 data = self.call.read_audio(FRAME, False)
-            except Exception:  # noqa: BLE001  Anruf beendet
+            except Exception:  # noqa: BLE001  call ended
                 break
             a = u8_to_s16(data)
             e = rms(a)
             thr = max(float(self.cfg.vad_min_energy), noise * 3.0)
             if self.playing.is_set():
-                thr *= 4.0  # Echo vom eigenen Vorlesen nicht als Jan werten
+                thr *= 4.0  # do not mistake the echo of our own voice for the caller
 
             if not in_speech:
                 pre.append(a)
@@ -86,7 +87,7 @@ class CallSession:
                 else:
                     voiced = 0
                     noise = max(50.0, 0.95 * noise + 0.05 * e)
-                need = 20 if self.playing.is_set() else 3  # beim Vorlesen 400 ms echte Sprache nötig
+                need = 20 if self.playing.is_set() else 3  # while speaking, 400 ms of real speech are needed
                 if voiced >= need:
                     self.seg_voiced = voiced
                     in_speech = True
@@ -110,7 +111,7 @@ class CallSession:
                         keep = False
                     min_frames = int(float(self.cfg.barge_in_min_ms or 1000) / 20)
                     if started_while_playing and self.seg_voiced < min_frames:
-                        keep = False  # Geräusch/Räuspern während der Ansage -> ignorieren
+                        keep = False  # noise/throat-clearing while we speak -> ignore
                     if keep:
                         self.utterances.put(np.concatenate(buf))
                     pre.clear()
@@ -125,7 +126,7 @@ class CallSession:
         self.active = False
         self.utterances.put(None)
 
-    # ------------------------------------------------------------------ Ausgang
+    # ------------------------------------------------------------------ output
     def say(self, text: str):
         self.sentence_q.put(text)
 
@@ -140,7 +141,7 @@ class CallSession:
                 pcm = self.speech.synthesize(s)
                 self.audio_q.put((s, pcm))
             except Exception as e:  # noqa: BLE001
-                log.warning("TTS fehlgeschlagen: %s", e)
+                log.warning("TTS failed: %s", e)
             finally:
                 self.sentence_q.task_done()
 
@@ -162,10 +163,10 @@ class CallSession:
 
     def _barge(self) -> bool:
         now = time.monotonic()
-        # zählt nur tatsächlich gesprochene 20-ms-Frames, Pausen/Geräuschende zählen nicht mit
+        # counts only actually voiced 20 ms frames; pauses and fading noise do not count
         need_frames = float(self.cfg.barge_in_min_ms or 1000) / 20
         return (self.cfg.barge_in and self.user_speaking.is_set()
-                and now - self.play_started_at > 0.6        # Anfang der eigenen Ansage ignorieren
+                and now - self.play_started_at > 0.6        # ignore the very start of our own sentence
                 and self.seg_voiced >= need_frames)
 
     def _play(self, pcm: np.ndarray):
@@ -179,7 +180,7 @@ class CallSession:
                 if not self.alive() or self.interrupt.is_set():
                     return
                 if self._barge():
-                    log.info("%s unterbricht", self.caller_label)
+                    log.info("%s interrupts", self.caller_label)
                     self.interrupt.set()
                     return
                 while sent / RATE - (time.monotonic() - t0) > 0.08:
@@ -187,7 +188,7 @@ class CallSession:
                 chunk = data[i:i + FRAME]
                 self.call.write_audio(chunk)
                 sent += len(chunk)
-            # warten, bis der Puffer wirklich draußen ist
+            # wait until the buffer has really been sent
             while sent / RATE - (time.monotonic() - t0) > 0 and self.alive():
                 if self._barge():
                     self.interrupt.set()
@@ -200,7 +201,7 @@ class CallSession:
         self.sentence_q.join()
         self.audio_q.join()
 
-    # ------------------------------------------------------------------ Zuhören
+    # ------------------------------------------------------------------ listening
     def listen(self, timeout: float):
         deadline = time.monotonic() + timeout
         while True:
@@ -215,7 +216,7 @@ class CallSession:
             return ENDED if u is None else u
 
     def user_text(self, timeout: float):
-        """Wartet auf eine verständliche Äußerung. Rückgabe Text, TIMEOUT oder ENDED."""
+        """Waits for an intelligible utterance. Returns text, TIMEOUT or ENDED."""
         deadline = time.monotonic() + timeout
         while True:
             u = self.listen(max(0.5, deadline - time.monotonic()))
@@ -224,14 +225,14 @@ class CallSession:
             try:
                 text = self.speech.transcribe(u, self.language)
             except Exception as e:  # noqa: BLE001
-                log.warning("STT fehlgeschlagen: %s", e)
+                log.warning("STT failed: %s", e)
                 text = ""
             if text:
                 log.info("%s: %s", self.caller_label, text)
                 self.transcript.append(f"{self.caller_label}: {text}")
                 return text
 
-    # ------------------------------------------------------------------ Ablauf
+    # ------------------------------------------------------------------ call flow
     def _assistant_turn(self, messages) -> bool:
         self.interrupt.clear()
         hang = self.brain.turn(messages, self.say,
@@ -245,8 +246,8 @@ class CallSession:
             language: str = "", caller_name: str = ""):
         self.restricted = not outbound and not trusted
         full = caller_name or ("Jan" if trusted else "")
-        self.caller_label = full or caller or "unbekannt"          # fürs Log: "Jan Mobil"
-        name = full.split("(")[0].split()[0] if full.strip() else ""  # zum Ansprechen: "Jan"
+        self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobil"
+        name = full.split("(")[0].split()[0] if full.strip() else ""  # to address the person: "Jan"
         if language:
             self.language = language
         threads = [threading.Thread(target=f, daemon=True)
@@ -254,37 +255,41 @@ class CallSession:
         for t in threads:
             t.start()
         try:
-            # Kurz hinhören: Meldet sich Jan ("Hallo?") oder eine Mailbox?
+            # Listen briefly: does a person answer ("Hello?") or a mailbox?
             heard = ""
             first = self.listen(2.5)
             if isinstance(first, np.ndarray):
                 try:
                     heard = self.speech.transcribe(first, self.language)
                 except Exception as e:  # noqa: BLE001
-                    log.warning("STT fehlgeschlagen: %s", e)
+                    log.warning("STT failed: %s", e)
             elif first is ENDED:
                 return
 
             if outbound:
-                who = (f"{name} (Nummer {caller})" if name
-                       else f"die Nummer {caller or 'unbekannt'} (Name unbekannt; Jan hat den Anruf beauftragt — "
-                            "frag freundlich, mit wem du sprichst)")
-                intro = (f"[System: Du rufst gerade {who} an. Anlass: {message or 'kein konkreter Anlass angegeben'}. "
-                         + (f"Beim Abheben war zu hören: „{heard}“. " if heard else "Beim Abheben war nichts zu hören. ")
-                         + "Klingt das nach einer Mailbox: Warte nicht auf den Piepton-Hinweis, sprich SOFORT eine kurze "
-                         + "Nachricht in zwei, drei Sätzen und lege danach auf. "
-                         + "Sonst begrüße knapp und komm direkt zur Sache.]")
+                who = (f"{name} (number {caller})" if name
+                       else f"the number {caller or 'unknown'} (name unknown; Jan asked you to make this call — "
+                            "politely ask who you are talking to)")
+                intro = (f"[System: You are calling {who}. Reason: {message or 'no specific reason given'}. "
+                         + (f"When the call was answered you heard: “{heard}”. " if heard
+                            else "Nothing was heard when the call was answered. ")
+                         + "If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
+                         + "message of two or three sentences and hang up afterwards. "
+                         + "Otherwise greet briefly and get straight to the point.]")
             elif trusted:
-                intro = (f"[System: {name} ruft dich an (von {caller or 'unbekannt'}). "
-                         + (f"Beim Abheben schon gesagt: „{heard}“. " if heard else "")
-                         + f"Melde dich knapp und sprich {name} mit Namen an.]")
+                intro = (f"[System: {name} is calling you (from {caller or 'unknown'}). "
+                         + (f"Already said when answering: “{heard}”. " if heard else "")
+                         + f"Answer briefly and address {name} by name.]")
             else:
-                intro = (f"[System: Jemand ruft bei Jan an, Nummer {caller or 'unterdrückt'}. Das ist NICHT Jan. "
-                         + (f"Beim Abheben war zu hören: „{heard}“. " if heard else "")
-                         + f"Du bist Jans telefonische Assistenz. Melde dich mit: Hier ist {self.cfg.assistant_name or 'der Anrufassistent'}, die Assistenz von Jan Lenck. "
-                         + "Frag zuerst, wie die Person heißt, dann nach dem Anliegen und ob Jan zurückrufen soll. Gib keinerlei Auskunft über Jan, "
-                         + "sein Haus, ob jemand zu Hause ist oder über Geräte. Wiederhole zum Schluss kurz, was du notiert hast, "
-                         + "verabschiede dich und lege auf. Das Gespräch wird Jan als Notiz übermittelt.]")
+                assistant = self.cfg.assistant_name or "the call assistant"
+                intro = (f"[System: Someone is calling Jan, number {caller or 'withheld'}. This is NOT Jan. "
+                         + (f"When answering you heard: “{heard}”. " if heard else "")
+                         + f"You are Jan's phone assistant. Introduce yourself (in the conversation language) as: "
+                         + f"This is {assistant}, Jan Lenck's assistant. "
+                         + "First ask for the caller's name, then for the reason of the call and whether Jan should "
+                         + "call back. Give no information at all about Jan, his house, whether anyone is at home, "
+                         + "or about devices. At the end briefly repeat what you noted, say goodbye and hang up. "
+                         + "The conversation is passed on to Jan as a note.]")
             messages = [{"role": "user", "content": intro}]
 
             silence = 0
@@ -300,12 +305,12 @@ class CallSession:
                         self.say(PHRASES.get(self.language, PHRASES["de"])["silence"])
                         self.wait_spoken()
                         break
-                    messages.append({"role": "user", "content": "[System: Jan hat eine Weile nichts gesagt.]"})
+                    messages.append({"role": "user", "content": "[System: The caller has not said anything for a while.]"})
                     continue
                 silence = 0
                 messages.append({"role": "user", "content": text})
         except Exception:  # noqa: BLE001
-            log.exception("Fehler im Gespräch")
+            log.exception("Error during call")
             try:
                 self.say(PHRASES.get(self.language, PHRASES["de"])["error"])
                 self.wait_spoken()

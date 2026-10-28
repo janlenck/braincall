@@ -1,64 +1,65 @@
 {
-  // Kopieren nach config.json und ausfüllen. config.json wird nicht eingecheckt (.gitignore).
-  // Kommentare (//, /* */) und ein Komma vor ] oder } sind erlaubt.
+  // Copy to config.json and fill in.
+  // Comments (//, /* */) and a trailing comma before ] or } are allowed.
   //
-  // Tipp: Die echte Konfiguration kann auch woanders liegen (z. B. OneDrive, wird gesichert).
-  // Dann enthält config.json im Projektordner nur einen Verweis (Backslashes einfach lassen):
+  // Tip: the real configuration can live elsewhere (e.g. OneDrive, so it is backed up and keys never
+  // end up in git). Then config.json in the project folder only holds a pointer (backslashes as-is):
   //   { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
+  // Alternatively set the environment variable CLAUDE_TELEFON_CONFIG to that path.
 
-  // --- FRITZ!Box / SIP (IP-Telefon in der FRITZ!Box anlegen) ---
+  // --- FRITZ!Box / SIP (create an IP phone in the FRITZ!Box) ---
   "sip_server": "192.168.178.1",
   "sip_port": 5060,
-  "sip_user": "BENUTZERNAME_IP_TELEFON",
-  "sip_password": "",                 // alternativ Umgebungsvariable CLAUDE_TELEFON_SIP_PASSWORD
-  "local_ip": "",                     // leer = automatisch
+  "sip_user": "IP_PHONE_USERNAME",
+  "sip_password": "",                 // or environment variable CLAUDE_TELEFON_SIP_PASSWORD
+  "local_ip": "",                     // empty = detect automatically
   "sip_local_port": 5062,
   "rtp_port_min": 30000,
   "rtp_port_max": 30100,
 
-  // --- Wer ruft an / wird angerufen ---
+  // --- Who calls / who gets called ---
   "default_number": "0151xxxxxxx",
-  "inbound_allowed": ["*"],           // ["*"] = alle annehmen, [] = alle ablehnen, oder Liste von Nummern
-  "trusted_numbers": {                // nur diese Nummern dürfen HA abfragen und schalten
-    "0151xxxxxxx": "Jan Mobil",
-    "**611": "Jan Intern"
+  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = reject all, or a list of numbers
+  "trusted_numbers": {                // only these numbers may query and control Home Assistant
+    "0151xxxxxxx": "Jan Mobile",
+    "**611": "Jan Internal"
   },
-  "caller_languages": {},             // Sprache je Nummer, z. B. { "0170xxxxxxx": "uk" }
+  "caller_languages": {},             // language per number, e.g. { "0170xxxxxxx": "uk" }
   "ring_timeout": 90,
 
   // --- Claude ---
-  "anthropic_api_key": "",            // alternativ Umgebungsvariable ANTHROPIC_API_KEY
+  "anthropic_api_key": "",            // or environment variable ANTHROPIC_API_KEY
   "claude_model": "claude-haiku-5-5",
   "assistant_name": "Claudine",
-  "language": "de",                   // "de", "uk", "en" oder "auto"
+  "language": "de",                   // "de", "uk", "en" or "auto"
   "extra_prompt": "",
 
-  // --- OpenAI Spracherkennung / Stimme ---
-  "openai_api_key": "",               // alternativ Umgebungsvariable OPENAI_API_KEY
+  // --- OpenAI speech recognition / voice ---
+  "openai_api_key": "",               // or environment variable OPENAI_API_KEY
   "stt_model": "gpt-4o-transcribe",
   "tts_model": "gpt-4o-mini-tts",
   "tts_voice": "nova",
-  "tts_instructions": "Sprich natürliches Deutsch, gut gelaunt und lebendig, zügiges Tempo wie am Telefon.",
+  "tts_instructions": "Speak natural German, cheerful and lively, brisk pace like on the phone.",
 
-  // --- Spracherkennung (VAD) ---
+  // --- Voice activity detection ---
   "vad_min_energy": 500,
   "end_silence_ms": 700,
   "silence_timeout": 12,
   "barge_in": true,
-  "barge_in_min_ms": 1000,
+  "barge_in_min_ms": 1000,            // how long the caller must speak to interrupt
 
-  // --- Logs und Anrufnotizen (leer = logs\ im Projektordner) ---
+  // --- Logs and call notes (empty = logs\ in the project folder) ---
   "log_dir": "",
 
-  // --- HTTP-Trigger für ausgehende Anrufe ---
+  // --- HTTP trigger for outbound calls ---
   "http_port": 8099,
-  "api_token": "",                    // leer = nur von 127.0.0.1 erreichbar
+  "api_token": "",                    // empty = only reachable from 127.0.0.1
 
   // --- Home Assistant ---
   "ha_url": "https://homeassistant:8123",
-  "ha_token": "",                     // alternativ Umgebungsvariable HA_TOKEN
+  "ha_token": "",                     // or environment variable HA_TOKEN
   "ha_verify_ssl": true,
-  "default_calendars": ["calendar.xyz", "feiertag"],
+  "default_calendars": ["calendar.xyz", "holiday"],
   "calendar_write": true
-  // control_domains / confirm_domains: siehe app/config.py
+  // control_domains / confirm_domains: see app/config.py
 }

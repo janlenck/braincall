@@ -1,4 +1,4 @@
-"""Bunte Konsolenausgabe + Tastensteuerung (Windows: X/Q beendet, A = Testanruf)."""
+"""Colored console output plus key controls (Windows: X/Q quits, A = test call, L = open log)."""
 import logging
 import os
 import sys
@@ -17,7 +17,7 @@ GREY = "\033[90m"
 
 
 def enable_ansi():
-    """Schaltet Farben (VT-Sequenzen) in der Windows-Konsole explizit ein."""
+    """Explicitly enables colors (VT sequences) in the Windows console."""
     if os.name != "nt":
         return
     try:
@@ -39,7 +39,7 @@ def enable_ansi():
             pass
 
 
-ASSISTANT = "Claude"  # wird in main.py auf assistant_name gesetzt
+ASSISTANT = "Claude"  # set to assistant_name in main.py
 
 
 class ColorFormatter(logging.Formatter):
@@ -59,12 +59,12 @@ class ColorFormatter(logging.Formatter):
         if record.name == "session" and msg.startswith(ASSISTANT + ":"):
             return (f"{GREY}{t}{RESET}  {CYAN}{BOLD}🤖 {ASSISTANT} {RESET}"
                     f"{CYAN}{msg[len(ASSISTANT) + 1:].strip()}{RESET}")
-        if record.name == "session" and ": " in msg and not msg.startswith(("Fehler", "TTS", "STT")):
+        if record.name == "session" and ": " in msg and not msg.startswith(("Error", "TTS", "STT")):
             who, rest = msg.split(": ", 1)
             return f"{GREY}{t}{RESET}  {GREEN}{BOLD}🗣  {who} {RESET}{GREEN}{rest.strip()}{RESET}"
-        if msg.startswith(("Rufe ", "Nehme Anruf")):
+        if msg.startswith(("Calling ", "Answering call")):
             return f"{GREY}{t}{RESET}  {MAGENTA}{BOLD}📞 {msg}{RESET}"
-        if msg.startswith(("Gespräch beendet", "Nicht angenommen")):
+        if msg.startswith(("Call ended", "Not answered")):
             return f"{GREY}{t}{RESET}  {MAGENTA}📴 {msg}{RESET}"
         if "REGISTERED" in msg:
             return f"{GREY}{t}{RESET}  {GREEN}{BOLD}✔ {msg}{RESET}"
@@ -75,15 +75,15 @@ class ColorFormatter(logging.Formatter):
 def banner(cfg):
     line = "─" * 62
     print(f"{CYAN}{line}{RESET}")
-    print(f"{CYAN}{BOLD}  Claude Telefon{RESET}   {GREY}Modell: {cfg.claude_model}  ·  Stimme: {cfg.tts_voice}{RESET}")
+    print(f"{CYAN}{BOLD}  Claude Telefon{RESET}   {GREY}model: {cfg.claude_model}  ·  voice: {cfg.tts_voice}{RESET}")
     if os.name == "nt":
-        print(f"  {BOLD}[X]{RESET} Beenden   {BOLD}[A]{RESET} Testanruf an {cfg.default_number or '-'}   "
-              f"{BOLD}[L]{RESET} Logdatei öffnen")
+        print(f"  {BOLD}[X]{RESET} quit   {BOLD}[A]{RESET} test call to {cfg.default_number or '-'}   "
+              f"{BOLD}[L]{RESET} open log file")
     print(f"{CYAN}{line}{RESET}")
 
 
 def start_keys(on_quit, on_test, on_log):
-    """Liest Tasten nicht-blockierend (nur Windows-Konsole)."""
+    """Reads keys without blocking (Windows console only)."""
     if os.name != "nt" or not sys.stdin.isatty():
         return
     import msvcrt

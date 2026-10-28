@@ -1,4 +1,4 @@
-"""Audio-Helfer: pyVoIP liefert/erwartet 8 kHz, 8 Bit unsigned linear (Stille = 128)."""
+"""Audio helpers: pyVoIP delivers/expects 8 kHz, 8-bit unsigned linear (silence = 128)."""
 import io
 import wave
 
@@ -10,9 +10,9 @@ except ImportError:  # Python 3.13+: audioop-lts
     import audioop  # type: ignore  # noqa: F811
 
 RATE = 8000
-FRAME = 160  # 20 ms bei 8 kHz
+FRAME = 160  # 20 ms at 8 kHz
 
-# Tiefpass (Hamming-gefensterter Sinc) für 24 kHz -> 8 kHz, Grenzfrequenz 3,4 kHz
+# Low-pass (Hamming-windowed sinc) for 24 kHz -> 8 kHz, cutoff 3.4 kHz
 _n = np.arange(-24, 25)
 _fc = 3400 / 24000
 _H = np.sinc(2 * _fc * _n) * 2 * _fc * np.hamming(len(_n))
@@ -29,7 +29,7 @@ def s16_to_u8(a: np.ndarray) -> bytes:
 
 
 def resample_24k_to_8k(raw: bytes) -> np.ndarray:
-    """OpenAI-TTS 'pcm' = 24 kHz, 16 Bit LE mono."""
+    """OpenAI TTS 'pcm' = 24 kHz, 16-bit LE mono."""
     raw = raw[: len(raw) // 2 * 2]
     a = np.frombuffer(raw, dtype="<i2").astype(np.float32)
     if a.size == 0:
@@ -55,6 +55,6 @@ def to_wav(a: np.ndarray, rate: int = RATE) -> bytes:
 
 
 def encode_g711(a: np.ndarray, codec: str) -> bytes:
-    """16-Bit-PCM direkt nach G.711 (µ-law oder A-law) – ohne 8-Bit-Zwischenschritt."""
+    """16-bit PCM straight to G.711 (µ-law or A-law), without an 8-bit intermediate step."""
     raw = a.astype("<i2").tobytes()
     return audioop.lin2alaw(raw, 2) if codec == "PCMA" else audioop.lin2ulaw(raw, 2)
