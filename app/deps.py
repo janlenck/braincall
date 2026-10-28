@@ -12,6 +12,7 @@ REQUIRED = {
     "numpy": "numpy>=1.26",
     "tzdata": "tzdata",
     "truststore": "truststore>=0.9",
+    "audioop": "audioop-lts",  # built in up to Python 3.12, so only installed on 3.13+
 }
 
 

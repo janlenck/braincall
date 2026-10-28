@@ -27,4 +27,4 @@ except Exception as e:  # noqa: BLE001
 print(result)
 logdir = Path(cfg.log_dir)
 logdir.mkdir(parents=True, exist_ok=True)
-(logdir / "letzter-trigger.txt").write_text(result, encoding="utf-8")
+(logdir / "last-trigger.txt").write_text(result, encoding="utf-8")

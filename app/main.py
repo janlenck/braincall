@@ -1,4 +1,5 @@
 """Claude Telefon: SIP phone on the FRITZ!Box plus an HTTP trigger for outbound calls."""
+import hmac
 import json
 import logging
 import re
@@ -62,6 +63,9 @@ speech = Speech(cfg)
 brain = Brain(cfg, ha)
 busy = threading.Lock()
 sip_failed: dict = {}
+OWNER = (cfg.owner_name or "").strip()
+OWNER_FIRST = OWNER.split()[0] if OWNER else ""
+MAX_BODY = 64 * 1024
 
 
 def detect_local_ip(target: str) -> str:
@@ -73,21 +77,29 @@ def detect_local_ip(target: str) -> str:
         s.close()
 
 
-def digits(n: str) -> str:
-    d = re.sub(r"\D", "", n or "")
-    return d[-9:]
+def norm(n: str) -> str:
+    """Complete number in a comparable form: digits plus * and # (internal numbers like **611),
+    international prefix of the own country folded to a leading 0 (+49151… == 0049151… == 0151…)."""
+    s = re.sub(r"[^\d*#+]", "", str(n or ""))
+    s = ("00" + s[1:] if s.startswith("+") else s).replace("+", "")
+    cc = "00" + re.sub(r"\D", "", str(cfg.country_code or ""))
+    if len(cc) > 2 and s.startswith(cc):
+        s = "0" + s[len(cc):]
+    return s
+
+
+def same_number(a: str, b: str) -> bool:
+    return bool(norm(a)) and norm(a) == norm(b)
 
 
 def trusted_name(number: str) -> str:
     """Name for a number listed in trusted_numbers, otherwise "".
-    trusted_numbers may be a list (name = Jan) or an object {"number": "name"}."""
+    trusted_numbers may be a list (name = owner_name) or an object {"number": "name"}."""
     tn = cfg.trusted_numbers or []
-    items = tn.items() if isinstance(tn, dict) else ((n, "Jan") for n in tn)
+    items = tn.items() if isinstance(tn, dict) else ((n, OWNER) for n in tn)
     for n, name in items:
-        if digits(n) and digits(n) == digits(number):
-            return str(name or "Jan")
-    if digits(number) and digits(number) == digits(cfg.default_number or ""):
-        return "Jan"
+        if same_number(n, number):
+            return str(name or OWNER or n)
     return ""
 
 
@@ -104,28 +116,41 @@ def report(answered: bool, number: str, started: float, session=None, message=""
 def lang_for(number: str) -> str:
     """Language for a number from caller_languages, otherwise the global setting."""
     for n, lang in (cfg.caller_languages or {}).items():
-        if digits(n) and digits(n) == digits(number):
+        if same_number(n, number):
             return lang
     return cfg.language or "de"
+
+
+def _ringing(call) -> bool:
+    return call.state in (CallState.DIALING, CallState.RINGING) and call.call_id not in sip_failed
+
+
+def _wait_ringing(call, seconds: float):
+    deadline = time.monotonic() + seconds
+    while _ringing(call) and time.monotonic() < deadline:
+        time.sleep(0.2)
 
 
 def outbound(number: str, message: str):
     started = time.time()
     session = None
     answered = False
+    call = None
     try:
         log.info("Calling %s (reason: %s)", number, message or "-")
         call = phone.call(number)
-        deadline = time.monotonic() + float(cfg.ring_timeout)
-        while (call.state in (CallState.DIALING, CallState.RINGING)
-               and time.monotonic() < deadline and call.call_id not in sip_failed):
-            time.sleep(0.2)
+        _wait_ringing(call, float(cfg.ring_timeout))
+        if _ringing(call):
+            log.info("Not answered after %ss, cancelling", cfg.ring_timeout)
+            fritz_sip.cancel(phone.sip, call.call_id)
+            _wait_ringing(call, 5)  # FRITZ!Box answers with 487 Request Terminated
+            if call.state == CallState.ANSWERED:  # picked up in the same moment
+                call.hangup()
+            elif _ringing(call):
+                log.warning("CANCEL not confirmed, the phone may keep ringing")
+            return
         if call.state != CallState.ANSWERED:
-            fail = sip_failed.pop(call.call_id, None)
-            if fail:
-                log.warning("Call rejected: SIP %s", fail)
-            else:
-                log.info("Not answered after %ss (%s)", cfg.ring_timeout, call.state.value)
+            log.warning("Call rejected: SIP %s", sip_failed.get(call.call_id, call.state.value))
             return
         answered = True
         session = CallSession(call, brain, speech, cfg)
@@ -133,9 +158,16 @@ def outbound(number: str, message: str):
         session.run(outbound=True, message=message, caller=number, language=lang_for(number),
                     trusted=bool(name), caller_name=name)
         log.info("Call ended")
+    except TimeoutError as e:
+        log.warning("Outbound call failed: %s", e)
     except Exception:  # noqa: BLE001
         log.exception("Outbound call failed")
     finally:
+        if call is not None:
+            sip_failed.pop(call.call_id, None)
+            phone.sip.pending_invites.pop(call.call_id, None)
+            if not answered:  # pyVoIP never drops unanswered calls -> their RTP port would stay taken
+                phone.calls.pop(call.call_id, None)
         report(answered, number, started, session, message)
         busy.release()
 
@@ -145,16 +177,22 @@ def on_incoming(call):
         number = call.request.headers["From"]["number"] or ""
     except Exception:  # noqa: BLE001
         number = ""
-    allowed = {digits(n) for n in cfg.inbound_allowed}
     accept_all = "*" in [str(n).strip() for n in cfg.inbound_allowed]
-    name = trusted_name(number) if number else ""
+    name = trusted_name(number)
     trusted = bool(name)
-    if not accept_all and (not allowed or digits(number) not in allowed):
-        log.info("Incoming call from %s rejected", number or "unknown")
+    reason = ""
+    if not norm(number):
+        reason = "withheld number"
+    elif not trusted and not accept_all and not any(same_number(n, number) for n in cfg.inbound_allowed):
+        reason = "not in inbound_allowed"
+    if reason:
+        log.warning("Incoming call from %s rejected (%s)", number or "unknown", reason)
         try:
             call.deny()
         except Exception:  # noqa: BLE001
             pass
+        ha.fire_event("claude_telefon_call", {"number": number or "unknown", "answered": False,
+                                              "reason": f"rejected: {reason}", "duration_s": 0, "transcript": ""})
         return
     if not busy.acquire(blocking=False):
         try:
@@ -172,7 +210,7 @@ def on_incoming(call):
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
-        report(True, number, started, session, "incoming" if trusted else "incoming (unknown caller)")
+        report(True, number, started, session, "incoming" if trusted else "incoming (untrusted caller)")
         if session and not trusted and session.transcript:
             notes = _LOGDIR / "call-notes.txt"
             with open(notes, "a", encoding="utf-8") as f:
@@ -194,7 +232,8 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         if not cfg.api_token:
             return True  # in that case the server only listens on 127.0.0.1
-        return self.headers.get("Authorization", "") == f"Bearer {cfg.api_token}"
+        return hmac.compare_digest(self.headers.get("Authorization", "").encode(),
+                                   f"Bearer {cfg.api_token}".encode())
 
     def do_GET(self):  # noqa: N802
         if self.path == "/health":
@@ -210,7 +249,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "unauthorized"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                return self._send(413, {"error": "body too large"})
             body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("not an object")
         except Exception:  # noqa: BLE001
             return self._send(400, {"error": "invalid json"})
         number = str(body.get("number") or cfg.default_number).strip()
@@ -234,6 +277,8 @@ def main():
         if not cfg[key]:
             log.error("Configuration incomplete: %s missing (config.json)", key)
             sys.exit(1)
+    if not OWNER:
+        log.warning("owner_name is not set (config.json) - the assistant will speak of \"the owner\"")
 
     local_ip = cfg.local_ip or detect_local_ip(cfg.sip_server)
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
@@ -254,8 +299,13 @@ def main():
                 method = cseq.get("method", "") if isinstance(cseq, dict) else ""
                 if method != "REGISTER" and code != 100:
                     log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
+                if method == "CANCEL":
+                    return  # pyVoIP would take the 200 OK for an answered call
                 if code >= 300 and code not in (401, 407) and method == "INVITE":
                     sip_failed[cid] = f"{code} {msg.status.phrase}"
+                    # pyVoIP only acknowledges 404/503 (and crashes on them while dialing): ACK every final error here
+                    phone.sip.out.sendto(phone.sip.gen_ack(msg).encode("utf8"), (phone.sip.server, phone.sip.port))
+                    return
         except Exception:  # noqa: BLE001
             pass
         return orig_parse(msg)
@@ -287,7 +337,8 @@ def main():
         elif not busy.acquire(blocking=False):
             log.warning("Line busy")
         else:
-            threading.Thread(target=outbound, args=(number, "Test call by key press. Briefly say hello to Jan."),
+            hello = f"Briefly say hello to {OWNER_FIRST}." if OWNER_FIRST else "Briefly say hello."
+            threading.Thread(target=outbound, args=(number, "Test call by key press. " + hello),
                              daemon=True).start()
 
     def open_log():

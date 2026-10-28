@@ -18,12 +18,14 @@
   "rtp_port_max": 30100,
 
   // --- Who calls / who gets called ---
-  "default_number": "0151xxxxxxx",
-  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = reject all, or a list of numbers
+  "default_number": "0151xxxxxxx",    // target of the test call, grants no rights
+  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = only trusted_numbers, or a list of numbers
+                                      // (withheld numbers are always rejected)
   "trusted_numbers": {                // only these numbers may query and control Home Assistant
     "0151xxxxxxx": "Jan Mobile",
     "**611": "Jan Internal"
   },
+  "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
   "caller_languages": {},             // language per number, e.g. { "0170xxxxxxx": "uk" }
   "ring_timeout": 90,
 
@@ -31,6 +33,7 @@
   "anthropic_api_key": "",            // or environment variable ANTHROPIC_API_KEY
   "claude_model": "claude-haiku-5-5",
   "assistant_name": "Claudine",
+  "owner_name": "Jan Lenck",          // whose assistant this is; the first name is used in conversations
   "language": "de",                   // "de", "uk", "en" or "auto"
   "extra_prompt": "",
 

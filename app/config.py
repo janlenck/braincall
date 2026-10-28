@@ -15,14 +15,16 @@ DEFAULTS = {
     "rtp_port_min": 30000,
     "rtp_port_max": 30100,
     # who to call / who may call
-    "default_number": "",
-    "inbound_allowed": [],     # empty = reject all, ["*"] = accept all
+    "default_number": "",      # target of the test call (key A, test-call.bat), grants no rights
+    "inbound_allowed": [],     # empty = only trusted_numbers, ["*"] = accept all (withheld numbers are always rejected)
     "trusted_numbers": {},     # {"number": "name"} – only these get access to Home Assistant
+    "country_code": "49",      # +49 / 0049 count as the same number as a leading 0
     "ring_timeout": 90,        # max seconds to wait for pickup (pyVoIP cannot cancel actively)
     # Claude
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",
     "assistant_name": "Claudine",
+    "owner_name": "",          # whose assistant this is, e.g. "Jan Lenck" (first name is used to address)
     "language": "de",          # "de", "uk", "en" or "auto" (answers in the caller's language)
     "caller_languages": {},    # language per number, e.g. {"0151xxxxxxx": "uk"}
     "extra_prompt": "",
@@ -51,7 +53,7 @@ DEFAULTS = {
     # control (only for trusted_numbers / outbound calls)
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                         "media_player", "cover", "button", "number", "select", "todo"],
-    "default_calendars": ["calendar.molln", "feiertag"],  # entity_ids or name parts; empty = all
+    "default_calendars": [],   # entity_ids or name parts; empty = all
     "calendar_write": True,    # allow creating appointments (trusted_numbers only, with confirmation)
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
 }

@@ -4,10 +4,7 @@ import wave
 
 import numpy as np
 
-try:
-    import audioop  # Python <= 3.12
-except ImportError:  # Python 3.13+: audioop-lts
-    import audioop  # type: ignore  # noqa: F811
+import audioop  # standard library up to Python 3.12, from the audioop-lts package on 3.13+
 
 RATE = 8000
 FRAME = 160  # 20 ms at 8 kHz
