@@ -2,7 +2,9 @@
 import hmac
 import json
 import logging
+import os
 import re
+import signal
 import socket
 import sys
 import threading
@@ -68,6 +70,7 @@ answer_lock = threading.Lock()  # a 200 OK is handled either before a call is gi
 OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
+UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (claude_telefon/config.yaml)
 
 
 def detect_local_ip(target: str) -> str:
@@ -330,6 +333,19 @@ def main():
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
     log.info("Local IP %s, SIP %s@%s:%s, local SIP port %s",
              local_ip, cfg.sip_user, cfg.sip_server, cfg.sip_port, cfg.sip_local_port)
+    server = None
+    stopping = threading.Event()
+
+    def on_sigterm(signum, frame):  # Home Assistant stops the add-on with SIGTERM
+        log.info("Stop requested")
+        stopping.set()
+        if server is not None:
+            threading.Thread(target=server.shutdown, daemon=True).start()
+        else:
+            raise KeyboardInterrupt  # pyVoIP swallows it while registering; `stopping` covers that case
+
+    # before registering: a stop during startup must unregister from the FRITZ!Box as well
+    signal.signal(signal.SIGTERM, on_sigterm)
     phone = VoIPPhone(cfg.sip_server, int(cfg.sip_port), cfg.sip_user, cfg.sip_password,
                       myIP=local_ip, callCallback=on_incoming, sipPort=int(cfg.sip_local_port),
                       rtpPortLow=int(cfg.rtp_port_min), rtpPortHigh=int(cfg.rtp_port_max))
@@ -337,17 +353,6 @@ def main():
     _orig_parse = phone.sip.parse_message
     phone.sip.parse_message = logged_parse
     fritz_sip.apply(phone)
-    phone.start()
-    for _ in range(50):
-        if phone.get_status() == PhoneStatus.REGISTERED:
-            break
-        time.sleep(0.2)
-    log.info("SIP status: %s", phone.get_status().value)
-    log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
-
-    bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
-    server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)
-    log.info("HTTP trigger on http://%s:%s/call", bind, cfg.http_port)
 
     def quit_():
         log.info("Quit by key press")
@@ -367,26 +372,42 @@ def main():
                              daemon=True).start()
 
     def open_log():
-        import os
         try:
             os.startfile(str(_LOGDIR / "claude-telefon.log"))  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             log.warning("Opening the log failed: %s", e)
 
-    console.start_keys(quit_, test_call, open_log)
     try:
+        phone.start()
+        for _ in range(50):
+            if phone.get_status() == PhoneStatus.REGISTERED or stopping.is_set():
+                break
+            time.sleep(0.2)
+        if stopping.is_set():
+            return
+        log.info("SIP status: %s", phone.get_status().value)
+        log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
+
+        bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
+        server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)
+        log.info("HTTP trigger on http://%s:%s/call", bind, cfg.http_port)
+        console.start_keys(quit_, test_call, open_log)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         log.info("Shutting down …")
-        server.server_close()
-        try:
-            phone.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        if server is not None:
+            server.server_close()
+        # pyVoIP waits up to 30 s per step for the FRITZ!Box to confirm; do not let that block the shutdown
+        stopper = threading.Thread(target=phone.stop, daemon=True)
+        stopper.start()
+        stopper.join(UNREGISTER_TIMEOUT)
+        if stopper.is_alive():
+            log.warning("FRITZ!Box did not confirm the unregistration within %ss. Bye.", UNREGISTER_TIMEOUT)
+            logging.shutdown()
+            os._exit(0)  # pyVoIP's own threads would otherwise keep the process alive
         log.info("Unregistered. Bye.")
-
 
 phone: VoIPPhone
 

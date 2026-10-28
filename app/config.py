@@ -4,6 +4,7 @@ import json
 import re
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DEFAULTS = {
     # SIP / FRITZ!Box
@@ -93,6 +94,14 @@ def _strip_jsonc(text: str) -> str:
     return re.sub(r",(\s*[\]}])", r"\1", "".join(out))
 
 
+def _valid_timezone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+        return bool(name)
+    except Exception:  # noqa: BLE001  (also POSIX strings like "CET-1CEST" and empty names)
+        return False
+
+
 class Config(dict):
     __getattr__ = dict.get
 
@@ -141,6 +150,11 @@ def load() -> Config:
     CONFIG_FILE[0] = str(path)
     cfg = Config(DEFAULTS)
     cfg.update({k: v for k, v in data.items() if v is not None and not k.startswith("_")})
+    # Home Assistant add-on options have no free-form objects: [{"number": …, "name"/"language": …}] -> {number: …}
+    for key, field in (("trusted_numbers", "name"), ("caller_languages", "language")):
+        items = cfg.get(key)
+        if isinstance(items, list) and items and all(isinstance(x, dict) for x in items):
+            cfg[key] = {str(x["number"]): x.get(field, "") for x in items if x.get("number")}
     for key, env in (("anthropic_api_key", "ANTHROPIC_API_KEY"),
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
@@ -149,5 +163,8 @@ def load() -> Config:
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
+    # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ
+    if not data.get("timezone") and _valid_timezone(os.environ.get("TZ", "")):
+        cfg["timezone"] = os.environ["TZ"]
     cfg["log_dir"] = str(Path(os.path.expandvars(cfg.log_dir)).expanduser()) if cfg.log_dir else str(ROOT / "logs")
     return cfg

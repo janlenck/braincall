@@ -1,0 +1,109 @@
+configuration:
+  sip_server:
+    name: FRITZ!Box address
+    description: IP address of the FRITZ!Box.
+  sip_port:
+    name: FRITZ!Box SIP port
+    description: Usually 5060.
+  sip_user:
+    name: IP phone user name
+    description: User name of the IP phone in the FRITZ!Box (Telephony → Telephony Devices).
+  sip_password:
+    name: IP phone password
+    description: Password of the IP phone in the FRITZ!Box.
+  local_ip:
+    name: Own IP address
+    description: Empty = detect automatically.
+  sip_local_port:
+    name: Local SIP port
+    description: UDP port of the agent, must be free on the Home Assistant host.
+  rtp_port_min:
+    name: RTP ports from
+    description: Start of the UDP range for audio.
+  rtp_port_max:
+    name: RTP ports to
+    description: End of the UDP range for audio.
+  default_number:
+    name: Test call number
+    description: Target of a call without number; grants no rights.
+  inbound_allowed:
+    name: Allowed callers
+    description: '* = everyone, empty = trusted numbers only, otherwise a list of numbers. Withheld numbers are always rejected.'
+  trusted_numbers:
+    name: Trusted numbers
+    description: 'Only these numbers may query and control Home Assistant. Name: the first word is used to address the person.'
+  country_code:
+    name: Country code
+    description: +49 / 0049 count as the same number as a leading 0.
+  caller_languages:
+    name: Language per number
+    description: Fixed language for single callers.
+  ring_timeout:
+    name: Ring time (s)
+    description: After this an unanswered call is cancelled.
+  anthropic_api_key:
+    name: Anthropic API key
+    description: For Claude.
+  claude_model:
+    name: Claude model
+  assistant_name:
+    name: Assistant name
+    description: Name the assistant introduces itself with.
+  owner_name:
+    name: Owner
+    description: Whose assistant this is. The first name is used in conversations.
+  language:
+    name: Language
+    description: auto = answers in the language spoken last.
+  extra_prompt:
+    name: Extra instructions
+    description: Appended to the system prompt.
+  openai_api_key:
+    name: OpenAI API key
+    description: For speech recognition and voice.
+  stt_model:
+    name: Speech recognition model
+  tts_model:
+    name: Speech output model
+  tts_voice:
+    name: Voice
+    description: e.g. alloy, ash, coral, echo, nova, onyx, sage, shimmer.
+  tts_instructions:
+    name: Speaking style
+    description: Instruction for the voice.
+  vad_min_energy:
+    name: Minimum loudness
+    description: Loudness from which sound counts as speech.
+  end_silence_ms:
+    name: Pause until end of utterance (ms)
+    description: Silence after which an utterance counts as finished.
+  silence_timeout:
+    name: Silence until asking (s)
+    description: Twice in a row = hang up.
+  barge_in:
+    name: Allow interrupting
+    description: Caller may interrupt the assistant.
+  barge_in_min_ms:
+    name: Minimum time to interrupt (ms)
+    description: How long the caller must speak to interrupt.
+  http_port:
+    name: Call trigger port
+    description: HTTP port for outbound calls (/call).
+  api_token:
+    name: Call trigger token
+    description: 'Empty = only reachable from this host (enough for Home Assistant). Set = reachable in the network with "Authorization: Bearer <token>".'
+  default_calendars:
+    name: Default calendars
+    description: entity_ids or name parts; empty = all calendars.
+  calendar_write:
+    name: Create appointments
+    description: Trusted callers may create appointments (after confirmation).
+  control_domains:
+    name: Controllable domains
+    description: Domains that may be controlled; empty = control nothing.
+  confirm_domains:
+    name: Ask first
+    description: The assistant asks explicitly before controlling these domains.
+  log_dir:
+    name: Log folder
+    description: Logs and call notes.

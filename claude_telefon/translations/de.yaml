@@ -1,0 +1,109 @@
+configuration:
+  sip_server:
+    name: FRITZ!Box-Adresse
+    description: IP-Adresse der FRITZ!Box.
+  sip_port:
+    name: SIP-Port der FRITZ!Box
+    description: Normalerweise 5060.
+  sip_user:
+    name: Benutzername IP-Telefon
+    description: Benutzername des IP-Telefons aus der FRITZ!Box (Telefonie → Telefoniegeräte).
+  sip_password:
+    name: Passwort IP-Telefon
+    description: Passwort des IP-Telefons aus der FRITZ!Box.
+  local_ip:
+    name: Eigene IP-Adresse
+    description: Leer = automatisch erkennen.
+  sip_local_port:
+    name: Lokaler SIP-Port
+    description: UDP-Port des Agenten, darf auf dem HA-Rechner nicht belegt sein.
+  rtp_port_min:
+    name: RTP-Ports von
+    description: Beginn des UDP-Bereichs für Audio.
+  rtp_port_max:
+    name: RTP-Ports bis
+    description: Ende des UDP-Bereichs für Audio.
+  default_number:
+    name: Nummer für Testanruf
+    description: Ziel eines Anrufs ohne Nummer; gibt keine Rechte.
+  inbound_allowed:
+    name: Erlaubte Anrufer
+    description: '* = alle, leer = nur vertraute Nummern, sonst Liste von Nummern. Unterdrückte Nummern werden immer abgewiesen.'
+  trusted_numbers:
+    name: Vertraute Nummern
+    description: 'Nur diese Nummern dürfen Home Assistant abfragen und steuern. Name: das erste Wort dient als Anrede.'
+  country_code:
+    name: Ländervorwahl
+    description: +49 / 0049 gelten als dieselbe Nummer wie eine führende 0.
+  caller_languages:
+    name: Sprache je Nummer
+    description: Feste Sprache für einzelne Anrufer.
+  ring_timeout:
+    name: Klingeldauer (s)
+    description: Danach wird ein unbeantworteter Anruf abgebrochen.
+  anthropic_api_key:
+    name: Anthropic-API-Key
+    description: Für Claude.
+  claude_model:
+    name: Claude-Modell
+  assistant_name:
+    name: Name des Assistenten
+    description: Damit stellt er sich vor.
+  owner_name:
+    name: Besitzer
+    description: Wessen Assistent das ist, z. B. „Jan Lenck“. Der Vorname wird im Gespräch verwendet.
+  language:
+    name: Sprache
+    description: auto = antwortet in der zuletzt gesprochenen Sprache.
+  extra_prompt:
+    name: Zusätzliche Anweisungen
+    description: Wird an den Systemprompt angehängt.
+  openai_api_key:
+    name: OpenAI-API-Key
+    description: Für Spracherkennung und Stimme.
+  stt_model:
+    name: Spracherkennungs-Modell
+  tts_model:
+    name: Sprachausgabe-Modell
+  tts_voice:
+    name: Stimme
+    description: z. B. alloy, ash, coral, echo, nova, onyx, sage, shimmer.
+  tts_instructions:
+    name: Sprechweise
+    description: Anweisung für die Stimme.
+  vad_min_energy:
+    name: Mindestlautstärke
+    description: Ab dieser Lautstärke zählt etwas als Sprache.
+  end_silence_ms:
+    name: Pause bis Satzende (ms)
+    description: Stille, nach der eine Äußerung als beendet gilt.
+  silence_timeout:
+    name: Stille bis Nachfrage (s)
+    description: Zweimal hintereinander = auflegen.
+  barge_in:
+    name: Unterbrechen erlaubt
+    description: Anrufer darf dem Assistenten ins Wort fallen.
+  barge_in_min_ms:
+    name: Mindestdauer zum Unterbrechen (ms)
+    description: So lange muss der Anrufer sprechen, um zu unterbrechen.
+  http_port:
+    name: Port des Anruf-Triggers
+    description: HTTP-Port für ausgehende Anrufe (/call).
+  api_token:
+    name: Token des Anruf-Triggers
+    description: 'Leer = nur von diesem Rechner erreichbar (reicht für Home Assistant). Gesetzt = im Netz erreichbar mit „Authorization: Bearer <Token>“.'
+  default_calendars:
+    name: Standard-Kalender
+    description: entity_ids oder Namensteile; leer = alle Kalender.
+  calendar_write:
+    name: Termine anlegen
+    description: Vertraute Anrufer dürfen Termine eintragen (nach Bestätigung).
+  control_domains:
+    name: Steuerbare Bereiche
+    description: Domains, die gesteuert werden dürfen; leer = nichts steuern.
+  confirm_domains:
+    name: Mit Rückfrage
+    description: Vor dem Steuern dieser Domains fragt der Assistent ausdrücklich nach.
+  log_dir:
+    name: Log-Ordner
+    description: Logs und Gesprächsnotizen.

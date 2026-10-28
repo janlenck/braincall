@@ -1,0 +1,118 @@
+name: Claude Telefon
+version: "1.0.0"
+slug: claude_telefon
+description: Voice agent on the FRITZ!Box that can read and control Home Assistant
+url: https://github.com/janlenck/claude-telefon
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+# time to shut down cleanly (hang up, unregister from the FRITZ!Box) before being killed
+timeout: 20
+# SIP and RTP use UDP on changing ports: no Docker NAT, the add-on uses the host network
+host_network: true
+homeassistant_api: true
+map:
+  - type: share
+    read_only: false
+options:
+  sip_server: 192.168.178.1
+  sip_port: 5060
+  sip_user: ""
+  sip_password: ""
+  sip_local_port: 5062
+  rtp_port_min: 30000
+  rtp_port_max: 30100
+  default_number: ""
+  inbound_allowed:
+    - "*"
+  trusted_numbers: []
+  country_code: "49"
+  caller_languages: []
+  ring_timeout: 90
+  anthropic_api_key: ""
+  claude_model: claude-haiku-5-5
+  assistant_name: Claudine
+  owner_name: ""
+  language: de
+  extra_prompt: ""
+  openai_api_key: ""
+  stt_model: gpt-4o-transcribe
+  tts_model: gpt-4o-mini-tts
+  tts_voice: nova
+  tts_instructions: Speak natural German, cheerful and lively, brisk pace like on the phone.
+  vad_min_energy: 500
+  end_silence_ms: 700
+  silence_timeout: 12
+  barge_in: true
+  barge_in_min_ms: 1000
+  http_port: 8099
+  api_token: ""
+  default_calendars: []
+  calendar_write: true
+  control_domains:
+    - light
+    - switch
+    - fan
+    - input_boolean
+    - scene
+    - script
+    - climate
+    - media_player
+    - cover
+    - button
+    - number
+    - select
+    - todo
+  confirm_domains:
+    - cover
+    - lock
+    - alarm_control_panel
+  log_dir: /share/claude-telefon
+schema:
+  sip_server: str
+  sip_port: port
+  sip_user: str
+  sip_password: password
+  local_ip: str?
+  sip_local_port: port
+  rtp_port_min: port
+  rtp_port_max: port
+  default_number: str
+  inbound_allowed:
+    - str
+  trusted_numbers:
+    - number: str
+      name: str
+  country_code: str
+  caller_languages:
+    - number: str
+      language: list(de|uk|en|auto)
+  ring_timeout: int(10,600)
+  anthropic_api_key: password
+  claude_model: str
+  assistant_name: str
+  owner_name: str
+  language: list(de|uk|en|auto)
+  extra_prompt: str
+  openai_api_key: password
+  stt_model: str
+  tts_model: str
+  tts_voice: str
+  tts_instructions: str
+  vad_min_energy: int
+  end_silence_ms: int
+  silence_timeout: int
+  barge_in: bool
+  barge_in_min_ms: int
+  http_port: port
+  api_token: password
+  default_calendars:
+    - str
+  calendar_write: bool
+  control_domains:
+    - str
+  confirm_domains:
+    - str
+  log_dir: str
