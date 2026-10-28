@@ -1,5 +1,7 @@
 # Claude Telefon
 
+<img src="claude_telefon/logo.png" alt="Claude Telefon" width="300">
+
 A phone voice agent: Claude calls you through a FRITZ!Box and talks with you, and you can call it.
 It can read and control Home Assistant (states, lights, lists, calendars) during the call.
 

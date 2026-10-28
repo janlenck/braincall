@@ -2,6 +2,7 @@
 import hmac
 import json
 import logging
+import logging.handlers
 import os
 import re
 import signal
@@ -43,7 +44,9 @@ _LOGDIR = Path(cfg.log_dir)
 _LOGDIR.mkdir(parents=True, exist_ok=True)
 _con = logging.StreamHandler(sys.stdout)
 _con.setFormatter(console.ColorFormatter())
-_file = logging.FileHandler(_LOGDIR / "claude-telefon.log", encoding="utf-8")
+# rotates at 2 MB and keeps 5 old files (claude-telefon.log.1 … .5): at most about 12 MB
+_file = logging.handlers.RotatingFileHandler(_LOGDIR / "claude-telefon.log", maxBytes=2_000_000,
+                                             backupCount=5, encoding="utf-8")
 _file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[_con, _file])
 log = logging.getLogger("main")

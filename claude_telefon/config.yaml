@@ -1,5 +1,5 @@
 name: Claude Telefon
-version: "1.0.0"
+version: "1.0.1"
 slug: claude_telefon
 description: Voice agent on the FRITZ!Box that can read and control Home Assistant
 url: https://github.com/janlenck/claude-telefon
