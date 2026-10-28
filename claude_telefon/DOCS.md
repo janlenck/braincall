@@ -24,8 +24,9 @@ and no API costs arise. A switch for dashboards and automations:
 
 1. Settings → Devices & services → *Supervisor* → device *Claude Telefon*: enable the entity **Running**
    (disabled by default), e.g. `binary_sensor.claude_telefon_running`.
-2. Look up the add-on slug: it is in the browser address on the add-on page,
-   e.g. `/hassio/addon/a1b2c3d4_claude_telefon` → `a1b2c3d4_claude_telefon`.
+2. The add-on slug is in the browser address of the add-on page (Settings → Apps → Claude Telefon):
+   `/config/app/500aeaec_claude_telefon/info` → `500aeaec_claude_telefon`. The prefix is derived from
+   the repository URL; it is `500aeaec` when the repository was added as `https://github.com/janlenck/claude-telefon`.
 3. Add to `configuration.yaml` (or create the same as a *Template → Switch* helper in the UI) and restart:
 
 ```yaml
@@ -35,13 +36,13 @@ template:
         unique_id: claude_telefon_switch
         state: "{{ is_state('binary_sensor.claude_telefon_running', 'on') }}"
         turn_on:
-          - action: hassio.addon_start
+          - action: hassio.app_start
             data:
-              addon: a1b2c3d4_claude_telefon
+              app: 500aeaec_claude_telefon
         turn_off:
-          - action: hassio.addon_stop
+          - action: hassio.app_stop
             data:
-              addon: a1b2c3d4_claude_telefon
+              app: 500aeaec_claude_telefon
 ```
 
 Switching on takes a few seconds until the agent is registered at the FRITZ!Box again.
