@@ -104,7 +104,7 @@ TOOL_CONTROL = {
 TOOL_EVENTS = {
     "name": "ha_events",
     "description": "Reads appointments from Home Assistant calendars (calendar.*). Without 'calendars' the default "
-                   "calendars are used. 'calendars' are entity_ids or name parts, e.g. ['molln', 'feiertage']. "
+                   "calendars are used. 'calendars' are entity_ids or name parts, e.g. ['family', 'holidays']. "
                    "'days' = period starting today (default 7), 'start' = optional start date YYYY-MM-DD.",
     "input_schema": {
         "type": "object",
@@ -127,7 +127,7 @@ TOOL_CREATE_EVENT = {
             "title": {"type": "string"},
             "start": {"type": "string"},
             "end": {"type": "string"},
-            "calendar": {"type": "string", "description": "entity_id or name part, e.g. 'molln'"},
+            "calendar": {"type": "string", "description": "entity_id or name part, e.g. 'family'"},
             "location": {"type": "string"},
             "description": {"type": "string"},
             "confirmed": {"type": "boolean"},

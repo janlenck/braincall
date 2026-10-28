@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 import secrets
+import threading
 import time
 
 import pyVoIP
@@ -20,6 +21,7 @@ from pyVoIP import SIP
 log = logging.getLogger("sip")
 
 INVITE_TIMEOUT = 10  # seconds to wait for the first answer to an INVITE
+BYE_RETRIES = (0.5, 1, 2, 4)  # seconds after each BYE before sending it again (UDP)
 
 
 def _md5(s: str) -> str:
@@ -159,10 +161,40 @@ def cancel(sip, call_id: str) -> bool:
 
 
 def end_late_answer(sip, resp):
-    """200 OK for a call we already gave up (answered after CANCEL): acknowledge it and hang up right away."""
+    """200 OK for a call we already gave up (answered after CANCEL): acknowledge it and hang up right away.
+    The BYE is repeated in the background until any final response to it arrives (bye_confirmed)."""
+    call_id = resp.headers["Call-ID"]
     sip.out.sendto(sip.gen_ack(resp).encode("utf8"), (sip.server, sip.port))
-    sip.out.sendto(sip.gen_bye(resp).encode("utf8"), (sip.server, sip.port))
-    log.warning("Call answered after it was cancelled - hung up")
+    if call_id in sip.late_answered:
+        return  # retransmitted 200 OK: acknowledged again, the BYE is under way or done
+    sip.late_answered.add(call_id)
+    # own transaction: new Via branch (gen_bye copies the one of the INVITE), identical in every retransmission
+    bye = re.sub(r"branch=[^;\r\n]+", "branch=z9hG4bK" + secrets.token_hex(12), sip.gen_bye(resp), count=1)
+    sip.pending_byes.add(call_id)
+    log.warning("Call answered after it was cancelled - hanging up")
+
+    def send():
+        for wait in BYE_RETRIES:
+            if call_id not in sip.pending_byes:
+                return
+            try:
+                sip.out.sendto(bye.encode("utf8"), (sip.server, sip.port))
+            except OSError as e:  # e.g. network briefly gone: keep trying
+                log.warning("Sending BYE failed: %s", e)
+            time.sleep(wait)
+        if call_id in sip.pending_byes:
+            sip.pending_byes.discard(call_id)
+            log.warning("BYE not confirmed, the late answered call may still be connected")
+
+    threading.Thread(target=send, daemon=True).start()
+
+
+def bye_confirmed(sip, call_id: str) -> bool:
+    """Final response to a BYE: stops its retransmission. True if it was one of ours from end_late_answer."""
+    if call_id not in sip.pending_byes:
+        return False
+    sip.pending_byes.discard(call_id)
+    return True
 
 
 def patched_gen_ack(self, resp):
@@ -191,5 +223,7 @@ def patched_gen_ack(self, resp):
 def apply(phone):
     import types
     phone.sip.pending_invites = {}  # call_id -> (uri, branch, cseq, tag) of the last INVITE, for CANCEL
+    phone.sip.pending_byes = set()  # call_ids of late answered calls whose BYE is still being retransmitted
+    phone.sip.late_answered = set()  # call_ids already ended by end_late_answer (a repeated 200 OK only gets an ACK)
     phone.sip.invite = types.MethodType(patched_invite, phone.sip)
     phone.sip.gen_ack = types.MethodType(patched_gen_ack, phone.sip)

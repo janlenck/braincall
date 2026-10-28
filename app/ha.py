@@ -58,7 +58,7 @@ def _wd(d) -> str:
 
 
 def fold(t: str) -> str:
-    """Fold umlauts the way entity IDs do: Mölln -> molln."""
+    """Fold umlauts the way entity IDs do: Büro -> buro."""
     return t.lower().replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
 
 
