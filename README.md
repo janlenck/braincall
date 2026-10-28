@@ -38,8 +38,10 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 2. **Configuration:** copy `config.example.json` to `config.json` and fill it in, or keep the real
    config somewhere backed up and let `config.json` only point to it:
    ```json
-   { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
+   { "path": "C:\\Users\\Name\\OneDrive\\claude-telefon\\config.json" }
    ```
+   Backslashes doubled as in normal JSON; single backslashes are accepted too. Environment variables
+   work as well, e.g. `"%OneDrive%\\claude-telefon\\config.json"`. Details: top of `config.example.json`.
 3. **Firewall** (PowerShell as administrator): `powershell -ExecutionPolicy Bypass -File firewall.ps1`
 4. **Start:** `start.bat`. The first start creates the virtual environment in
    `%LOCALAPPDATA%\claude-telefon\venv`; missing packages are installed automatically
