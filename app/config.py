@@ -104,8 +104,13 @@ def _read(path: Path) -> dict:
     m = re.fullmatch(r'\s*\{\s*"path"\s*:\s*"([^"]+)"\s*,?\s*\}\s*', _strip_jsonc(text))
     if m:
         raw = m.group(1)
-        # Only decode as JSON if every backslash is doubled; otherwise "C:\temp\new" would turn into tab/newline
-        return {"path": raw.replace("\\\\", "\\") if re.fullmatch(r'(?:[^\\]|\\\\)*', raw) else raw}
+        # Only decode as JSON if every backslash is doubled; otherwise "C:\temp\new" would turn into tab/newline.
+        # A result starting with a single backslash (rooted on the current drive) was a literal UNC path
+        # like \\nas/share/config.json, so it stays as written.
+        path = raw.replace("\\\\", "\\") if re.fullmatch(r'(?:[^\\]|\\\\)*', raw) else raw
+        if path.startswith("\\") and not path.startswith("\\\\"):
+            path = raw
+        return {"path": path}
     try:
         return json.loads(_strip_jsonc(text))
     except json.JSONDecodeError as e:
