@@ -1,6 +1,10 @@
 {
   // Kopieren nach config.json und ausfüllen. config.json wird nicht eingecheckt (.gitignore).
   // Kommentare (//, /* */) und ein Komma vor ] oder } sind erlaubt.
+  //
+  // Tipp: Die echte Konfiguration kann auch woanders liegen (z. B. OneDrive, wird gesichert).
+  // Dann enthält config.json im Projektordner nur einen Verweis (Backslashes einfach lassen):
+  //   { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
 
   // --- FRITZ!Box / SIP (IP-Telefon in der FRITZ!Box anlegen) ---
   "sip_server": "192.168.178.1",
@@ -42,6 +46,9 @@
   "silence_timeout": 12,
   "barge_in": true,
   "barge_in_min_ms": 1000,
+
+  // --- Logs und Anrufnotizen (leer = logs\ im Projektordner) ---
+  "log_dir": "",
 
   // --- HTTP-Trigger für ausgehende Anrufe ---
   "http_port": 8099,

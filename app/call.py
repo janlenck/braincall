@@ -25,6 +25,6 @@ except urllib.error.HTTPError as e:
 except Exception as e:  # noqa: BLE001
     result = f"FEHLER {e!r}"
 print(result)
-logdir = Path(__file__).resolve().parent.parent / "logs"
-logdir.mkdir(exist_ok=True)
+logdir = Path(cfg.log_dir)
+logdir.mkdir(parents=True, exist_ok=True)
 (logdir / "letzter-trigger.txt").write_text(result, encoding="utf-8")

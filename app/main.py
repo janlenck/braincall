@@ -35,8 +35,9 @@ from ha import HA  # noqa: E402
 from session import CallSession  # noqa: E402
 from speech import Speech  # noqa: E402
 
-_LOGDIR = Path(__file__).resolve().parent.parent / "logs"
-_LOGDIR.mkdir(exist_ok=True)
+cfg = config.load()
+_LOGDIR = Path(cfg.log_dir)
+_LOGDIR.mkdir(parents=True, exist_ok=True)
 _con = logging.StreamHandler(sys.stdout)
 _con.setFormatter(console.ColorFormatter())
 _file = logging.FileHandler(_LOGDIR / "claude-telefon.log", encoding="utf-8")
@@ -55,7 +56,6 @@ def _excepthook(exc_type, exc, tb):
 sys.excepthook = _excepthook
 threading.excepthook = lambda a: _excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
-cfg = config.load()
 console.ASSISTANT = cfg.assistant_name or "Claude"
 ha = HA(cfg)
 speech = Speech(cfg)
@@ -236,6 +236,7 @@ def main():
             sys.exit(1)
 
     local_ip = cfg.local_ip or detect_local_ip(cfg.sip_server)
+    log.info("Konfiguration: %s | Logs: %s", config.CONFIG_FILE[0], _LOGDIR)
     log.info("Lokale IP %s, SIP %s@%s:%s, lokaler SIP-Port %s",
              local_ip, cfg.sip_user, cfg.sip_server, cfg.sip_port, cfg.sip_local_port)
     phone = VoIPPhone(cfg.sip_server, int(cfg.sip_port), cfg.sip_user, cfg.sip_password,
