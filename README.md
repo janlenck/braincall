@@ -97,3 +97,7 @@ After each call the agent fires the HA event `claude_telefon_call`
 - An unanswered outbound call is cancelled after `ring_timeout` seconds.
 - The machine must be on, awake and in the home network.
 - Costs are billed to your Anthropic and OpenAI API accounts.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
