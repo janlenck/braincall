@@ -29,6 +29,19 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
+| `claude_telefon/` | Home Assistant add-on: options form, Dockerfile, documentation |
+| `repository.yaml` | makes this repository an add-on repository for Home Assistant |
+
+## Home Assistant add-on
+
+On Home Assistant OS the agent runs as an add-on, with an on/off switch in Home Assistant:
+
+1. Settings → Add-ons → Add-on Store → ⋮ → Repositories → add `https://github.com/janlenck/claude-telefon`
+2. Install *Claude Telefon*, fill in the Configuration tab, start it.
+
+Details, the on/off switch and calls from Home Assistant: [claude_telefon/DOCS.md](claude_telefon/DOCS.md).
+The add-on lives in `claude_telefon/` and builds `app/` from the release tag of its version; the Windows
+setup below stays as it is.
 
 ## Setup (Windows)
 

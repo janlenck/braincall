@@ -1,0 +1,29 @@
+name: Release tag
+
+# The add-on image is built from the tag v<version> (claude_telefon/Dockerfile).
+# A new version in claude_telefon/config.yaml on main creates that tag.
+on:
+  push:
+    branches: [main]
+    paths: [claude_telefon/config.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create tag for the add-on version
+        run: |
+          version=$(sed -nE 's/^version: *"?([^"]+)"?$/\1/p' claude_telefon/config.yaml)
+          if [ -z "$version" ]; then echo "::error::no version in claude_telefon/config.yaml"; exit 1; fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "Tag v$version already exists"
+          else
+            git tag "v$version"
+            git push origin "v$version"
+            echo "Created tag v$version"
+          fi

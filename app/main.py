@@ -2,7 +2,9 @@
 import hmac
 import json
 import logging
+import os
 import re
+import signal
 import socket
 import sys
 import threading
@@ -68,6 +70,7 @@ answer_lock = threading.Lock()  # a 200 OK is handled either before a call is gi
 OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
+UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (claude_telefon/config.yaml)
 
 
 def detect_local_ip(target: str) -> str:
@@ -367,12 +370,16 @@ def main():
                              daemon=True).start()
 
     def open_log():
-        import os
         try:
             os.startfile(str(_LOGDIR / "claude-telefon.log"))  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             log.warning("Opening the log failed: %s", e)
 
+    def on_sigterm(signum, frame):  # Home Assistant stops the add-on with SIGTERM
+        log.info("Stop requested")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_sigterm)  # shut down cleanly: unregister from the FRITZ!Box
     console.start_keys(quit_, test_call, open_log)
     try:
         server.serve_forever()
@@ -381,10 +388,14 @@ def main():
     finally:
         log.info("Shutting down …")
         server.server_close()
-        try:
-            phone.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        # pyVoIP waits up to 30 s per step for the FRITZ!Box to confirm; do not let that block the shutdown
+        stopper = threading.Thread(target=phone.stop, daemon=True)
+        stopper.start()
+        stopper.join(UNREGISTER_TIMEOUT)
+        if stopper.is_alive():
+            log.warning("FRITZ!Box did not confirm the unregistration within %ss. Bye.", UNREGISTER_TIMEOUT)
+            logging.shutdown()
+            os._exit(0)  # pyVoIP's own threads would otherwise keep the process alive
         log.info("Unregistered. Bye.")
 
 

@@ -141,6 +141,11 @@ def load() -> Config:
     CONFIG_FILE[0] = str(path)
     cfg = Config(DEFAULTS)
     cfg.update({k: v for k, v in data.items() if v is not None and not k.startswith("_")})
+    # Home Assistant add-on options have no free-form objects: [{"number": …, "name"/"language": …}] -> {number: …}
+    for key, field in (("trusted_numbers", "name"), ("caller_languages", "language")):
+        items = cfg.get(key)
+        if isinstance(items, list) and items and all(isinstance(x, dict) for x in items):
+            cfg[key] = {str(x["number"]): x.get(field, "") for x in items if x.get("number")}
     for key, env in (("anthropic_api_key", "ANTHROPIC_API_KEY"),
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
