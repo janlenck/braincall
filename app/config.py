@@ -19,7 +19,7 @@ DEFAULTS = {
     "inbound_allowed": [],     # empty = only trusted_numbers, ["*"] = accept all (withheld numbers are always rejected)
     "trusted_numbers": {},     # {"number": "name"} – only these get access to Home Assistant
     "country_code": "49",      # +49 / 0049 count as the same number as a leading 0
-    "ring_timeout": 90,        # max seconds to wait for pickup (pyVoIP cannot cancel actively)
+    "ring_timeout": 90,        # seconds to ring before an unanswered outbound call is cancelled
     # Claude
     "anthropic_api_key": "",
     "claude_model": "claude-haiku-5-5",
