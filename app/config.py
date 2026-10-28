@@ -100,10 +100,12 @@ class Config(dict):
 def _read(path: Path) -> dict:
     with open(path, encoding="utf-8-sig") as f:
         text = f.read()
-    # Pointer file {"path": "C:\dir\config.json"}: take the path literally, backslashes need not be doubled
+    # Pointer file {"path": "C:\\dir\\config.json"} (valid JSON) or {"path": "C:\dir\config.json"} (taken literally)
     m = re.fullmatch(r'\s*\{\s*"path"\s*:\s*"([^"]+)"\s*,?\s*\}\s*', _strip_jsonc(text))
     if m:
-        return {"path": m.group(1)}
+        raw = m.group(1)
+        # Only decode as JSON if every backslash is doubled; otherwise "C:\temp\new" would turn into tab/newline
+        return {"path": raw.replace("\\\\", "\\") if re.fullmatch(r'(?:[^\\]|\\\\)*', raw) else raw}
     try:
         return json.loads(_strip_jsonc(text))
     except json.JSONDecodeError as e:

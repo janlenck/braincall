@@ -17,10 +17,10 @@
   //     1. Copy this file to e.g.  C:\Users\Name\OneDrive\claude-telefon\config.json
   //        and fill it in there. That is the real configuration.
   //     2. config.json in the project folder then contains ONLY the pointer, nothing else:
-  //          { "path": "C:\Users\Name\OneDrive\claude-telefon\config.json" }
-  //        - Backslashes may be single or doubled ("C:\\Users\\…"), both work.
+  //          { "path": "C:\\Users\\Name\\OneDrive\\claude-telefon\\config.json" }
+  //        - Backslashes doubled as in normal JSON. Single backslashes ("C:\Users\…") are accepted too.
   //        - Environment variables and ~ are expanded, e.g.
-  //            { "path": "%OneDrive%\claude-telefon\config.json" }
+  //            { "path": "%OneDrive%\\claude-telefon\\config.json" }
   //        - If the referenced file does not exist, the program stops with an error message
   //          (it does NOT silently fall back to defaults).
   //        - At startup the log shows which file was actually loaded ("Config: …").
