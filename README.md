@@ -36,7 +36,10 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 
 On Home Assistant OS the agent runs as an add-on, with an on/off switch in Home Assistant:
 
-1. Settings → Add-ons → Add-on Store → ⋮ → Repositories → add `https://github.com/janlenck/claude-telefon`
+[![Add app repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fjanlenck%2Fclaude-telefon)
+
+1. Click the button above, or: Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
+   `https://github.com/janlenck/claude-telefon`
 2. Install *Claude Telefon*, fill in the Configuration tab, start it.
 
 Details, the on/off switch and calls from Home Assistant: [claude_telefon/DOCS.md](claude_telefon/DOCS.md).
