@@ -165,8 +165,9 @@ def end_late_answer(sip, resp):
     The BYE is repeated in the background until any final response to it arrives (bye_confirmed)."""
     call_id = resp.headers["Call-ID"]
     sip.out.sendto(sip.gen_ack(resp).encode("utf8"), (sip.server, sip.port))
-    if call_id in sip.pending_byes:
-        return  # retransmitted 200 OK: acknowledged again, the BYE is already under way
+    if call_id in sip.late_answered:
+        return  # retransmitted 200 OK: acknowledged again, the BYE is under way or done
+    sip.late_answered.add(call_id)
     # own transaction: new Via branch (gen_bye copies the one of the INVITE), identical in every retransmission
     bye = re.sub(r"branch=[^;\r\n]+", "branch=z9hG4bK" + secrets.token_hex(12), sip.gen_bye(resp), count=1)
     sip.pending_byes.add(call_id)
@@ -176,7 +177,10 @@ def end_late_answer(sip, resp):
         for wait in BYE_RETRIES:
             if call_id not in sip.pending_byes:
                 return
-            sip.out.sendto(bye.encode("utf8"), (sip.server, sip.port))
+            try:
+                sip.out.sendto(bye.encode("utf8"), (sip.server, sip.port))
+            except OSError as e:  # e.g. network briefly gone: keep trying
+                log.warning("Sending BYE failed: %s", e)
             time.sleep(wait)
         if call_id in sip.pending_byes:
             sip.pending_byes.discard(call_id)
@@ -220,5 +224,6 @@ def apply(phone):
     import types
     phone.sip.pending_invites = {}  # call_id -> (uri, branch, cseq, tag) of the last INVITE, for CANCEL
     phone.sip.pending_byes = set()  # call_ids of late answered calls whose BYE is still being retransmitted
+    phone.sip.late_answered = set()  # call_ids already ended by end_late_answer (a repeated 200 OK only gets an ACK)
     phone.sip.invite = types.MethodType(patched_invite, phone.sip)
     phone.sip.gen_ack = types.MethodType(patched_gen_ack, phone.sip)
