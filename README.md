@@ -116,6 +116,8 @@ After each call the agent fires the HA event `braincall_call`
 - Response time per turn is about 1.5–3 s (STT after end of speech, then Claude, then TTS).
 - An unanswered outbound call is cancelled after `ring_timeout` seconds.
 - The machine must be on, awake and in the home network.
+- If the FRITZ!Box is restarted or unreachable, BrainCall sets up the SIP connection again after
+  5 minutes without registration and keeps trying every 5 minutes. Calls in between fail.
 - Costs are billed to your Anthropic and OpenAI API accounts.
 
 ## License
