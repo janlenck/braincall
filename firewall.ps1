@@ -7,9 +7,9 @@ param(
   [int]$HttpPort = 8099
 )
 
-Get-NetFirewallRule -DisplayName "Claude Telefon*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName "Claude Telefon SIP/RTP" -Direction Inbound -Protocol UDP `
+Get-NetFirewallRule -DisplayName "BrainCall*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName "BrainCall SIP/RTP" -Direction Inbound -Protocol UDP `
   -LocalPort "$SipPort","$RtpMin-$RtpMax" -Action Allow -Profile Private | Out-Null
-New-NetFirewallRule -DisplayName "Claude Telefon HTTP" -Direction Inbound -Protocol TCP `
+New-NetFirewallRule -DisplayName "BrainCall HTTP" -Direction Inbound -Protocol TCP `
   -LocalPort $HttpPort -Action Allow -Profile Private | Out-Null
 Write-Host "Rules created: UDP $SipPort, $RtpMin-$RtpMax / TCP $HttpPort (private profile)"

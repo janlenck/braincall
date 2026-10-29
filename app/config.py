@@ -130,10 +130,10 @@ def _read(path: Path) -> dict:
 
 
 def load() -> Config:
-    # Order: environment variable CLAUDE_TELEFON_CONFIG > CONFIG_PATH > config.json in the project folder.
+    # Order: environment variable BRAINCALL_CONFIG > CONFIG_PATH > config.json in the project folder.
     # If that file only contains {"path": "..."}, the referenced file is loaded instead (e.g. in OneDrive,
     # so keys and settings are backed up and never end up in the git repo).
-    path = Path(os.environ.get("CLAUDE_TELEFON_CONFIG") or os.environ.get("CONFIG_PATH") or ROOT / "config.json")
+    path = Path(os.environ.get("BRAINCALL_CONFIG") or os.environ.get("CONFIG_PATH") or ROOT / "config.json")
     data = {}
     for _ in range(3):
         if not path.exists():
@@ -158,9 +158,9 @@ def load() -> Config:
     for key, env in (("anthropic_api_key", "ANTHROPIC_API_KEY"),
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
-                     ("sip_password", "CLAUDE_TELEFON_SIP_PASSWORD"),
-                     ("api_token", "CLAUDE_TELEFON_API_TOKEN"),
-                     ("log_dir", "CLAUDE_TELEFON_LOG_DIR")):
+                     ("sip_password", "BRAINCALL_SIP_PASSWORD"),
+                     ("api_token", "BRAINCALL_API_TOKEN"),
+                     ("log_dir", "BRAINCALL_LOG_DIR")):
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")

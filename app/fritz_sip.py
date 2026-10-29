@@ -65,7 +65,7 @@ def _build_invite(sip, number, sess_id, ms, sendtype, branch, call_id, cseq, tag
     req += f"CSeq: {cseq} INVITE\r\n"
     req += f"Allow: {', '.join(pyVoIP.SIPCompatibleMethods)}\r\n"
     req += "Content-Type: application/sdp\r\n"
-    req += "User-Agent: claude-telefon\r\n"
+    req += "User-Agent: braincall\r\n"
     req += auth
     req += f"Content-Length: {len(body)}\r\n\r\n"
     return req + body, uri
@@ -153,7 +153,7 @@ def cancel(sip, call_id: str) -> bool:
     req += f"From: <sip:{sip.username}@{sip.server}>;tag={tag}\r\n"
     req += f"Call-ID: {call_id}\r\n"
     req += f"CSeq: {cseq} CANCEL\r\n"
-    req += "User-Agent: claude-telefon\r\n"
+    req += "User-Agent: braincall\r\n"
     req += "Content-Length: 0\r\n\r\n"
     sip.out.sendto(req.encode("utf8"), (sip.server, sip.port))
     log.info("CANCEL sent")
@@ -215,7 +215,7 @@ def patched_gen_ack(self, resp):
     ack += f"From: {resp.headers['From']['raw']};tag={tag}\r\n"
     ack += f"Call-ID: {resp.headers['Call-ID']}\r\n"
     ack += f"CSeq: {resp.headers['CSeq']['check']} ACK\r\n"
-    ack += "User-Agent: claude-telefon\r\n"
+    ack += "User-Agent: braincall\r\n"
     ack += "Content-Length: 0\r\n\r\n"
     return ack
 

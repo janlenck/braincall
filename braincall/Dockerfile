@@ -5,8 +5,8 @@ FROM ${BUILD_FROM}
 ARG BUILD_VERSION
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 
-WORKDIR /opt/claude-telefon
-ADD https://github.com/janlenck/claude-telefon/archive/refs/tags/v${BUILD_VERSION}.tar.gz /tmp/src.tar.gz
+WORKDIR /opt/braincall
+ADD https://github.com/janlenck/braincall/archive/refs/tags/v${BUILD_VERSION}.tar.gz /tmp/src.tar.gz
 RUN tar -xzf /tmp/src.tar.gz --strip-components=1 \
     && rm /tmp/src.tar.gz \
     && pip install -r requirements.txt

@@ -75,7 +75,7 @@ class ColorFormatter(logging.Formatter):
 def banner(cfg):
     line = "─" * 62
     print(f"{CYAN}{line}{RESET}")
-    print(f"{CYAN}{BOLD}  Claude Telefon{RESET}   {GREY}model: {cfg.claude_model}  ·  voice: {cfg.tts_voice}{RESET}")
+    print(f"{CYAN}{BOLD}  BrainCall{RESET}   {GREY}model: {cfg.claude_model}  ·  voice: {cfg.tts_voice}{RESET}")
     if os.name == "nt":
         print(f"  {BOLD}[X]{RESET} quit   {BOLD}[A]{RESET} test call to {cfg.default_number or '-'}   "
               f"{BOLD}[L]{RESET} open log file")

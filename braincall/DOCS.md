@@ -1,7 +1,9 @@
-# Claude Telefon
+# BrainCall
 
-Claude answers and makes phone calls through your FRITZ!Box and can read and control Home Assistant during
-the call. The add-on is the same program as the Windows version, configured through this page.
+**Brain Call – Wenn das Gehirn von zuhause aus anruft.**
+
+BrainCall answers and makes phone calls with Claude through your FRITZ!Box and can read and control
+Home Assistant during the call. The add-on is the same program as the Windows version, configured through this page.
 
 ## Before the first start
 
@@ -15,35 +17,35 @@ the call. The add-on is the same program as the Windows version, configured thro
    Home Assistant access needs no token, the add-on gets it automatically.
 3. **Info tab:** enable *Start on boot* and *Watchdog*, then *Start*. The log must show `SIP status: REGISTERED`.
 
-Logs (`claude-telefon.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
-`/app_configs/500aeaec_claude_telefon` (Samba, File editor). It is part of the add-on's backup.
+Logs (`braincall.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
+`/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
 
 ## On/off switch
 
 Stopping the add-on unregisters the IP phone from the FRITZ!Box: calls then only ring on your other phones
 and no API costs arise. A switch for dashboards and automations:
 
-1. Settings → Devices & services → *Supervisor* → device *Claude Telefon*: enable the entity **Running**
-   (disabled by default), e.g. `binary_sensor.claude_telefon_running`.
-2. The add-on slug is in the browser address of the add-on page (Settings → Apps → Claude Telefon):
-   `/config/app/500aeaec_claude_telefon/info` → `500aeaec_claude_telefon`. The prefix is derived from
-   the repository URL; it is `500aeaec` when the repository was added as `https://github.com/janlenck/claude-telefon`.
+1. Settings → Devices & services → *Supervisor* → device *BrainCall*: enable the entity **Running**
+   (disabled by default), e.g. `binary_sensor.braincall_running`.
+2. The add-on slug is in the browser address of the add-on page (Settings → Apps → BrainCall):
+   `/config/app/98055a04_braincall/info` → `98055a04_braincall`. The prefix is derived from
+   the repository URL; it is `98055a04` when the repository was added as `https://github.com/janlenck/braincall`.
 3. Add to `configuration.yaml` (or create the same as a *Template → Switch* helper in the UI) and restart:
 
 ```yaml
 template:
   - switch:
-      - name: Claude Telefon
-        unique_id: claude_telefon_switch
-        state: "{{ is_state('binary_sensor.claude_telefon_running', 'on') }}"
+      - name: BrainCall
+        unique_id: braincall_switch
+        state: "{{ is_state('binary_sensor.braincall_running', 'on') }}"
         turn_on:
           - action: hassio.app_start
             data:
-              app: 500aeaec_claude_telefon
+              app: 98055a04_braincall
         turn_off:
           - action: hassio.app_stop
             data:
-              app: 500aeaec_claude_telefon
+              app: 98055a04_braincall
 ```
 
 Switching on takes a few seconds until the agent is registered at the FRITZ!Box again.
@@ -54,15 +56,15 @@ The call trigger listens on `http://127.0.0.1:8099/call` on the Home Assistant h
 
 ```yaml
 rest_command:
-  claude_call:
+  braincall:
     url: "http://127.0.0.1:8099/call"
     method: post
     content_type: "application/json"
     payload: '{"message": {{ message | tojson }}{% if number is defined %}, "number": {{ number | tojson }}{% endif %}}'
 ```
 
-Then e.g. `action: rest_command.claude_call` with `data: {message: "The washing machine is done."}`.
-After each call the event `claude_telefon_call` is fired (`number`, `answered`, `reason`, `duration_s`,
+Then e.g. `action: rest_command.braincall` with `data: {message: "The washing machine is done."}`.
+After each call the event `braincall_call` is fired (`number`, `answered`, `reason`, `duration_s`,
 `transcript`).
 
 ## Updates

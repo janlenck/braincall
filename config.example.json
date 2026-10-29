@@ -1,5 +1,5 @@
 {
-  // Example configuration for Claude Telefon. Every setting is listed here with its default or a sample value.
+  // Example configuration for BrainCall. Every setting is listed here with its default or a sample value.
   // Comments (//, /* */) and a trailing comma before ] or } are allowed.
   //
   // ============================================================================================
@@ -14,23 +14,23 @@
   //
   //  B) Recommended: keep the real configuration outside the project, e.g. in OneDrive.
   //     It is backed up, survives a fresh clone or reinstall, and the keys never end up in git.
-  //     1. Copy this file to e.g.  C:\Users\Name\OneDrive\claude-telefon\config.json
+  //     1. Copy this file to e.g.  C:\Users\Name\OneDrive\braincall\config.json
   //        and fill it in there. That is the real configuration.
   //     2. config.json in the project folder then contains ONLY the pointer, nothing else:
-  //          { "path": "C:\\Users\\Name\\OneDrive\\claude-telefon\\config.json" }
+  //          { "path": "C:\\Users\\Name\\OneDrive\\braincall\\config.json" }
   //        - Backslashes doubled as in normal JSON. Single backslashes ("C:\Users\…") are accepted too.
   //        - Environment variables and ~ are expanded, e.g.
-  //            { "path": "%OneDrive%\\claude-telefon\\config.json" }
+  //            { "path": "%OneDrive%\\braincall\\config.json" }
   //        - If the referenced file does not exist, the program stops with an error message
   //          (it does NOT silently fall back to defaults).
   //        - At startup the log shows which file was actually loaded ("Config: …").
   //     The pointer contains no secrets and may be committed; that is how this repository does it.
   //
-  //  Instead of the pointer file, the environment variable CLAUDE_TELEFON_CONFIG can hold the path
+  //  Instead of the pointer file, the environment variable BRAINCALL_CONFIG can hold the path
   //  of the real configuration. It takes precedence over config.json in the project folder.
   //
   //  Secrets can also come from environment variables. If set, they override the value in the file:
-  //    ANTHROPIC_API_KEY, OPENAI_API_KEY, HA_TOKEN, CLAUDE_TELEFON_SIP_PASSWORD, CLAUDE_TELEFON_API_TOKEN
+  //    ANTHROPIC_API_KEY, OPENAI_API_KEY, HA_TOKEN, BRAINCALL_SIP_PASSWORD, BRAINCALL_API_TOKEN
   //
   //  Settings that are missing from the file use the default from app/config.py.
   // ============================================================================================
@@ -39,7 +39,7 @@
   "sip_server": "192.168.178.1",      // IP address of the FRITZ!Box
   "sip_port": 5060,
   "sip_user": "IP_PHONE_USERNAME",    // user name of the IP phone in the FRITZ!Box
-  "sip_password": "",                 // or environment variable CLAUDE_TELEFON_SIP_PASSWORD
+  "sip_password": "",                 // or environment variable BRAINCALL_SIP_PASSWORD
   "local_ip": "",                     // IP of this computer; empty = detect automatically
   "sip_local_port": 5062,             // if changed: adjust firewall.ps1 as well
   "rtp_port_min": 30000,              // UDP port range for audio, see firewall.ps1
@@ -86,7 +86,7 @@
   // --- HTTP trigger for outbound calls ---
   "http_port": 8099,                  // if changed: adjust firewall.ps1 as well
   "api_token": "",                    // empty = only reachable from 127.0.0.1; set = reachable in the LAN
-                                      // with "Authorization: Bearer <api_token>" (env CLAUDE_TELEFON_API_TOKEN)
+                                      // with "Authorization: Bearer <api_token>" (env BRAINCALL_API_TOKEN)
 
   // --- Home Assistant (empty ha_url/ha_token = no Home Assistant) ---
   "ha_url": "https://homeassistant:8123",

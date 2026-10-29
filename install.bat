@@ -1,8 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Claude Telefon - Installation
-set "VENV=%LOCALAPPDATA%\claude-telefon\venv"
+title BrainCall - Installation
+set "VENV=%LOCALAPPDATA%\braincall\venv"
 
 echo Python environment: %VENV%
 if not exist "%VENV%\Scripts\python.exe" (
