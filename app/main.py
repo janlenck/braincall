@@ -76,6 +76,8 @@ MAX_BODY = 64 * 1024
 UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (braincall/config.yaml)
 WATCHDOG_INTERVAL = 30  # seconds between checks of the SIP registration
 RECONNECT_AFTER = 300  # seconds without SIP registration before the phone is set up again
+stopping = threading.Event()  # set on shutdown: no new phone is set up from then on
+phone_lock = threading.Lock()  # swapping the phone (connect) vs. picking the one to stop on shutdown
 
 
 def detect_local_ip(target: str) -> str:
@@ -272,10 +274,17 @@ def logged_parse(msg):
     return _orig_parse(msg)
 
 
-def connect(local_ip: str, old=None):
+def sip_status() -> PhoneStatus:
+    return phone.get_status() if phone is not None else PhoneStatus.INACTIVE
+
+
+def connect(old=None):
     """Sets up a new SIP phone and registers it, replacing `old`.
     pyVoIP gives up for good after 3 failed registrations (FRITZ!Box rebooting or down) and never tries again."""
     global phone, _orig_parse
+    local_ip = cfg.local_ip or detect_local_ip(cfg.sip_server)  # no route while the network is down: retried
+    log.info("Local IP %s, SIP %s@%s:%s, local SIP port %s",
+             local_ip, cfg.sip_user, cfg.sip_server, cfg.sip_port, cfg.sip_local_port)
     new = VoIPPhone(cfg.sip_server, int(cfg.sip_port), cfg.sip_user, cfg.sip_password,
                     myIP=local_ip, callCallback=on_incoming, sipPort=int(cfg.sip_local_port),
                     rtpPortLow=int(cfg.rtp_port_min), rtpPortHigh=int(cfg.rtp_port_max))
@@ -284,18 +293,24 @@ def connect(local_ip: str, old=None):
         stopper.start()
         stopper.join(UNREGISTER_TIMEOUT)
         old.sip._close_sockets()  # stop() may give up before closing them, the SIP port must be free again
-    phone = new
-    _orig_parse = phone.sip.parse_message
-    phone.sip.parse_message = logged_parse
-    fritz_sip.apply(phone)
-    phone.start()
+    with phone_lock:
+        if stopping.is_set():
+            return  # shutting down: the phone to stop has already been picked
+        phone = new
+        _orig_parse = phone.sip.parse_message
+        phone.sip.parse_message = logged_parse
+        fritz_sip.apply(phone)
+    # a stop during registering closes the socket, the registration then fails without retrying
+    new.start()
+    if stopping.is_set():
+        new.stop()  # shutdown picked this phone before it was started, its stop() did nothing
 
 
-def watchdog(stopping: threading.Event):
+def watchdog():
     """Sets the phone up again while it stays unregistered for RECONNECT_AFTER seconds, never during a call."""
     lost = None
     while not stopping.wait(WATCHDOG_INTERVAL):
-        if phone.get_status() == PhoneStatus.REGISTERED:
+        if sip_status() == PhoneStatus.REGISTERED:
             lost = None
             continue
         if lost is None:
@@ -305,9 +320,9 @@ def watchdog(stopping: threading.Event):
             continue
         try:
             log.warning("SIP not registered for %s min (%s), reconnecting",
-                        RECONNECT_AFTER // 60, phone.get_status().value)
-            connect(cfg.local_ip or detect_local_ip(cfg.sip_server), old=phone)
-            log.info("SIP status: %s", phone.get_status().value)
+                        RECONNECT_AFTER // 60, sip_status().value)
+            connect(old=phone)
+            log.info("SIP status: %s", sip_status().value)
         except Exception as e:  # noqa: BLE001
             log.warning("Reconnecting failed: %s - next try in %s min", e, RECONNECT_AFTER // 60)
         finally:
@@ -332,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/health":
-            self._send(200, {"sip": phone.get_status().value, "busy": busy.locked(),
+            self._send(200, {"sip": sip_status().value, "busy": busy.locked(),
                              "time": datetime.now().isoformat(timespec="seconds")})
         else:
             self._send(404, {"error": "not found"})
@@ -356,8 +371,8 @@ class Handler(BaseHTTPRequestHandler):
         number = str(body.get("number") or cfg.default_number).strip()
         if not number:
             return self._send(400, {"error": "no number"})
-        if phone.get_status() != PhoneStatus.REGISTERED:
-            return self._send(503, {"error": f"SIP not registered ({phone.get_status().value})"})
+        if sip_status() != PhoneStatus.REGISTERED:
+            return self._send(503, {"error": f"SIP not registered ({sip_status().value})"})
         if not busy.acquire(blocking=False):
             return self._send(409, {"error": "line busy"})
         threading.Thread(target=outbound, args=(number, str(body.get("message") or "")), daemon=True).start()
@@ -376,12 +391,8 @@ def main():
     if not OWNER:
         log.warning("owner_name is not set (config.json) - the assistant will speak of \"the owner\"")
 
-    local_ip = cfg.local_ip or detect_local_ip(cfg.sip_server)
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
-    log.info("Local IP %s, SIP %s@%s:%s, local SIP port %s",
-             local_ip, cfg.sip_user, cfg.sip_server, cfg.sip_port, cfg.sip_local_port)
     server = None
-    stopping = threading.Event()
 
     def on_sigterm(signum, frame):  # Home Assistant stops the add-on with SIGTERM
         log.info("Stop requested")
@@ -402,8 +413,8 @@ def main():
         number = str(cfg.default_number or "").strip()
         if not number:
             log.warning("No default_number in config.json")
-        elif phone.get_status() != PhoneStatus.REGISTERED:
-            log.warning("SIP not registered (%s)", phone.get_status().value)
+        elif sip_status() != PhoneStatus.REGISTERED:
+            log.warning("SIP not registered (%s)", sip_status().value)
         elif not busy.acquire(blocking=False):
             log.warning("Line busy")
         else:
@@ -419,18 +430,18 @@ def main():
 
     try:
         try:
-            connect(local_ip)
-        except Exception as e:  # noqa: BLE001  e.g. FRITZ!Box not up yet after a power cut: the watchdog retries
+            connect()
+        except Exception as e:  # noqa: BLE001  e.g. FRITZ!Box or network not up yet after a power cut: the watchdog retries
             log.warning("SIP start failed: %s", e)
         for _ in range(50):
-            if phone.get_status() == PhoneStatus.REGISTERED or stopping.is_set():
+            if sip_status() == PhoneStatus.REGISTERED or stopping.is_set():
                 break
             time.sleep(0.2)
         if stopping.is_set():
             return
-        log.info("SIP status: %s", phone.get_status().value)
+        log.info("SIP status: %s", sip_status().value)
         log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
-        threading.Thread(target=watchdog, args=(stopping,), name="SIP watchdog", daemon=True).start()
+        threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
 
         bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
         server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)
@@ -444,17 +455,25 @@ def main():
         stopping.set()  # ends the watchdog
         if server is not None:
             server.server_close()
-        # pyVoIP waits up to 30 s per step for the FRITZ!Box to confirm; do not let that block the shutdown
-        stopper = threading.Thread(target=phone.stop, daemon=True)
-        stopper.start()
-        stopper.join(UNREGISTER_TIMEOUT)
-        if stopper.is_alive():
-            log.warning("FRITZ!Box did not confirm the unregistration within %ss. Bye.", UNREGISTER_TIMEOUT)
-            logging.shutdown()
-            os._exit(0)  # pyVoIP's own threads would otherwise keep the process alive
-        log.info("Unregistered. Bye.")
+        with phone_lock:  # held only briefly by connect(): after this no other phone is swapped in
+            last = phone
+        if last is not None:
+            unregister(last)
 
-phone: VoIPPhone
+
+def unregister(last: VoIPPhone):
+    # pyVoIP waits up to 30 s per step for the FRITZ!Box to confirm; do not let that block the shutdown
+    stopper = threading.Thread(target=last.stop, daemon=True)
+    stopper.start()
+    stopper.join(UNREGISTER_TIMEOUT)
+    if stopper.is_alive():
+        log.warning("FRITZ!Box did not confirm the unregistration within %ss. Bye.", UNREGISTER_TIMEOUT)
+        logging.shutdown()
+        os._exit(0)  # pyVoIP's own threads would otherwise keep the process alive
+    log.info("Unregistered. Bye.")
+
+
+phone: VoIPPhone | None = None
 
 if __name__ == "__main__":
     main()
