@@ -1,4 +1,4 @@
-"""Claude Telefon: SIP phone on the FRITZ!Box plus an HTTP trigger for outbound calls."""
+"""BrainCall: SIP phone on the FRITZ!Box plus an HTTP trigger for outbound calls."""
 import hmac
 import json
 import logging
@@ -44,8 +44,8 @@ _LOGDIR = Path(cfg.log_dir)
 _LOGDIR.mkdir(parents=True, exist_ok=True)
 _con = logging.StreamHandler(sys.stdout)
 _con.setFormatter(console.ColorFormatter())
-# rotates at 2 MB and keeps 5 old files (claude-telefon.log.1 … .5): at most about 12 MB
-_file = logging.handlers.RotatingFileHandler(_LOGDIR / "claude-telefon.log", maxBytes=2_000_000,
+# rotates at 2 MB and keeps 5 old files (braincall.log.1 … .5): at most about 12 MB
+_file = logging.handlers.RotatingFileHandler(_LOGDIR / "braincall.log", maxBytes=2_000_000,
                                              backupCount=5, encoding="utf-8")
 _file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[_con, _file])
@@ -73,7 +73,7 @@ answer_lock = threading.Lock()  # a 200 OK is handled either before a call is gi
 OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
-UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (claude_telefon/config.yaml)
+UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (braincall/config.yaml)
 
 
 def detect_local_ip(target: str) -> str:
@@ -112,7 +112,7 @@ def trusted_name(number: str) -> str:
 
 
 def report(answered: bool, number: str, started: float, session=None, message=""):
-    ha.fire_event("claude_telefon_call", {
+    ha.fire_event("braincall_call", {
         "number": number,
         "answered": answered,
         "reason": message,
@@ -207,7 +207,7 @@ def on_incoming(call):
             call.deny()
         except Exception:  # noqa: BLE001
             pass
-        ha.fire_event("claude_telefon_call", {"number": number or "unknown", "answered": False,
+        ha.fire_event("braincall_call", {"number": number or "unknown", "answered": False,
                                               "reason": f"rejected: {reason}", "duration_s": 0, "transcript": ""})
         return
     if not busy.acquire(blocking=False):
@@ -376,7 +376,7 @@ def main():
 
     def open_log():
         try:
-            os.startfile(str(_LOGDIR / "claude-telefon.log"))  # type: ignore[attr-defined]
+            os.startfile(str(_LOGDIR / "braincall.log"))  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             log.warning("Opening the log failed: %s", e)
 

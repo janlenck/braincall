@@ -1,11 +1,11 @@
 name: Release tag
 
-# The add-on image is built from the tag v<version> (claude_telefon/Dockerfile).
-# A new version in claude_telefon/config.yaml on main creates that tag.
+# The add-on image is built from the tag v<version> (braincall/Dockerfile).
+# A new version in braincall/config.yaml on main creates that tag.
 on:
   push:
     branches: [main]
-    paths: [claude_telefon/config.yaml]
+    paths: [braincall/config.yaml]
   workflow_dispatch:
 
 permissions:
@@ -18,8 +18,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Create tag for the add-on version
         run: |
-          version=$(sed -nE 's/^version: *"?([^"]+)"?$/\1/p' claude_telefon/config.yaml)
-          if [ -z "$version" ]; then echo "::error::no version in claude_telefon/config.yaml"; exit 1; fi
+          version=$(sed -nE 's/^version: *"?([^"]+)"?$/\1/p' braincall/config.yaml)
+          if [ -z "$version" ]; then echo "::error::no version in braincall/config.yaml"; exit 1; fi
           if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
             echo "Tag v$version already exists"
           else

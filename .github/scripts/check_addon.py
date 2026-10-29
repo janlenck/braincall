@@ -1,11 +1,11 @@
-"""Consistency checks for the Home Assistant add-on in claude_telefon/ (run in CI)."""
+"""Consistency checks for the Home Assistant add-on in braincall/ (run in CI)."""
 import re
 import sys
 from pathlib import Path
 
 import yaml
 
-ADDON = Path(__file__).resolve().parents[2] / "claude_telefon"
+ADDON = Path(__file__).resolve().parents[2] / "braincall"
 # Supervisor accepts build images only as namespace/name[:tag] (supervisor/apps/validate.py)
 RE_IMAGE = re.compile(r"^([a-zA-Z\-\.:\d{}]+/)*?([\-\w{}]+)/([\-\w{}]+)(:[\.\-\w{}]+)?$")
 

@@ -1,8 +1,8 @@
-name: Claude Telefon
-version: "1.0.2"
-slug: claude_telefon
+name: BrainCall
+version: "2.0.0"
+slug: braincall
 description: Voice agent on the FRITZ!Box that can read and control Home Assistant
-url: https://github.com/janlenck/claude-telefon
+url: https://github.com/janlenck/braincall
 arch:
   - aarch64
   - amd64
@@ -16,9 +16,6 @@ homeassistant_api: true
 map:
   # /config = /app_configs/<slug>: logs and call notes
   - type: app_config
-    read_only: false
-  # only to move logs and call notes of versions up to 1.0.1 out of /share/claude-telefon (run.sh)
-  - type: share
     read_only: false
 options:
   sip_server: 192.168.178.1

@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist logs mkdir logs
-set "VENV=%LOCALAPPDATA%\claude-telefon\venv"
+set "VENV=%LOCALAPPDATA%\braincall\venv"
 
 if not exist "config.json" (
   echo config.json is missing - copy config.example.json to config.json and fill it in,
@@ -17,12 +17,12 @@ if not exist "%VENV%\Scripts\python.exe" (
   "%VENV%\Scripts\python.exe" -m pip install -q --upgrade pip
 )
 
-title Claude Telefon
+title BrainCall
 "%VENV%\Scripts\python.exe" -u app\main.py
 set RC=%errorlevel%
 if not "%RC%"=="0" (
   echo.
-  echo Exited with error code %RC% - see the output above or logs\claude-telefon.log
+  echo Exited with error code %RC% - see the output above or logs\braincall.log
   pause
 )
 exit /b %RC%
