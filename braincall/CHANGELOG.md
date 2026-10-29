@@ -11,8 +11,9 @@
 - `shopping`: only the lists in the new option *Shopping lists* (default `todo.shopping_list`)
 - After incoming calls a short summary, translated into the configured language, goes to the services in the new
   option *Notify after calls* (phone, e-mail). The event `braincall_call` gets `caller_name`, `access`, `summary`
-- Old settings are converted on start and written back once (needs Supervisor API access): trusted numbers become
-  `admin`, `*` becomes a `guest` entry, numbers only in *Allowed callers* are dropped
+- Old settings keep working: as long as they are filled they are converted on every start and used instead of
+  *Callers* (trusted numbers become `admin`, `*` becomes a `guest` entry, numbers only in *Allowed callers* are
+  dropped). Move them to *Callers* and empty the old fields
 - A fresh installation starts with an empty caller list (all incoming calls rejected) until entries are added
 
 ## 1.0.1

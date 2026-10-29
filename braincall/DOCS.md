@@ -39,9 +39,10 @@ After an incoming call a short summary (translated into the configured language)
 *Notify after calls*, e.g. `notify.mobile_app_<phone>` or an e-mail notifier. Default: for everyone except
 `admin`; *notify* per caller overrides it.
 
-Updating from 1.0.x converts *Allowed callers*, *Trusted numbers* and *Language per number* once: trusted
-numbers become `admin`, `*` becomes a `guest` entry, numbers only allowed to call are dropped. The old fields
-are emptied afterwards (check the log).
+After updating from 1.0.x *Allowed callers*, *Trusted numbers* and *Language per number* keep working: on
+every start they are converted (trusted numbers become `admin`, `*` becomes a `guest` entry, numbers only
+allowed to call are dropped) and used instead of *Callers*. The log shows the converted list. Enter it under
+*Callers* and empty the three old fields; from then on only *Callers* counts.
 
 Logs (`braincall.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.

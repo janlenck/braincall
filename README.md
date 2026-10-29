@@ -101,8 +101,9 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
   language) and sends it to every service in `notify_services` (e.g. `notify.mobile_app_phone`, an SMTP
   notifier). Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
-- Older settings `inbound_allowed`, `trusted_numbers` and `caller_languages` are converted on start:
-  trusted numbers become `admin`, `"*"` becomes a `guest` entry, other numbers only allowed to call are dropped.
+- Older settings `inbound_allowed`, `trusted_numbers` and `caller_languages` are converted on every start and
+  used instead of `callers` as long as they are set: trusted numbers become `admin`, `"*"` becomes a `guest`
+  entry, other numbers only allowed to call are dropped. The log shows the converted list to copy over.
 - `default_number` is only the target of the test call and grants no rights.
 - `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
 - `owner_name` (e.g. `"Jan Lenck"`) is whose assistant this is; the first name is used in conversations.

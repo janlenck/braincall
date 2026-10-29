@@ -13,8 +13,6 @@ timeout: 20
 # SIP and RTP use UDP on changing ports: no Docker NAT, the add-on uses the host network
 host_network: true
 homeassistant_api: true
-# Supervisor API: writes the callers converted from the old settings into the options once (1.1.0)
-hassio_api: true
 map:
   # /config = /app_configs/<slug>: logs and call notes
   - type: app_config

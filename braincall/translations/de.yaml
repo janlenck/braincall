@@ -43,16 +43,16 @@ configuration:
     description: Nur diese To-do-Listen dürfen Anrufer mit access „shopping“ benutzen.
   inbound_allowed:
     name: Erlaubte Anrufer (alt)
-    description: Wird beim Start in „Anrufer“ übernommen. Leer lassen.
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   trusted_numbers:
     name: Vertraute Nummern (alt)
-    description: Wird beim Start in „Anrufer“ übernommen. Leer lassen.
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   country_code:
     name: Ländervorwahl
     description: +49 / 0049 gelten als dieselbe Nummer wie eine führende 0.
   caller_languages:
     name: Sprache je Nummer (alt)
-    description: Wird beim Start in „Anrufer“ übernommen. Leer lassen.
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   ring_timeout:
     name: Klingeldauer (s)
     description: Danach wird ein unbeantworteter Anruf abgebrochen.

@@ -149,22 +149,6 @@ def migrate(data: dict) -> list | None:
     return callers
 
 
-def _save_addon_options(data: dict, callers: list, token: str):
-    """Writes the migrated callers into the add-on options once (Supervisor API, needs hassio_api).
-    The old keys stay as empty lists: they are still in the schema for this version."""
-    import requests
-    options = {k: v for k, v in data.items() if k != "path"}
-    options.update({k: [] for k in LEGACY_KEYS}, callers=callers)
-    try:
-        r = requests.post("http://supervisor/addons/self/options", json={"options": options},
-                          headers={"Authorization": f"Bearer {token}"}, timeout=10)
-        r.raise_for_status()
-        WARNINGS.append("Migration: callers saved in the add-on options, old keys emptied")
-    except Exception as e:  # noqa: BLE001
-        WARNINGS.append(f"Migration: saving the add-on options failed ({e}); converted on every start until "
-                        "Allowed callers / Trusted numbers / Language per number are emptied")
-
-
 def _strip_jsonc(text: str) -> str:
     """Allows // and /* */ comments and a trailing comma before ] or } (JSONC); strings stay untouched."""
     out, i, n, in_str = [], 0, len(text), False
@@ -254,7 +238,8 @@ def load() -> Config:
     legacy = migrate(data)
     if legacy is not None:
         cfg["callers"] = legacy
-        WARNINGS.append("Old settings inbound_allowed / trusted_numbers / caller_languages converted to callers:\n"
+        WARNINGS.append("Old settings inbound_allowed / trusted_numbers / caller_languages are used as callers "
+                        "(converted on every start). Enter them under Callers and empty the old settings:\n"
                         + json.dumps({"callers": legacy}, ensure_ascii=False, indent=2))
     for key in LEGACY_KEYS:
         cfg.pop(key, None)
@@ -267,8 +252,6 @@ def load() -> Config:
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
-    if legacy is not None and cfg.supervisor_token:
-        _save_addon_options(data, legacy, cfg.supervisor_token)
     cfg["callers"] = _callers(cfg.callers)
     # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ
     if not data.get("timezone") and _valid_timezone(os.environ.get("TZ", "")):
