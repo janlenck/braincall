@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+- Logs and call notes are in the add-on's own folder `/app_configs/<slug>` instead of `/share/claude-telefon`;
+  existing files are moved there on the first start
+- The log folder is no longer an option in the configuration form
+
 ## 1.0.1
 
 - Icon and logo: telephone handset with a coiled cord that fades out

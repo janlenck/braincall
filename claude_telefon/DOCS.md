@@ -15,7 +15,8 @@ the call. The add-on is the same program as the Windows version, configured thro
    Home Assistant access needs no token, the add-on gets it automatically.
 3. **Info tab:** enable *Start on boot* and *Watchdog*, then *Start*. The log must show `SIP status: REGISTERED`.
 
-Logs and call notes of unknown callers are in `/share/claude-telefon` (Samba share `share`, File editor).
+Logs (`claude-telefon.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
+`/app_configs/500aeaec_claude_telefon` (Samba, File editor). It is part of the add-on's backup.
 
 ## On/off switch
 

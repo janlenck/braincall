@@ -104,6 +104,3 @@ configuration:
   confirm_domains:
     name: Ask first
     description: The assistant asks explicitly before controlling these domains.
-  log_dir:
-    name: Log folder
-    description: Logs and call notes.
