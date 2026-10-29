@@ -37,7 +37,7 @@ configuration:
       language: fixed language. notify: send the summary (default: everyone except admin).
   notify_services:
     name: Notify after calls
-    description: 'Notify services that get a summary after each incoming call, e.g. notify.mobile_app_phone or an e-mail notifier.'
+    description: 'Notify entities or services that get a summary after each incoming call, e.g. notify.phone, notify.mobile_app_phone or an e-mail notifier.'
   shopping_lists:
     name: Shopping lists
     description: The only to-do lists callers with access "shopping" may use.

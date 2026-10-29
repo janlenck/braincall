@@ -38,7 +38,7 @@ gets in the call. For `calendar`, all-day entries count as busy unless their tit
 narrow it.
 
 After an incoming call a short summary (translated into the configured language) goes to every service in
-*Notify after calls*, e.g. `notify.mobile_app_<phone>` or an e-mail notifier. Default: for everyone except
+*Notify after calls*: notify entities (e.g. `notify.<phone>`) or notify services (e.g. `notify.mobile_app_<phone>`, an e-mail notifier). Default: for everyone except
 `admin`; *notify* per caller overrides it.
 
 After updating from 1.0.x *Allowed callers*, *Trusted numbers* and *Language per number* keep working: on
