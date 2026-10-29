@@ -1,5 +1,5 @@
 name: Claude Telefon
-version: "1.0.1"
+version: "1.0.2"
 slug: claude_telefon
 description: Voice agent on the FRITZ!Box that can read and control Home Assistant
 url: https://github.com/janlenck/claude-telefon
@@ -14,6 +14,10 @@ timeout: 20
 host_network: true
 homeassistant_api: true
 map:
+  # /config = /app_configs/<slug>: logs and call notes
+  - type: app_config
+    read_only: false
+  # only to move logs and call notes of versions up to 1.0.1 out of /share/claude-telefon (run.sh)
   - type: share
     read_only: false
 options:
@@ -69,7 +73,6 @@ options:
     - cover
     - lock
     - alarm_control_panel
-  log_dir: /share/claude-telefon
 schema:
   sip_server: str
   sip_port: port
@@ -115,4 +118,3 @@ schema:
     - str
   confirm_domains:
     - str
-  log_dir: str

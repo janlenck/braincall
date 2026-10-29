@@ -159,7 +159,8 @@ def load() -> Config:
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
                      ("sip_password", "CLAUDE_TELEFON_SIP_PASSWORD"),
-                     ("api_token", "CLAUDE_TELEFON_API_TOKEN")):
+                     ("api_token", "CLAUDE_TELEFON_API_TOKEN"),
+                     ("log_dir", "CLAUDE_TELEFON_LOG_DIR")):
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")

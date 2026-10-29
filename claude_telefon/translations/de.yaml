@@ -104,6 +104,3 @@ configuration:
   confirm_domains:
     name: Mit Rückfrage
     description: Vor dem Steuern dieser Domains fragt der Assistent ausdrücklich nach.
-  log_dir:
-    name: Log-Ordner
-    description: Logs und Gesprächsnotizen.
