@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0
+## 1.0.0
 
 - First version as BrainCall: answers and makes phone calls through the FRITZ!Box, reads and controls Home
   Assistant during the call
