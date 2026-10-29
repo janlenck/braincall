@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+- Reconnects to the FRITZ!Box on its own after a restart or outage of the box: after 5 minutes without SIP
+  registration and then every 5 minutes until it works again, never during a call. Before, BrainCall stayed
+  offline until the add-on was restarted
+- Also starts when the FRITZ!Box is not up yet (e.g. after a power cut) and registers once it is
+
 ## 1.0.0
 
 - First version as BrainCall: answers and makes phone calls through the FRITZ!Box, reads and controls Home
