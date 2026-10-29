@@ -20,7 +20,8 @@ Home Assistant during the call. The add-on is the same program as the Windows ve
 ## Callers
 
 One entry per number: number (or `*` for everyone else), name, access, optional instructions, language
-and notify. Without a `*` entry unknown numbers are rejected; withheld numbers always.
+and notify. Without a `*` entry unknown numbers are rejected; withheld numbers always. After a fresh
+installation the list is empty: add `*` with access `guest` so unknown callers can leave a message.
 
 | access | may |
 |---|---|

@@ -299,6 +299,9 @@ class CallSession:
                     log.warning("STT failed: %s", e)
             elif first is ENDED:
                 return
+            if heard:
+                self.transcript.append(f"{self.caller_label}: {heard}")
+                self.caller_turns += 1
 
             if outbound:
                 who = (f"{name} (number {caller})" if name

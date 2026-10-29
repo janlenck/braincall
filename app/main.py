@@ -123,12 +123,13 @@ def lang_for(caller: dict | None) -> str:
     return (caller or {}).get("language") or cfg.language or "de"
 
 
-def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary=""):
+def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary="",
+           ended: float = 0.0):
     ha.fire_event("braincall_call", {
         "number": number,
         "answered": answered,
         "reason": message,
-        "duration_s": round(time.time() - started),
+        "duration_s": round((ended or time.time()) - started),
         "transcript": "\n".join(session.transcript) if session else "",
         "caller_name": caller_name(caller),
         "access": ",".join(sorted(caller["access"])) if caller else "",
@@ -136,7 +137,8 @@ def report(answered: bool, number: str, started: float, session=None, message=""
     })
 
 
-def after_call(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
+def after_call(answered: bool, number: str, started: float, ended: float, session, message: str, caller,
+               inbound: bool):
     """Summary, event, notification and call note; runs after the line is free again."""
     try:
         access = caller["access"] if caller else GUEST
@@ -157,7 +159,7 @@ def after_call(answered: bool, number: str, started: float, session, message: st
                     ha.notify(str(service), title, text)
             if summary:
                 log.info("Summary: %s", summary)
-        report(answered, number, started, session, message, caller, summary)
+        report(answered, number, started, session, message, caller, summary, ended)
         if inbound and session and access == GUEST and session.transcript:
             notes = _LOGDIR / "call-notes.txt"
             with open(notes, "a", encoding="utf-8") as f:
@@ -172,7 +174,7 @@ def after_call(answered: bool, number: str, started: float, session, message: st
 
 def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
     threading.Thread(target=after_call, name="after call", daemon=True,
-                     args=(answered, number, started, session, message, caller, inbound)).start()
+                     args=(answered, number, started, time.time(), session, message, caller, inbound)).start()
 
 
 def _ringing(call) -> bool:

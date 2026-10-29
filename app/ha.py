@@ -310,9 +310,9 @@ class HA:
             s = datetime.fromisoformat(st["dateTime"]).astimezone()
             e = datetime.fromisoformat(en["dateTime"]).astimezone() if "dateTime" in en else s + timedelta(hours=1)
             return s, e, False
-        d = datetime.fromisoformat(st.get("date", "1970-01-01")).astimezone()
-        e = datetime.fromisoformat(en["date"]).astimezone() if en.get("date") else d + timedelta(days=1)
-        return d, max(e, d + timedelta(days=1)), True
+        d = datetime.fromisoformat(st.get("date", "1970-01-01"))  # naive: whole days also across DST changes
+        e = datetime.fromisoformat(en["date"]) if en.get("date") else d
+        return d.astimezone(), max(e, d + timedelta(days=1)).astimezone(), True
 
     def _period(self, days, start: str):
         now = datetime.now().astimezone()
@@ -365,6 +365,9 @@ class HA:
         """Only when the owner is busy (default calendars), no titles, places or calendar names."""
         begin, end = self._period(days, start)
         blocks, errors = self._busy(begin, end)
+        if errors:  # names and diagnostics stay in the log: this tool is for callers without read access
+            log.warning("Busy times: %s", "; ".join(errors))
+            return "The calendar cannot be read right now, availability is unknown. Do not book anything."
         lines = []
         for s, e, all_day in blocks:
             if all_day:
@@ -378,7 +381,7 @@ class HA:
         log.info("Busy times %d days: %d blocks", (end - begin).days, len(lines))
         head = (f"Period {begin:%Y-%m-%d} to {end - timedelta(seconds=1):%Y-%m-%d}. Only busy times, no details; "
                 "all other times are free.")
-        return "\n".join([head, "\n".join(lines) or "Nothing busy in this period.", *errors])
+        return "\n".join([head, "\n".join(lines) or "Nothing busy in this period."])
 
     def create_event(self, calendar: str, title: str, start: str, end: str = "",
                      location: str = "", description: str = "", confirmed: bool = False,
@@ -389,6 +392,10 @@ class HA:
             calendar = ""
         cals = self._calendars([calendar] if calendar else (self.cfg.default_calendars or []))
         writable = [c for c in cals if int(c.get("attributes", {}).get("supported_features", 0)) & 1]
+        if not writable and restricted:
+            log.warning("Restricted booking: default calendar %s is read-only",
+                        [c["entity_id"] for c in cals] or "missing")
+            return "Booking is not possible right now. Tell the caller that the appointment could not be added."
         if not writable:
             names = ", ".join(c.get("attributes", {}).get("friendly_name") or c["entity_id"] for c in cals) or calendar
             all_writable = [c["entity_id"] for c in self._calendars([])
@@ -430,7 +437,8 @@ class HA:
                 return "End must be after start."
             blocks, errors = self._busy(begin, stop)
             if errors:
-                return "Calendar not readable, appointment NOT added: " + "; ".join(errors)
+                log.warning("Restricted booking: %s", "; ".join(errors))
+                return "The calendar cannot be read right now, appointment NOT added."
             if blocks:
                 return ("Not added: that time is already busy. Check ha_busy_times and suggest a free time "
                         "to the caller.")
@@ -438,6 +446,7 @@ class HA:
         r = self.http.post(f"{self.base}/services/calendar/create_event", json=body,
                            timeout=15, verify=self.verify)
         if r.status_code >= 400:
-            return f"Error {r.status_code}: {r.text[:200]}"
+            log.warning("EVENT failed: %s %s", r.status_code, r.text[:200])
+            return "Appointment NOT added (error)." if restricted else f"Error {r.status_code}: {r.text[:200]}"
         name = cal.get("attributes", {}).get("friendly_name") or cal["entity_id"]
-        return f"Added to {name}: {title}."
+        return f"Added: {title}." if restricted else f"Added to {name}: {title}."

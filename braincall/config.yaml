@@ -28,10 +28,7 @@ options:
   rtp_port_min: 30000
   rtp_port_max: 30100
   default_number: ""
-  callers:
-    - number: "*"
-      name: Unknown
-      access: guest
+  callers: []
   notify_services: []
   shopping_lists:
     - todo.shopping_list

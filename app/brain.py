@@ -228,6 +228,8 @@ class Brain:
             self.tools.append(TOOL_CONTROL)
         if ha.enabled and cfg.calendar_write:
             self.tools.append(TOOL_CREATE_EVENT)
+        if ha.enabled:  # also without "todo" in control_domains, like callers with access "shopping"
+            self.tools += [TOOL_SHOPPING, TOOL_SHOPPING_EDIT]
         owner = (cfg.owner_name or "").strip().split(" ")[0] or "the owner"
         self.tool_busy = {**TOOL_BUSY, "description": TOOL_BUSY["description"].replace("{owner}", owner)}
 

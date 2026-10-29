@@ -13,6 +13,7 @@
   option *Notify after calls* (phone, e-mail). The event `braincall_call` gets `caller_name`, `access`, `summary`
 - Old settings are converted on start and written back once (needs Supervisor API access): trusted numbers become
   `admin`, `*` becomes a `guest` entry, numbers only in *Allowed callers* are dropped
+- A fresh installation starts with an empty caller list (all incoming calls rejected) until entries are added
 
 ## 1.0.1
 
