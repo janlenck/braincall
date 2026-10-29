@@ -110,6 +110,9 @@ configuration:
   default_calendars:
     name: Default calendars
     description: entity_ids or name parts; empty = all calendars.
+  all_day_free_words:
+    name: Free all-day entries
+    description: 'All-day entries count as busy for callers with access "calendar", unless their title contains one of these words, e.g. waste, lawn.'
   calendar_write:
     name: Create appointments
     description: Callers with access admin or calendar may create appointments (after confirmation).

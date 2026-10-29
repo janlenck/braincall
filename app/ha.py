@@ -352,7 +352,14 @@ class HA:
         """Merged busy blocks [(start, end, all_day)] of the default calendars, without any details."""
         cals = self._calendars(self.cfg.default_calendars or [])
         evs, errors = self._fetch_events(cals, begin, end)
-        spans = sorted(self._span(ev) for _, ev in evs)
+        # HA does not pass on Google's "free"/"busy", so all-day reminders (waste collection …) are marked by words
+        free = [fold(str(w).strip()) for w in self.cfg.all_day_free_words or [] if str(w).strip()]
+        spans = []
+        for _, ev in evs:
+            span = self._span(ev)
+            if not (span[2] and any(w in fold(str(ev.get("summary", ""))) for w in free)):
+                spans.append(span)
+        spans.sort()
         merged = []
         for s, e, all_day in spans:
             if merged and s <= merged[-1][1] and all_day == merged[-1][2]:

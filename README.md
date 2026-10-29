@@ -89,7 +89,9 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
   - `read`: read everything (states, sensors, appointments with details), change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
-    A busy slot is refused by the code (all-day entries count as busy).
+    A busy slot is refused by the code. All-day entries count as busy unless their title contains one of the
+    `all_day_free_words` (e.g. `["gelber", "sack", "abfall"]`); Home Assistant does not pass on Google's
+    "free"/"busy".
   - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).
   - `guest`: no access; asks for name and reason. The note goes to `logs/call-notes.txt`.
 - `instructions` are appended to the prompt for this caller; they can narrow, not widen, the access.

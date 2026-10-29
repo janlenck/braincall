@@ -32,7 +32,9 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | `guest` | nothing, takes a message |
 
 Several at once separated by commas, e.g. `shopping, calendar`. The access decides which tools the assistant
-gets in the call; *instructions* (e.g. `If Jan is free, book her wish date titled "Maryna comes".`) can only
+gets in the call. For `calendar`, all-day entries count as busy unless their title contains one of the
+*Free all-day entries* words (e.g. `gelber`, `sack`, `abfall`): Home Assistant does not pass on Google's
+"free"/"busy". *Instructions* (e.g. `If Jan is free, book her wish date titled "Maryna comes".`) can only
 narrow it.
 
 After an incoming call a short summary (translated into the configured language) goes to every service in
