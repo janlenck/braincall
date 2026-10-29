@@ -18,8 +18,7 @@ DEFAULTS = {
     "rtp_port_max": 30100,
     # who to call / who may call
     "default_number": "",      # target of the test call (key A, test-call.bat), grants no rights
-    "inbound_allowed": [],     # empty = only trusted_numbers, ["*"] = accept all (withheld numbers are always rejected)
-    "trusted_numbers": {},     # {"number": "name"} – only these get access to Home Assistant
+    "callers": [],             # [{"number", "name", "access", …}]; "*" = everyone else, not listed = rejected
     "country_code": "49",      # +49 / 0049 count as the same number as a leading 0
     "ring_timeout": 90,        # seconds to ring before an unanswered outbound call is cancelled
     # Claude
@@ -28,7 +27,6 @@ DEFAULTS = {
     "assistant_name": "Claudine",
     "owner_name": "",          # whose assistant this is, e.g. "Jan Lenck" (first name is used to address)
     "language": "de",          # "de", "uk", "en" or "auto" (answers in the caller's language)
-    "caller_languages": {},    # language per number, e.g. {"0151xxxxxxx": "uk"}
     "extra_prompt": "",
     "timezone": "Europe/Berlin",
     # OpenAI STT/TTS
@@ -52,16 +50,103 @@ DEFAULTS = {
     "ha_url": "",
     "ha_token": "",
     "ha_verify_ssl": True,     # true/false or path to the CA certificate (.crt/.pem)
-    # control (only for trusted_numbers / outbound calls)
+    "notify_services": [],     # e.g. ["notify.mobile_app_phone"]: summary after a call goes there
+    "shopping_lists": ["todo.shopping_list"],  # the only lists callers with access "shopping" may use
+    # control (only for callers with access "admin")
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                         "media_player", "cover", "button", "number", "select", "todo"],
     "default_calendars": [],   # entity_ids or name parts; empty = all
-    "calendar_write": True,    # allow creating appointments (trusted_numbers only, with confirmation)
+    "calendar_write": True,    # allow creating appointments (access admin/calendar, with confirmation)
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
 }
 
+ACCESS = ("admin", "read", "calendar", "shopping", "guest")
+LEGACY_KEYS = ("inbound_allowed", "trusted_numbers", "caller_languages")  # until 1.0.x, replaced by callers
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = [""]  # file actually loaded (for the log)
+WARNINGS: list[str] = []  # logged by main once logging is set up
+
+
+def norm_number(n, country_code="") -> str:
+    """Complete number in a comparable form: digits plus * and # (internal numbers like **611),
+    international prefix of the own country folded to a leading 0 (+49151… == 0049151… == 0151…)."""
+    s = re.sub(r"[^\d*#+]", "", str(n or ""))
+    s = ("00" + s[1:] if s.startswith("+") else s).replace("+", "")
+    cc = "00" + re.sub(r"\D", "", str(country_code or ""))
+    if len(cc) > 2 and s.startswith(cc):
+        s = "0" + s[len(cc):]
+    return s
+
+
+def parse_access(value) -> frozenset:
+    """'shopping, calendar' or ["shopping", "calendar"] -> {"shopping", "calendar"}.
+    admin includes everything; nothing valid = guest (least privilege)."""
+    words = value if isinstance(value, (list, tuple, set, frozenset)) else re.split(r"[,;\s]+", str(value or ""))
+    words = {str(w).strip().lower() for w in words} - {""}
+    unknown = words - set(ACCESS)
+    if unknown:
+        WARNINGS.append(f"Unknown access {', '.join(sorted(unknown))} ignored (allowed: {', '.join(ACCESS)})")
+    found = words & set(ACCESS)
+    if "admin" in found:
+        return frozenset({"admin"})
+    found.discard("guest")
+    return frozenset(found) or frozenset({"guest"})
+
+
+def _callers(items) -> list:
+    out = []
+    for x in items if isinstance(items, list) else []:
+        number = str(x.get("number") or "").strip() if isinstance(x, dict) else ""
+        if not number:
+            WARNINGS.append(f"Caller without number ignored: {x}")
+            continue
+        out.append({"number": number,
+                    "name": str(x.get("name") or "").strip(),
+                    "access": parse_access(x.get("access")),
+                    "instructions": str(x.get("instructions") or "").strip(),
+                    "language": str(x.get("language") or "").strip(),
+                    "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None})
+    return out
+
+
+def _pairs(value, field: str, default="") -> dict:
+    """Old format {number: value}, add-on list [{"number": …, field: …}] or plain list of numbers -> dict."""
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    out = {}
+    for x in value if isinstance(value, list) else []:
+        if isinstance(x, dict) and x.get("number"):
+            out[str(x["number"])] = x.get(field, "")
+        elif not isinstance(x, dict) and str(x).strip():
+            out[str(x).strip()] = default
+    return out
+
+
+def migrate(data: dict) -> list | None:
+    """callers from the old keys inbound_allowed / trusted_numbers / caller_languages; None if none is set.
+    Trusted numbers become admin, "*" in inbound_allowed becomes a guest entry, everything else is dropped."""
+    allowed = [str(n).strip() for n in data.get("inbound_allowed") or []]
+    owner = str(data.get("owner_name") or "").strip()
+    trusted = _pairs(data.get("trusted_numbers"), "name", owner)
+    langs = _pairs(data.get("caller_languages"), "language")
+    if not (allowed or trusted or langs):
+        return None
+    cc = data.get("country_code", DEFAULTS["country_code"])
+    callers = [{"number": n, "name": str(name or owner or n), "access": "admin"} for n, name in trusted.items()]
+    if "*" in allowed:
+        callers.append({"number": "*", "name": "Unknown", "access": "guest"})
+    dropped = [n for n in allowed if n not in ("*", "")
+               and not any(norm_number(n, cc) == norm_number(c["number"], cc) for c in callers)]
+    if dropped:
+        WARNINGS.append(f"Migration: numbers only in inbound_allowed dropped: {', '.join(dropped)}")
+    for n, lang in langs.items():
+        match = [c for c in callers if c["number"] != "*" and norm_number(n, cc) == norm_number(c["number"], cc)]
+        if match and lang:
+            match[0]["language"] = str(lang)
+        else:
+            WARNINGS.append(f"Migration: language for {n} dropped (number is not a caller)")
+    return callers
 
 
 def _strip_jsonc(text: str) -> str:
@@ -150,11 +235,14 @@ def load() -> Config:
     CONFIG_FILE[0] = str(path)
     cfg = Config(DEFAULTS)
     cfg.update({k: v for k, v in data.items() if v is not None and not k.startswith("_")})
-    # Home Assistant add-on options have no free-form objects: [{"number": …, "name"/"language": …}] -> {number: …}
-    for key, field in (("trusted_numbers", "name"), ("caller_languages", "language")):
-        items = cfg.get(key)
-        if isinstance(items, list) and items and all(isinstance(x, dict) for x in items):
-            cfg[key] = {str(x["number"]): x.get(field, "") for x in items if x.get("number")}
+    legacy = migrate(data)
+    if legacy is not None:
+        cfg["callers"] = legacy
+        WARNINGS.append("Old settings inbound_allowed / trusted_numbers / caller_languages are used as callers "
+                        "(converted on every start). Enter them under Callers and empty the old settings:\n"
+                        + json.dumps({"callers": legacy}, ensure_ascii=False, indent=2))
+    for key in LEGACY_KEYS:
+        cfg.pop(key, None)
     for key, env in (("anthropic_api_key", "ANTHROPIC_API_KEY"),
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
@@ -164,6 +252,7 @@ def load() -> Config:
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
+    cfg["callers"] = _callers(cfg.callers)
     # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ
     if not data.get("timezone") and _valid_timezone(os.environ.get("TZ", "")):
         cfg["timezone"] = os.environ["TZ"]

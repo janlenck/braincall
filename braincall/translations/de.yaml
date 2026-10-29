@@ -26,18 +26,33 @@ configuration:
   default_number:
     name: Nummer für Testanruf
     description: Ziel eines Anrufs ohne Nummer; gibt keine Rechte.
+  callers:
+    name: Anrufer
+    description: >-
+      Wer anrufen darf und was er darf. number: Rufnummer oder * (alle anderen; ohne * werden unbekannte Nummern
+      abgewiesen, unterdrückte immer). name: das erste Wort dient als Anrede.
+      access, mehrere mit Komma getrennt: admin (alles), read (alles lesen, nichts ändern),
+      calendar (nur frei/belegt, Termine ohne Rückfrage bei dir eintragen), shopping (nur Einkaufsliste),
+      guest (nur Nachricht aufnehmen). instructions: zusätzliche Anweisung an den Assistenten für diesen Anrufer.
+      language: feste Sprache. notify: Zusammenfassung schicken (Standard: alle außer admin).
+  notify_services:
+    name: Benachrichtigung nach Anrufen
+    description: 'Notify-Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.mobile_app_handy oder ein E-Mail-Notifier.'
+  shopping_lists:
+    name: Einkaufslisten
+    description: Nur diese To-do-Listen dürfen Anrufer mit access „shopping“ benutzen.
   inbound_allowed:
-    name: Erlaubte Anrufer
-    description: '* = alle, leer = nur vertraute Nummern, sonst Liste von Nummern. Unterdrückte Nummern werden immer abgewiesen.'
+    name: Erlaubte Anrufer (alt)
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   trusted_numbers:
-    name: Vertraute Nummern
-    description: 'Nur diese Nummern dürfen Home Assistant abfragen und steuern. Name: das erste Wort dient als Anrede.'
+    name: Vertraute Nummern (alt)
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   country_code:
     name: Ländervorwahl
     description: +49 / 0049 gelten als dieselbe Nummer wie eine führende 0.
   caller_languages:
-    name: Sprache je Nummer
-    description: Feste Sprache für einzelne Anrufer.
+    name: Sprache je Nummer (alt)
+    description: Gilt weiter, solange gefüllt (statt „Anrufer“). In „Anrufer“ übertragen und leeren.
   ring_timeout:
     name: Klingeldauer (s)
     description: Danach wird ein unbeantworteter Anruf abgebrochen.
@@ -97,7 +112,7 @@ configuration:
     description: entity_ids oder Namensteile; leer = alle Kalender.
   calendar_write:
     name: Termine anlegen
-    description: Vertraute Anrufer dürfen Termine eintragen (nach Bestätigung).
+    description: Anrufer mit access admin oder calendar dürfen Termine eintragen (nach Bestätigung).
   control_domains:
     name: Steuerbare Bereiche
     description: Domains, die gesteuert werden dürfen; leer = nichts steuern.

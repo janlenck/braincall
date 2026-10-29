@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0
+
+- One list **Callers** instead of *Allowed callers*, *Trusted numbers* and *Language per number*: number (or `*`),
+  name, access, optional instructions for the assistant, language and notify
+- Access `admin`, `read`, `calendar`, `shopping`, `guest`, combinable (`shopping, calendar`). The code decides
+  which tools the assistant gets, instructions cannot widen it
+- `calendar`: only free/busy times without details, books appointments in free slots of the default calendar
+  without asking the owner; busy slots are refused
+- `shopping`: only the lists in the new option *Shopping lists* (default `todo.shopping_list`)
+- After incoming calls a short summary, translated into the configured language, goes to the services in the new
+  option *Notify after calls* (phone, e-mail). The event `braincall_call` gets `caller_name`, `access`, `summary`
+- Old settings keep working: as long as they are filled they are converted on every start and used instead of
+  *Callers* (trusted numbers become `admin`, `*` becomes a `guest` entry, numbers only in *Allowed callers* are
+  dropped). Move them to *Callers* and empty the old fields
+- A fresh installation starts with an empty caller list (all incoming calls rejected) until entries are added
+
 ## 1.0.1
 
 - Reconnects to the FRITZ!Box on its own after a restart or outage of the box: after 5 minutes without SIP
