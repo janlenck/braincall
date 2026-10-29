@@ -2,7 +2,7 @@
 
 <img src="braincall/logo.png" alt="BrainCall" width="300">
 
-**Brain Call – Wenn das Gehirn von zuhause aus anruft.**
+**Brain Call – when your brain calls from home.**
 
 A phone voice agent built on Claude: it calls you through a FRITZ!Box and talks with you, and you can call it.
 It can read and control Home Assistant (states, lights, lists, calendars) during the call.
