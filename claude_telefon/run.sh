@@ -11,10 +11,13 @@ if [ -d "$OLD" ]; then
     for f in "$OLD"/call-notes.txt "$OLD"/claude-telefon.log* "$OLD"/last-trigger.txt; do
         [ -e "$f" ] || continue
         name=$(basename "$f")
-        if [ "$name" = call-notes.txt ] && [ -e "/config/$name" ]; then
+        if [ ! -e "/config/$name" ]; then
+            mv "$f" "/config/$name"
+        elif [ "$name" = call-notes.txt ]; then
             cat "$f" >> "/config/$name" && rm "$f"   # keep notes from both places
         else
-            mv -f "$f" "/config/$name"
+            # e.g. after going back to 1.0.1 and updating again: keep both histories
+            mv "$f" "/config/$name.from-share-$(date +%Y%m%d-%H%M%S)"
         fi
     done
     rmdir "$OLD" 2>/dev/null || true
