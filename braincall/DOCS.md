@@ -1,6 +1,6 @@
 # BrainCall
 
-**Brain Call – Wenn das Gehirn von zuhause aus anruft.**
+**Brain Call – when your brain calls from home.**
 
 BrainCall answers and makes phone calls with Claude through your FRITZ!Box and can read and control
 Home Assistant during the call. The add-on is the same program as the Windows version, configured through this page.
