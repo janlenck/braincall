@@ -225,6 +225,57 @@ class HA:
         self._cache = (0.0, [])
         return "Done. New state: " + self.get_state(entity_id)
 
+    def notify(self, service: str, title: str, message: str):
+        """Message via a notify service, e.g. notify.mobile_app_phone or an SMTP notifier."""
+        name = service.strip().removeprefix("notify.")
+        if not self.enabled or not name:
+            return
+        try:
+            r = self.http.post(f"{self.base}/services/notify/{name}", json={"title": title, "message": message},
+                               timeout=15, verify=self.verify)
+            r.raise_for_status()
+            log.info("Notified via notify.%s", name)
+        except Exception as e:  # noqa: BLE001
+            log.warning("notify.%s failed: %s", name, e)
+
+    # ------------------------------------------------------------------ shopping lists
+    def _shopping_list(self, wanted: str):
+        """(entity_id, error) of an allowed shopping list; without a name the first one that exists."""
+        allowed = [str(x).strip() for x in self.cfg.shopping_lists or [] if str(x).strip()]
+        states = {s["entity_id"]: s for s in self._states() if s["entity_id"] in allowed}
+        lists = [e for e in allowed if e in states]
+        if not lists:
+            return "", f"No shopping list available (shopping_lists: {', '.join(allowed) or 'empty'})."
+        if not wanted:
+            return lists[0], ""
+        w = fold(wanted)
+        for e in lists:
+            if w == fold(e) or w in fold(e + " " + str(states[e].get("attributes", {}).get("friendly_name", ""))):
+                return e, ""
+        return "", f"Not allowed: only these lists may be used: {', '.join(lists)}."
+
+    def shopping(self, wanted: str = "") -> str:
+        entity_id, err = self._shopping_list(wanted)
+        if err:
+            return err
+        return json.dumps({"list": entity_id, "items": self.todo_items(entity_id)}, ensure_ascii=False)
+
+    def shopping_edit(self, action: str, item: str, wanted: str = "") -> str:
+        entity_id, err = self._shopping_list(wanted)
+        if err:
+            return err
+        services = {"add": ("add_item", {}), "check": ("update_item", {"status": "completed"}),
+                    "uncheck": ("update_item", {"status": "needs_action"}), "remove": ("remove_item", {})}
+        if action not in services or not str(item or "").strip():
+            return "Error: action must be add, check, uncheck or remove, and item must be set."
+        service, extra = services[action]
+        body = {"entity_id": entity_id, "item": str(item).strip(), **extra}
+        log.warning("SHOPPING todo.%s %s", service, body)
+        r = self.http.post(f"{self.base}/services/todo/{service}", json=body, timeout=15, verify=self.verify)
+        if r.status_code >= 400:
+            return f"Error {r.status_code}: {r.text[:200]}"
+        return "Done. " + self.shopping(entity_id)
+
     # ------------------------------------------------------------------ calendars
     def _calendars(self, wanted) -> list:
         cals = [s for s in self._states() if s["entity_id"].startswith("calendar.")]
@@ -239,6 +290,39 @@ class HA:
                     out.append(c)
         return out
 
+    def _fetch_events(self, cals: list, begin: datetime, end: datetime):
+        """[(calendar name, event)] plus error lines for the given calendars and period."""
+        q = f"?start={begin.isoformat()}&end={end.isoformat()}".replace("+", "%2B")
+        found, errors = [], []
+        for c in cals:
+            name = c.get("attributes", {}).get("friendly_name") or c["entity_id"]
+            try:
+                found += [(name, ev) for ev in self._get(f"/calendars/{c['entity_id']}{q}")]
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"[{name}] Error: {e}")
+        return found, errors
+
+    @staticmethod
+    def _span(ev: dict):
+        """(start, end, all_day) of an event in local time; the end of all-day events is exclusive."""
+        st, en = ev.get("start", {}), ev.get("end", {})
+        if "dateTime" in st:
+            s = datetime.fromisoformat(st["dateTime"]).astimezone()
+            e = datetime.fromisoformat(en["dateTime"]).astimezone() if "dateTime" in en else s + timedelta(hours=1)
+            return s, e, False
+        d = datetime.fromisoformat(st.get("date", "1970-01-01")).astimezone()
+        e = datetime.fromisoformat(en["date"]).astimezone() if en.get("date") else d + timedelta(days=1)
+        return d, max(e, d + timedelta(days=1)), True
+
+    def _period(self, days, start: str):
+        now = datetime.now().astimezone()
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            begin = datetime.fromisoformat(start).astimezone() if start else midnight
+        except ValueError:
+            begin = midnight
+        return begin, begin + timedelta(days=max(1, min(int(days or 7), 366)))
+
     def events(self, calendars=None, days: int = 7, start: str = "") -> str:
         """Appointments from HA calendars. calendars: entity_ids/name parts; empty = defaults from config."""
         wanted = calendars or self.cfg.default_calendars or []
@@ -246,47 +330,63 @@ class HA:
         if not cals:
             names = [c["entity_id"] for c in self._calendars([])]
             return f"No matching calendar. Available: {', '.join(names)}"
-        now = datetime.now().astimezone()
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        try:
-            begin = datetime.fromisoformat(start).astimezone() if start else midnight
-        except ValueError:
-            begin = midnight
-        end = begin + timedelta(days=max(1, min(int(days or 7), 366)))
-        q = f"?start={begin.isoformat()}&end={end.isoformat()}".replace("+", "%2B")
-        lines = []
-        for c in cals:
-            name = c.get("attributes", {}).get("friendly_name") or c["entity_id"]
-            try:
-                evs = self._get(f"/calendars/{c['entity_id']}{q}")
-            except Exception as e:  # noqa: BLE001
-                lines.append(f"[{name}] Error: {e}")
-                continue
-            for ev in evs:
-                st, en = ev.get("start", {}), ev.get("end", {})
-                if "dateTime" in st:
-                    t = datetime.fromisoformat(st["dateTime"]).astimezone()
-                    when = f"{_wd(t)} " + t.strftime("%Y-%m-%d %H:%M")
-                    if "dateTime" in en:
-                        when += "–" + datetime.fromisoformat(en["dateTime"]).astimezone().strftime("%H:%M")
-                    key = t.isoformat()
-                else:
-                    d = datetime.fromisoformat(st.get("date", "1970-01-01"))
-                    when = f"{_wd(d)} " + d.strftime("%Y-%m-%d") + " all-day"
-                    key = d.isoformat()
-                extra = f" ({ev['location']})" if ev.get("location") else ""
-                lines.append((key, f"{when}: {ev.get('summary', '?')}{extra}  [{name}]"))
-        found = sorted(x for x in lines if isinstance(x, tuple))
-        errors = [x for x in lines if isinstance(x, str)]
+        begin, end = self._period(days, start)
+        evs, errors = self._fetch_events(cals, begin, end)
+        found = []
+        for name, ev in evs:
+            t, e, all_day = self._span(ev)
+            if all_day:
+                when = f"{_wd(t)} " + t.strftime("%Y-%m-%d") + " all-day"
+            else:
+                when = f"{_wd(t)} " + t.strftime("%Y-%m-%d %H:%M") + "–" + e.strftime("%H:%M")
+            extra = f" ({ev['location']})" if ev.get("location") else ""
+            found.append((t.isoformat(), f"{when}: {ev.get('summary', '?')}{extra}  [{name}]"))
+        found.sort()
         log.info("Events %s, %d days: %d", [c["entity_id"] for c in cals], (end - begin).days, len(found))
         head = (f"Period {begin:%Y-%m-%d} to {end - timedelta(seconds=1):%Y-%m-%d}, calendars: "
                 + ", ".join(c.get("attributes", {}).get("friendly_name") or c["entity_id"] for c in cals))
         body = "\n".join(e for _, e in found) or "No appointments in this period."
         return "\n".join([head, body, *errors])
 
+    def _busy(self, begin: datetime, end: datetime):
+        """Merged busy blocks [(start, end, all_day)] of the default calendars, without any details."""
+        cals = self._calendars(self.cfg.default_calendars or [])
+        evs, errors = self._fetch_events(cals, begin, end)
+        spans = sorted(self._span(ev) for _, ev in evs)
+        merged = []
+        for s, e, all_day in spans:
+            if merged and s <= merged[-1][1] and all_day == merged[-1][2]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e, all_day])
+        return [tuple(m) for m in merged if m[1] > begin and m[0] < end], errors
+
+    def busy_times(self, days: int = 7, start: str = "") -> str:
+        """Only when the owner is busy (default calendars), no titles, places or calendar names."""
+        begin, end = self._period(days, start)
+        blocks, errors = self._busy(begin, end)
+        lines = []
+        for s, e, all_day in blocks:
+            if all_day:
+                last = e - timedelta(days=1)
+                when = f"{_wd(s)} {s:%Y-%m-%d}" + (f" to {_wd(last)} {last:%Y-%m-%d}" if last.date() > s.date() else "")
+                lines.append(f"{when}: all day busy")
+            elif s.date() == e.date():
+                lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M}–{e:%H:%M}: busy")
+            else:
+                lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M} to {_wd(e)} {e:%Y-%m-%d %H:%M}: busy")
+        log.info("Busy times %d days: %d blocks", (end - begin).days, len(lines))
+        head = (f"Period {begin:%Y-%m-%d} to {end - timedelta(seconds=1):%Y-%m-%d}. Only busy times, no details; "
+                "all other times are free.")
+        return "\n".join([head, "\n".join(lines) or "Nothing busy in this period.", *errors])
+
     def create_event(self, calendar: str, title: str, start: str, end: str = "",
-                     location: str = "", description: str = "", confirmed: bool = False) -> str:
-        """Create an appointment via calendar.create_event (only calendars whose integration supports it)."""
+                     location: str = "", description: str = "", confirmed: bool = False,
+                     restricted: bool = False) -> str:
+        """Create an appointment via calendar.create_event (only calendars whose integration supports it).
+        restricted (callers without admin): only the default calendar, and only into a free slot."""
+        if restricted:
+            calendar = ""
         cals = self._calendars([calendar] if calendar else (self.cfg.default_calendars or []))
         writable = [c for c in cals if int(c.get("attributes", {}).get("supported_features", 0)) & 1]
         if not writable:
@@ -319,6 +419,21 @@ class HA:
                 body["end_date"] = e.isoformat()  # HA: end date is exclusive
         except ValueError as e:
             return f"Date not readable ({e}). Format: 2026-10-30T14:00, or 2026-10-30 for all-day."
+        if restricted:
+            if "start_date" in body:
+                begin = datetime.fromisoformat(body["start_date"]).astimezone()
+                stop = datetime.fromisoformat(body["end_date"]).astimezone()
+            else:
+                begin = datetime.fromisoformat(body["start_date_time"])
+                stop = datetime.fromisoformat(body["end_date_time"])
+            if stop <= begin:
+                return "End must be after start."
+            blocks, errors = self._busy(begin, stop)
+            if errors:
+                return "Calendar not readable, appointment NOT added: " + "; ".join(errors)
+            if blocks:
+                return ("Not added: that time is already busy. Check ha_busy_times and suggest a free time "
+                        "to the caller.")
         log.warning("EVENT %s", body)
         r = self.http.post(f"{self.base}/services/calendar/create_event", json=body,
                            timeout=15, verify=self.verify)

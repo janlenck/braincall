@@ -72,15 +72,37 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 
 ## Callers and permissions
 
-- `trusted_numbers` (`{"number": "name"}`): full access, may query and control Home Assistant,
-  incoming and outgoing. The name is used in the log; the first word is used to address the person.
-  Numbers are compared completely; `+49…`, `0049…` and `0…` count as the same (`country_code`).
-- Everyone else (incoming if `inbound_allowed` contains `"*"` or the number, or when the agent calls a
-  number that is not trusted): small talk only. The assistant gives no information about the house and
-  controls nothing. Incoming, it asks for name and reason; the conversation is saved to
-  `logs/call-notes.txt` and sent to Home Assistant as an event.
+`callers` is the one list of who may call and what they may do, incoming and outgoing:
+
+```json
+"callers": [
+  { "number": "0151xxxxxxx", "name": "Jan Mobile", "access": "admin" },
+  { "number": "0170xxxxxxx", "name": "Maryna", "access": "calendar", "language": "uk",
+    "instructions": "If Jan is free, book her wish date titled \"Maryna comes\"." },
+  { "number": "*", "name": "Unknown", "access": "guest" }
+]
+```
+
+- `access` (several possible, `"shopping, calendar"` or a list) decides which tools Claude gets in the call.
+  The code enforces it, not the prompt: a caller cannot talk the assistant into more.
+  - `admin`: everything, read and control Home Assistant, appointments.
+  - `read`: read everything (states, sensors, appointments with details), change nothing.
+  - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
+    free slot of the default calendar after repeating day and time to the caller, without asking you.
+    A busy slot is refused by the code (all-day entries count as busy).
+  - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).
+  - `guest`: no access; asks for name and reason. The note goes to `logs/call-notes.txt`.
+- `instructions` are appended to the prompt for this caller; they can narrow, not widen, the access.
+- `language` fixes the language of this caller.
+- Numbers are compared completely; `+49…`, `0049…` and `0…` count as the same (`country_code`).
+  A listed number wins over `"*"`. Without `"*"` unknown numbers are rejected.
 - Withheld numbers are never answered: the call is rejected right away, logged as unknown and reported
   to Home Assistant (`braincall_call` with `answered: false`).
+- After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
+  language) and sends it to every service in `notify_services` (e.g. `notify.mobile_app_phone`, an SMTP
+  notifier). Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
+- Older settings `inbound_allowed`, `trusted_numbers` and `caller_languages` are converted on start:
+  trusted numbers become `admin`, `"*"` becomes a `guest` entry, other numbers only allowed to call are dropped.
 - `default_number` is only the target of the test call and grants no rights.
 - `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
 - `owner_name` (e.g. `"Jan Lenck"`) is whose assistant this is; the first name is used in conversations.
@@ -104,12 +126,12 @@ rest_command:
 ```
 
 After each call the agent fires the HA event `braincall_call`
-(`number`, `answered`, `reason`, `duration_s`, `transcript`).
+(`number`, `answered`, `reason`, `duration_s`, `transcript`, `caller_name`, `access`, `summary`).
 
 ## Languages
 
 `language`: `de`, `uk`, `en` or `auto` (answers in the language the caller spoke last).
-`caller_languages` sets the language per number. Fixed phrases exist in German, Ukrainian and English.
+`language` in a `callers` entry sets the language per caller. Fixed phrases exist in German, Ukrainian and English.
 
 ## Limits
 

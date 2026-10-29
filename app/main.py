@@ -4,7 +4,6 @@ import json
 import logging
 import logging.handlers
 import os
-import re
 import signal
 import socket
 import sys
@@ -90,47 +89,90 @@ def detect_local_ip(target: str) -> str:
 
 
 def norm(n: str) -> str:
-    """Complete number in a comparable form: digits plus * and # (internal numbers like **611),
-    international prefix of the own country folded to a leading 0 (+49151… == 0049151… == 0151…)."""
-    s = re.sub(r"[^\d*#+]", "", str(n or ""))
-    s = ("00" + s[1:] if s.startswith("+") else s).replace("+", "")
-    cc = "00" + re.sub(r"\D", "", str(cfg.country_code or ""))
-    if len(cc) > 2 and s.startswith(cc):
-        s = "0" + s[len(cc):]
-    return s
+    return config.norm_number(n, cfg.country_code)
 
 
 def same_number(a: str, b: str) -> bool:
     return bool(norm(a)) and norm(a) == norm(b)
 
 
-def trusted_name(number: str) -> str:
-    """Name for a number listed in trusted_numbers, otherwise "".
-    trusted_numbers may be a list (name = owner_name) or an object {"number": "name"}."""
-    tn = cfg.trusted_numbers or []
-    items = tn.items() if isinstance(tn, dict) else ((n, OWNER) for n in tn)
-    for n, name in items:
-        if same_number(n, number):
-            return str(name or OWNER or n)
-    return ""
+GUEST = frozenset({"guest"})
+SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзвінок від {who}"}
 
 
-def report(answered: bool, number: str, started: float, session=None, message=""):
+def find_caller(number: str, wildcard: bool = True) -> dict | None:
+    """Entry from callers for a number; an exact number wins over "*". None = not listed."""
+    fallback = None
+    for c in cfg.callers:
+        if c["number"] == "*":
+            fallback = fallback or c
+        elif same_number(c["number"], number):
+            return c
+    return fallback if wildcard else None
+
+
+def caller_name(caller: dict | None) -> str:
+    """Name of a listed number; "" for unknown callers (the "*" entry), they get asked for their name."""
+    if not caller or caller["number"] == "*":
+        return ""
+    return caller["name"] or OWNER or caller["number"]
+
+
+def lang_for(caller: dict | None) -> str:
+    """Language of the caller entry, otherwise the global setting."""
+    return (caller or {}).get("language") or cfg.language or "de"
+
+
+def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary=""):
     ha.fire_event("braincall_call", {
         "number": number,
         "answered": answered,
         "reason": message,
         "duration_s": round(time.time() - started),
         "transcript": "\n".join(session.transcript) if session else "",
+        "caller_name": caller_name(caller),
+        "access": ",".join(sorted(caller["access"])) if caller else "",
+        "summary": summary,
     })
 
 
-def lang_for(number: str) -> str:
-    """Language for a number from caller_languages, otherwise the global setting."""
-    for n, lang in (cfg.caller_languages or {}).items():
-        if same_number(n, number):
-            return lang
-    return cfg.language or "de"
+def after_call(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
+    """Summary, event, notification and call note; runs after the line is free again."""
+    try:
+        access = caller["access"] if caller else GUEST
+        summary = ""
+        if session and session.caller_turns:
+            lang = cfg.language if cfg.language in SUMMARY_TITLE else "de"
+            name = caller_name(caller)
+            try:
+                summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
+                                          session.actions, lang)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Summary failed: %s", e)
+            notify = caller.get("notify") if caller else None
+            if inbound and (notify if notify is not None else "admin" not in access):
+                title = SUMMARY_TITLE[lang].format(who=f"{name} ({number})" if name else number)
+                text = summary or "\n".join(session.transcript)[-1500:]
+                for service in cfg.notify_services or []:
+                    ha.notify(str(service), title, text)
+            if summary:
+                log.info("Summary: %s", summary)
+        report(answered, number, started, session, message, caller, summary)
+        if inbound and session and access == GUEST and session.transcript:
+            notes = _LOGDIR / "call-notes.txt"
+            with open(notes, "a", encoding="utf-8") as f:
+                f.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M}  from {number or 'withheld'} ===\n")
+                f.write("\n".join(session.transcript) + "\n")
+                if summary:
+                    f.write(f"Summary: {summary}\n")
+            log.info("Call note saved: %s", notes)
+    except Exception:  # noqa: BLE001
+        log.exception("After-call handling failed")
+
+
+def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
+    threading.Thread(target=after_call, name="after call", daemon=True,
+                     args=(answered, number, started, session, message, caller, inbound)).start()
 
 
 def _ringing(call) -> bool:
@@ -145,6 +187,7 @@ def _wait_ringing(call, seconds: float):
 
 def outbound(number: str, message: str):
     started = time.time()
+    caller = find_caller(number, wildcard=False)  # not listed: like a guest, no "*" entry needed
     session = None
     answered = False
     call = None
@@ -167,9 +210,9 @@ def outbound(number: str, message: str):
             return
         answered = True
         session = CallSession(call, brain, speech, cfg)
-        name = trusted_name(number)
-        session.run(outbound=True, message=message, caller=number, language=lang_for(number),
-                    trusted=bool(name), caller_name=name)
+        session.run(outbound=True, message=message, caller=number, language=lang_for(caller),
+                    access=caller["access"] if caller else GUEST, caller_name=caller_name(caller),
+                    instructions=caller["instructions"] if caller else "")
         log.info("Call ended")
     except TimeoutError as e:
         log.warning("Outbound call failed: %s", e)
@@ -188,7 +231,7 @@ def outbound(number: str, message: str):
                     except Exception:  # noqa: BLE001
                         log.exception("Hanging up the cancelled call failed")
                 phone.calls.pop(call.call_id, None)  # pyVoIP never drops unanswered calls -> RTP port stays taken
-        report(answered, number, started, session, message)
+        finish(answered, number, started, session, message, caller, inbound=False)
         busy.release()
 
 
@@ -197,22 +240,19 @@ def on_incoming(call):
         number = call.request.headers["From"]["number"] or ""
     except Exception:  # noqa: BLE001
         number = ""
-    accept_all = "*" in [str(n).strip() for n in cfg.inbound_allowed]
-    name = trusted_name(number)
-    trusted = bool(name)
+    caller = find_caller(number)
     reason = ""
     if not norm(number):
         reason = "withheld number"
-    elif not trusted and not accept_all and not any(same_number(n, number) for n in cfg.inbound_allowed):
-        reason = "not in inbound_allowed"
+    elif caller is None:
+        reason = "not in callers"
     if reason:
         log.warning("Incoming call from %s rejected (%s)", number or "unknown", reason)
         try:
             call.deny()
         except Exception:  # noqa: BLE001
             pass
-        ha.fire_event("braincall_call", {"number": number or "unknown", "answered": False,
-                                              "reason": f"rejected: {reason}", "duration_s": 0, "transcript": ""})
+        report(False, number or "unknown", time.time(), message=f"rejected: {reason}")
         return
     if not busy.acquire(blocking=False):
         try:
@@ -222,21 +262,18 @@ def on_incoming(call):
         return
     started = time.time()
     session = None
+    name = caller_name(caller)
+    access = ",".join(sorted(caller["access"]))
     try:
-        log.info("Answering call from %s (%s)", number or "withheld", name if trusted else "unknown, notes only")
+        log.info("Answering call from %s (%s, access %s)", number, name or "unknown", access)
         call.answer()
         session = CallSession(call, brain, speech, cfg)
-        session.run(outbound=False, caller=number, trusted=trusted, language=lang_for(number), caller_name=name)
+        session.run(outbound=False, caller=number, access=caller["access"], language=lang_for(caller),
+                    caller_name=name, instructions=caller["instructions"])
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
-        report(True, number, started, session, "incoming" if trusted else "incoming (untrusted caller)")
-        if session and not trusted and session.transcript:
-            notes = _LOGDIR / "call-notes.txt"
-            with open(notes, "a", encoding="utf-8") as f:
-                f.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M}  from {number or 'withheld'} ===\n")
-                f.write("\n".join(session.transcript) + "\n")
-            log.info("Call note saved: %s", notes)
+        finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True)
         busy.release()
 
 
@@ -392,6 +429,10 @@ def main():
         log.warning("owner_name is not set (config.json) - the assistant will speak of \"the owner\"")
 
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
+    for w in config.WARNINGS:
+        log.warning(w)
+    log.info("Callers: %s", ", ".join(f"{c['name'] or c['number']} ({','.join(sorted(c['access']))})"
+                                      for c in cfg.callers) or "none, incoming calls are rejected")
     server = None
 
     def on_sigterm(signum, frame):  # Home Assistant stops the add-on with SIGTERM

@@ -47,14 +47,29 @@
 
   // --- Who calls / who gets called ---
   "default_number": "0151xxxxxxx",    // target of the test call (key A, test-call.bat), grants no rights
-  "inbound_allowed": ["*"],           // ["*"] = accept all, [] = only trusted_numbers, or a list of numbers
-                                      // (withheld numbers are always rejected)
-  "trusted_numbers": {                // only these numbers may query and control Home Assistant;
-    "0151xxxxxxx": "Jan Mobile",      // name for the log, its first word is used to address the person
-    "**611": "Jan Internal"           // internal FRITZ!Box numbers work too
-  },
+  // Who may call and what they may do. Not listed = rejected; "*" = everyone else; withheld numbers are
+  // always rejected. The same list applies when the agent calls someone (not listed = guest).
+  // access (several possible, as list or "a, b"):
+  //   admin    everything: read and control Home Assistant, appointments
+  //   read     read everything (states, sensors, appointments with details), change nothing
+  //   calendar only free/busy times (no details), books appointments in free slots without asking you
+  //   shopping only the shopping list(s) from shopping_lists
+  //   guest    no access at all, takes a message
+  // instructions: extra instructions for the assistant for this caller (optional)
+  // language: fixed language for this caller (optional, otherwise "language")
+  // notify: send the summary after the call (optional; default: everyone except admin)
+  "callers": [
+    { "number": "0151xxxxxxx", "name": "Jan Mobile", "access": "admin" },  // first word of name = address
+    { "number": "**611", "name": "Jan Internal", "access": "admin" },     // internal FRITZ!Box numbers work too
+    { "number": "0171xxxxxxx", "name": "Walter", "access": "read" },
+    { "number": "0170xxxxxxx", "name": "Maryna", "access": "calendar", "language": "uk",
+      "instructions": "May ask whether Jan is at home in the next 7 days; if free, book her wish date titled \"Maryna comes\"." },
+    { "number": "0160xxxxxxx", "name": "Shopper", "access": ["shopping", "calendar"] },
+    { "number": "*", "name": "Unknown", "access": "guest" }
+  ],
+  "notify_services": [],              // summary after incoming calls, e.g. ["notify.mobile_app_phone", "notify.email"]
+  "shopping_lists": ["todo.shopping_list"],  // the only lists callers with access "shopping" may use
   "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
-  "caller_languages": {},             // language per number, e.g. { "0170xxxxxxx": "uk" }
   "ring_timeout": 90,                 // seconds to ring before an unanswered outbound call is cancelled
 
   // --- Claude ---
@@ -93,7 +108,7 @@
   "ha_token": "",                     // long-lived access token, or environment variable HA_TOKEN
   "ha_verify_ssl": true,              // true/false or path to the CA certificate (.crt/.pem)
   "default_calendars": ["calendar.xyz", "holiday"],  // entity_ids or name parts; [] = all calendars
-  "calendar_write": true,             // trusted callers may create appointments (after confirmation)
+  "calendar_write": true,             // callers with access admin/calendar may create appointments
   "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                       "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
   "confirm_domains": ["cover", "lock", "alarm_control_panel"]  // ask for an explicit "yes" first

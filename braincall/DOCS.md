@@ -12,10 +12,35 @@ Home Assistant during the call. The add-on is the same program as the Windows ve
 2. **Configuration tab:** fill in at least
    - FRITZ!Box address, user name and password of the IP phone
    - Anthropic and OpenAI API key
-   - Owner (your name) and the trusted numbers (only they may query and control Home Assistant)
+   - Owner (your name) and the **Callers** (see below)
 
    Home Assistant access needs no token, the add-on gets it automatically.
 3. **Info tab:** enable *Start on boot* and *Watchdog*, then *Start*. The log must show `SIP status: REGISTERED`.
+
+## Callers
+
+One entry per number: number (or `*` for everyone else), name, access, optional instructions, language
+and notify. Without a `*` entry unknown numbers are rejected; withheld numbers always.
+
+| access | may |
+|---|---|
+| `admin` | everything: read and control Home Assistant, appointments |
+| `read` | read everything (also appointments with details), change nothing |
+| `calendar` | only free/busy times, no details; books an appointment in a free slot without asking you |
+| `shopping` | only the lists in *Shopping lists* |
+| `guest` | nothing, takes a message |
+
+Several at once separated by commas, e.g. `shopping, calendar`. The access decides which tools the assistant
+gets in the call; *instructions* (e.g. `If Jan is free, book her wish date titled "Maryna comes".`) can only
+narrow it.
+
+After an incoming call a short summary (translated into the configured language) goes to every service in
+*Notify after calls*, e.g. `notify.mobile_app_<phone>` or an e-mail notifier. Default: for everyone except
+`admin`; *notify* per caller overrides it.
+
+Updating from 1.0.x converts *Allowed callers*, *Trusted numbers* and *Language per number* once: trusted
+numbers become `admin`, `*` becomes a `guest` entry, numbers only allowed to call are dropped. The old fields
+are emptied afterwards (check the log).
 
 Logs (`braincall.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
@@ -65,7 +90,7 @@ rest_command:
 
 Then e.g. `action: rest_command.braincall` with `data: {message: "The washing machine is done."}`.
 After each call the event `braincall_call` is fired (`number`, `answered`, `reason`, `duration_s`,
-`transcript`).
+`transcript`, `caller_name`, `access`, `summary`).
 
 ## Updates
 

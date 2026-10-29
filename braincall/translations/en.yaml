@@ -26,18 +26,33 @@ configuration:
   default_number:
     name: Test call number
     description: Target of a call without number; grants no rights.
+  callers:
+    name: Callers
+    description: >-
+      Who may call and what they may do. number: phone number or * (everyone else; without * unknown numbers are
+      rejected, withheld numbers always). name: the first word is used to address the person.
+      access, several separated by commas: admin (everything), read (read everything, change nothing),
+      calendar (free/busy only, book appointments without asking you), shopping (shopping list only),
+      guest (take a message only). instructions: extra instructions for the assistant for this caller.
+      language: fixed language. notify: send the summary (default: everyone except admin).
+  notify_services:
+    name: Notify after calls
+    description: 'Notify services that get a summary after each incoming call, e.g. notify.mobile_app_phone or an e-mail notifier.'
+  shopping_lists:
+    name: Shopping lists
+    description: The only to-do lists callers with access "shopping" may use.
   inbound_allowed:
-    name: Allowed callers
-    description: '* = everyone, empty = trusted numbers only, otherwise a list of numbers. Withheld numbers are always rejected.'
+    name: Allowed callers (old)
+    description: Converted into Callers on start. Leave empty.
   trusted_numbers:
-    name: Trusted numbers
-    description: 'Only these numbers may query and control Home Assistant. Name: the first word is used to address the person.'
+    name: Trusted numbers (old)
+    description: Converted into Callers on start. Leave empty.
   country_code:
     name: Country code
     description: +49 / 0049 count as the same number as a leading 0.
   caller_languages:
-    name: Language per number
-    description: Fixed language for single callers.
+    name: Language per number (old)
+    description: Converted into Callers on start. Leave empty.
   ring_timeout:
     name: Ring time (s)
     description: After this an unanswered call is cancelled.
@@ -97,7 +112,7 @@ configuration:
     description: entity_ids or name parts; empty = all calendars.
   calendar_write:
     name: Create appointments
-    description: Trusted callers may create appointments (after confirmation).
+    description: Callers with access admin or calendar may create appointments (after confirmation).
   control_domains:
     name: Controllable domains
     description: Domains that may be controlled; empty = control nothing.

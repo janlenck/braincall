@@ -44,7 +44,9 @@ class CallSession:
         self.sentence_q: queue.Queue = queue.Queue()
         self.audio_q: queue.Queue = queue.Queue()
         self.transcript: list[str] = []
-        self.restricted = False
+        self.access = frozenset({"guest"})
+        self.actions: list[str] = []  # changing tool calls, for the summary
+        self.caller_turns = 0
         self.seg_voiced = 0
         self.language = cfg.language or "de"
         self.caller_label = "caller"
@@ -232,6 +234,7 @@ class CallSession:
             if text:
                 log.info("%s: %s", self.caller_label, text)
                 self.transcript.append(f"{self.caller_label}: {text}")
+                self.caller_turns += 1
                 return text
 
     # ------------------------------------------------------------------ call flow
@@ -239,20 +242,46 @@ class CallSession:
         self.interrupt.clear()
         hang = self.brain.turn(messages, self.say,
                                lambda: self.interrupt.is_set() or not self.alive(),
-                               restricted=self.restricted, language=self.language)
+                               access=self.access, language=self.language, actions=self.actions)
         self.wait_spoken()
         self.interrupt.clear()
         return hang
 
-    def run(self, outbound: bool, message: str = "", caller: str = "", trusted: bool = True,
-            language: str = "", caller_name: str = ""):
-        self.restricted = not trusted  # only trusted_numbers may query and control the house
-        full = caller_name if trusted else ""
+    def _rights(self, name: str) -> str:
+        """System note on what the caller may do (the tools themselves are limited in Brain.tools_for)."""
+        owner = self.owner_first
+        who = name or "The caller"
+        quiet = (f"Give no information at all about {owner}, the house, whether anyone is at home, or about devices"
+                 + (", except what is allowed above. " if self.access - {"guest"} else ". "))
+        if "admin" in self.access:
+            return ""
+        if self.access == {"guest"}:
+            return f"You have no access to the house in this call. {quiet}"
+        parts = []
+        if "read" in self.access:
+            parts.append(f"{who} may ask about everything in Home Assistant (states, sensors, appointments "
+                         "with details), but must not switch or change anything. ")
+        elif "calendar" in self.access:
+            parts.append(f"{who} may ask whether {owner} is free or busy (ha_busy_times: you only see busy times, "
+                         "never guess or reveal what an appointment is). ")
+        if "calendar" in self.access and self.cfg.calendar_write:
+            parts.append(f"{who} may book an appointment in a free slot of the default calendar without {owner}'s "
+                         "approval: repeat day and time once, and after a yes call ha_create_event with "
+                         "confirmed=true. ")
+        if "shopping" in self.access:
+            parts.append(f"{who} may hear and change the shopping list (shopping_list, shopping_edit). ")
+        return "".join(parts) + ("" if "read" in self.access else quiet)
+
+    def run(self, outbound: bool, message: str = "", caller: str = "", access=frozenset({"guest"}),
+            language: str = "", caller_name: str = "", instructions: str = ""):
+        self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
+        full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
         name = full.split("(")[0].split()[0] if full.strip() else ""  # to address the person: "Jan"
         owner = self.owner_first
-        keep_quiet = (f"You have no access to the house in this call. Give no information at all about {owner}, "
-                      f"the house, whether anyone is at home, or about devices. ")
+        rights = self._rights(name)
+        if instructions:
+            rights += f"Instructions from {owner} for this caller: {instructions} "
         if language:
             self.language = language
         threads = [threading.Thread(target=f, daemon=True)
@@ -276,24 +305,26 @@ class CallSession:
                        else f"the number {caller or 'unknown'} (name unknown; {owner} asked you to make this call — "
                             "politely ask who you are talking to)")
                 intro = (f"[System: You are calling {who}. Reason: {message or 'no specific reason given'}. "
-                         + ("" if trusted else keep_quiet)
+                         + rights
                          + (f"When the call was answered you heard: “{heard}”. " if heard
                             else "Nothing was heard when the call was answered. ")
                          + "If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
                          + "message of two or three sentences and hang up afterwards. "
                          + "Otherwise greet briefly and get straight to the point.]")
-            elif trusted:
+            elif self.access != {"guest"} and name:
                 intro = (f"[System: {name} is calling you (from {caller or 'unknown'}). "
                          + (f"Already said when answering: “{heard}”. " if heard else "")
+                         + rights
                          + f"Answer briefly and address {name} by name.]")
             else:
                 assistant = self.cfg.assistant_name or "the call assistant"
-                intro = (f"[System: Someone is calling {owner}, number {caller}. This is NOT {owner}. "
+                known = f"The caller is probably {name}. " if name else ""
+                intro = (f"[System: Someone is calling {owner}, number {caller}. This is NOT {owner}. " + known
                          + (f"When answering you heard: “{heard}”. " if heard else "")
                          + f"You are {owner}'s phone assistant. Introduce yourself (in the conversation language) as: "
                          + f"This is {assistant}, {self.owner or owner}'s assistant. "
                          + "First ask for the caller's name, then for the reason of the call "
-                         + f"and whether {owner} should call back. " + keep_quiet
+                         + f"and whether {owner} should call back. " + rights
                          + "At the end briefly repeat what you noted, say goodbye and hang up. "
                          + f"The conversation is passed on to {owner} as a note.]")
             messages = [{"role": "user", "content": intro}]
