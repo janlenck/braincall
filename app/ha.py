@@ -226,14 +226,21 @@ class HA:
         return "Done. New state: " + self.get_state(entity_id)
 
     def notify(self, service: str, title: str, message: str):
-        """Message via a notify service, e.g. notify.mobile_app_phone or an SMTP notifier."""
+        """Message via a notify entity (notify.send_message, e.g. notify.sm_g525f) or a legacy notify service
+        (e.g. notify.mobile_app_phone, an SMTP notifier)."""
         name = service.strip().removeprefix("notify.")
         if not self.enabled or not name:
             return
         try:
-            r = self.http.post(f"{self.base}/services/notify/{name}", json={"title": title, "message": message},
-                               timeout=15, verify=self.verify)
-            r.raise_for_status()
+            body = {"title": title, "message": message}
+            if any(s["entity_id"] == f"notify.{name}" for s in self._states()):
+                url, body = f"{self.base}/services/notify/send_message", {**body, "entity_id": f"notify.{name}"}
+            else:
+                url = f"{self.base}/services/notify/{name}"
+            r = self.http.post(url, json=body, timeout=15, verify=self.verify)
+            if r.status_code >= 400:
+                log.warning("notify.%s failed: %s %s", name, r.status_code, r.text[:200])
+                return
             log.info("Notified via notify.%s", name)
         except Exception as e:  # noqa: BLE001
             log.warning("notify.%s failed: %s", name, e)
@@ -352,7 +359,14 @@ class HA:
         """Merged busy blocks [(start, end, all_day)] of the default calendars, without any details."""
         cals = self._calendars(self.cfg.default_calendars or [])
         evs, errors = self._fetch_events(cals, begin, end)
-        spans = sorted(self._span(ev) for _, ev in evs)
+        # HA does not pass on Google's "free"/"busy", so all-day reminders (waste collection …) are marked by words
+        free = [fold(str(w).strip()) for w in self.cfg.all_day_free_words or [] if str(w).strip()]
+        spans = []
+        for _, ev in evs:
+            span = self._span(ev)
+            if not (span[2] and any(w in fold(str(ev.get("summary", ""))) for w in free)):
+                spans.append(span)
+        spans.sort()
         merged = []
         for s, e, all_day in spans:
             if merged and s <= merged[-1][1] and all_day == merged[-1][2]:

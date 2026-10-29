@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+
+- New option *Free all-day entries* (`all_day_free_words`): all-day entries whose title contains one of these
+  words (e.g. waste collection) no longer count as busy for callers with access `calendar`. Home Assistant does
+  not pass on Google's "free"/"busy", so the title decides
+- *Notify after calls* also works with notify entities (e.g. `notify.sm_g525f`, sent via `notify.send_message`),
+  not only with legacy notify services; the error text from Home Assistant is logged
+
 ## 1.1.0
 
 - One list **Callers** instead of *Allowed callers*, *Trusted numbers* and *Language per number*: number (or `*`),

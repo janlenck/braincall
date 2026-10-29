@@ -108,6 +108,8 @@
   "ha_token": "",                     // long-lived access token, or environment variable HA_TOKEN
   "ha_verify_ssl": true,              // true/false or path to the CA certificate (.crt/.pem)
   "default_calendars": ["calendar.xyz", "holiday"],  // entity_ids or name parts; [] = all calendars
+  "all_day_free_words": ["gelber sack", "abfall"],  // all-day entries with these words in the title are free
+                                      // (Home Assistant does not pass on Google's "free"/"busy")
   "calendar_write": true,             // callers with access admin/calendar may create appointments
   "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                       "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing

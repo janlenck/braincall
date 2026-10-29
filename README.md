@@ -89,7 +89,9 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
   - `read`: read everything (states, sensors, appointments with details), change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
-    A busy slot is refused by the code (all-day entries count as busy).
+    A busy slot is refused by the code. All-day entries count as busy unless their title contains one of the
+    `all_day_free_words` (e.g. `["gelber", "sack", "abfall"]`); Home Assistant does not pass on Google's
+    "free"/"busy".
   - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).
   - `guest`: no access; asks for name and reason. The note goes to `logs/call-notes.txt`.
 - `instructions` are appended to the prompt for this caller; they can narrow, not widen, the access.
@@ -99,8 +101,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - Withheld numbers are never answered: the call is rejected right away, logged as unknown and reported
   to Home Assistant (`braincall_call` with `answered: false`).
 - After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
-  language) and sends it to every service in `notify_services` (e.g. `notify.mobile_app_phone`, an SMTP
-  notifier). Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
+  language) and sends it to everything in `notify_services`: notify entities like `notify.phone` or notify
+  services like `notify.mobile_app_phone` or an SMTP notifier. Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
 - Older settings `inbound_allowed`, `trusted_numbers` and `caller_languages` are converted on every start and
   used instead of `callers` as long as they are set: trusted numbers become `admin`, `"*"` becomes a `guest`
   entry, other numbers only allowed to call are dropped. The log shows the converted list to copy over.

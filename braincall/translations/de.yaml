@@ -37,7 +37,7 @@ configuration:
       language: feste Sprache. notify: Zusammenfassung schicken (Standard: alle außer admin).
   notify_services:
     name: Benachrichtigung nach Anrufen
-    description: 'Notify-Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.mobile_app_handy oder ein E-Mail-Notifier.'
+    description: 'Notify-Entitäten oder -Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.handy, notify.mobile_app_handy oder ein E-Mail-Notifier.'
   shopping_lists:
     name: Einkaufslisten
     description: Nur diese To-do-Listen dürfen Anrufer mit access „shopping“ benutzen.
@@ -110,6 +110,9 @@ configuration:
   default_calendars:
     name: Standard-Kalender
     description: entity_ids oder Namensteile; leer = alle Kalender.
+  all_day_free_words:
+    name: Freie Ganztagseinträge
+    description: 'Ganztagseinträge gelten für Anrufer mit access „calendar“ als belegt, außer ihr Titel enthält eins dieser Wörter, z. B. gelber, sack, abfall.'
   calendar_write:
     name: Termine anlegen
     description: Anrufer mit access admin oder calendar dürfen Termine eintragen (nach Bestätigung).
