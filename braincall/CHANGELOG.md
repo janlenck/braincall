@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2
+
+- Console log lines show the date as well as the time (`YYYY-MM-DD HH:MM:SS`), like the log file
+
 ## 1.1.1
 
 - New option *Free all-day entries* (`all_day_free_words`): all-day entries whose title contains one of these
