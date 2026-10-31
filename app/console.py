@@ -47,7 +47,7 @@ class ColorFormatter(logging.Formatter):
     NAME = {"sip": YELLOW, "ha": BLUE, "brain": MAGENTA, "main": GREY}
 
     def format(self, record):
-        t = self.formatTime(record, "%H:%M:%S")
+        t = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
         msg = record.getMessage()
         if record.exc_info:
             msg += "\n" + self.formatException(record.exc_info)
