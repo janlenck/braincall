@@ -469,6 +469,25 @@ def test_statistics_rows_use_the_configured_timezone(connect, utc_machine):
         "2025-10-26T00:00:00+02:00"
 
 
+def test_energy_hourly_rows_across_dst_change(connect):
+    """2025-10-26 has two hours 02:00 in Berlin: each keeps its own row, nothing is merged."""
+    day = datetime(2025, 10, 25, 22, tzinfo=timezone.utc)
+    rec = FakeRecorder({"sensor.pv_energy": [(day + timedelta(hours=h), 1.0) for h in range(25)]})
+    connect(recorder=rec, prefs={"energy_sources": [{"type": "solar", "stat_energy_from": "sensor.pv_energy"}]})
+    out = json.loads(make_ha(timezone="Europe/Berlin").energy("2025-10-26", period="hour"))
+    assert len(out["rows"]) == 25 and all(r["solar"] == 1.0 for r in out["rows"])
+    assert [r["time"] for r in out["rows"][2:4]] == ["Sun 2025-10-26 02:00", "Sun 2025-10-26 02:00"]
+    assert out["totals"]["solar"] == "25.0 kWh"
+
+
+def test_buckets_across_dst_change_with_zoneinfo():
+    hours = buckets(*stat_range("2025-10-26", tz=BERLIN), "hour", BERLIN)
+    assert len(hours) == 25
+    assert all(e.timestamp() - b.timestamp() == 3600 for b, e in hours)
+    spring = buckets(*stat_range("2025-03-30", tz=BERLIN), "hour", BERLIN)
+    assert len(spring) == 23
+
+
 def test_invalid_timezone_falls_back_to_the_machine():
     assert make_ha(timezone="Mars/Olympus").tz is None
     assert make_ha(timezone="Europe/Berlin").tz == BERLIN

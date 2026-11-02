@@ -205,10 +205,13 @@ def _next_start(t: datetime, period: str, tz=None) -> datetime:
 
 
 def buckets(begin: datetime, stop: datetime, period: str, tz=None) -> list:
-    """[(start, end)] per period within [begin, stop) in tz; the first and last one may be partial."""
+    """[(start, end)] per period within [begin, stop) in tz; the first and last one may be partial.
+    Compared as timestamps: Python compares datetimes of the same zone by wall clock and ignores fold,
+    so the repeated hour at the end of summer time would collapse."""
     out, t = [], begin
-    while t < stop:
-        n = min(_next_start(t, period, tz), stop)
+    while t.timestamp() < stop.timestamp():
+        n = _next_start(t, period, tz)
+        n = n if n.timestamp() < stop.timestamp() else stop
         out.append((t, n))
         t = n
     return out
@@ -419,8 +422,8 @@ class HA:
         sums = [{} for _ in spans]
         for sid, col in columns.items():
             for r in stats.get(sid) or []:
-                t = _row_time(r.get("start"), tz)
-                i = next((i for i, (b, e) in enumerate(spans) if b <= t < e), None)
+                t = _row_time(r.get("start"), tz).timestamp()  # instants, not wall clock (DST)
+                i = next((i for i, (b, e) in enumerate(spans) if b.timestamp() <= t < e.timestamp()), None)
                 if i is not None:
                     sums[i][col] = sums[i].get(col, 0.0) + (r.get("change") or 0)
         return [{"time": _row_label(b, period), **{k: _num(v) for k, v in row.items()}}
