@@ -20,11 +20,12 @@ STT_HINT = "Telefongespräch auf Deutsch oder Ukrainisch (українською
 # Typical phrases the speech recognition invents from noise or echo (they occur in German, hence German text).
 # Discarded only as the whole utterance, so "Mach Musik an" still reaches Claude.
 HALLUCINATIONS = {"musik", "untertitel", "vielen dank fürs zuschauen", "danke fürs zuschauen"}
-# Unambiguous patterns, discarded wherever they occur: subtitle credits, music markers, echoes of STT_HINT
+# Unambiguous patterns: music markers, echoes of STT_HINT and amara.org anywhere; subtitle credits, thank-yous
+# and copyright notes only at the start, so "Schalte die Untertitel der Sendung aus" still reaches Claude
 HALLUCINATION_PATTERNS = re.compile(
-    r"♪|♫|[\[(*]\s*musik\s*[\])*]|\buntertitel(?:ung)?\s+(?:von|im auftrag|der|des|durch|by)\b"
-    r"|amara\.org|f[üu]r'?s zuschauen|^copyright\b|©|^www\.\S+$"
-    r"|telefongespräch auf deutsch|українською\)")
+    r"♪|♫|[\[(*]\s*musik\s*[\])*]|amara\.org|telefongespräch auf deutsch|українською\)"
+    r"|^untertitel(?:ung)?\s+(?:von|im auftrag|des|durch|by)\b|^(?:vielen )?dank(?:e)? f[üu]r'?s zuschauen\b"
+    r"|^copyright\b|©|^www\.\S+$")
 
 
 class Speech:

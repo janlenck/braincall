@@ -32,6 +32,8 @@ def stt(text, language="de", **cfg):
     "Die Untertitel sind zu klein",
     "Schau mal auf www.example.de nach",
     "Danke, das wars.",
+    "Mach den Fernseher fürs Zuschauen an.",
+    "Schalte die Untertitel der Sendung aus.",
 ])
 def test_transcribe_keeps_real_speech(text):
     assert stt(text)[0] == text
@@ -52,6 +54,7 @@ def test_transcribe_keeps_real_speech(text):
     "Untertitel von Stephanie Geiges",
     "Untertitelung des ZDF für funk, 2017",
     "Untertitel der Amara.org-Community",
+    "Danke für's Zuschauen, bis zum nächsten Mal!",
     "www.zdf.de",
     "Telefongespräch auf Deutsch oder Ukrainisch (українською).",
     "你好，今天天气怎么样",  # neither Latin nor Cyrillic: misdetected language
