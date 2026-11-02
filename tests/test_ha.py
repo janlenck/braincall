@@ -53,6 +53,7 @@ def make_ha(monkeypatch):
     def make(events=None, cal_error=(), **cfg):
         cfg.setdefault("ha_url", "https://ha:8123")
         cfg.setdefault("ha_token", "token")
+        cfg.setdefault("calendar_max_days_ahead", 0)  # the tests book fixed dates in 2030
         h = HA(make_cfg(**cfg))
         events = events or {}
 
@@ -130,10 +131,94 @@ def test_get_state_http_error(make_ha):
     assert make_ha().get_state("sensor.missing") == "Error: 404 for sensor.missing"
 
 
-@pytest.mark.xfail(strict=True, reason="#21: ha_state drops all attributes")
 def test_get_state_climate_has_current_temperature(make_ha):
     st = json.loads(make_ha().get_state("climate.wohnzimmer"))
-    assert "21.5" in json.dumps(st)
+    assert st["attributes"] == {"current_temperature": 21.5, "temperature": 22}
+
+
+@pytest.mark.parametrize("entity_id, attributes, expected", [
+    ("cover.x", {"current_position": 40, "device_class": "garage"}, {"current_position": 40}),
+    ("light.x", {"brightness": 128, "color_temp_kelvin": 3000, "supported_features": 44},
+     {"brightness_pct": 50, "color_temp_kelvin": 3000}),
+    ("media_player.x", {"media_title": "Song", "media_artist": "Band", "volume_level": 0.3, "source": "Radio",
+                        "entity_picture": "/api/x"},
+     {"media_title": "Song", "media_artist": "Band", "volume_level": 0.3, "source": "Radio"}),
+    ("weather.home", {"temperature": 7.2, "temperature_unit": "°C", "humidity": 80, "wind_speed": 12,
+                      "wind_speed_unit": "km/h", "attribution": "x"},
+     {"temperature": 7.2, "temperature_unit": "°C", "humidity": 80, "wind_speed": 12, "wind_speed_unit": "km/h"}),
+    ("sensor.x", {"unit_of_measurement": "W", "icon": "mdi:x"}, None),
+])
+def test_get_state_domain_attributes(make_ha, entity_id, attributes, expected):
+    h = make_ha()
+    h.http.routes[("GET", f"/states/{entity_id}")] = FakeResponse(
+        {"entity_id": entity_id, "state": "on", "attributes": attributes})
+    assert json.loads(h.get_state(entity_id)).get("attributes") == expected
+
+
+def test_get_state_long_source_list_is_cut(make_ha):
+    h = make_ha()
+    h.http.routes[("GET", "/states/media_player.x")] = FakeResponse(
+        {"entity_id": "media_player.x", "state": "on", "attributes": {"source_list": [str(i) for i in range(50)]}})
+    sources = json.loads(h.get_state("media_player.x"))["attributes"]["source_list"]
+    assert len(sources) == 31 and sources[-1] == "…"
+
+
+def test_search_and_list_show_the_main_attributes(make_ha):
+    h = make_ha()
+    hit = json.loads(h.search("Wohnzimmer"))[0]
+    assert hit["attributes"] == {"current_temperature": 21.5, "temperature": 22}
+    assert h.list_by("climate") == "climate.wohnzimmer | Wohnzimmer | heat | current_temperature=21.5, temperature=22"
+    assert h.list_by("light") == "light.buro | Büro Licht | off"
+
+
+# ---------------------------------------------------------------- forecast
+FORECAST = {"service_response": {"weather.home": {"forecast": [
+    {"datetime": "2030-01-08T11:00:00+00:00", "condition": "rainy", "temperature": 6, "templow": 1,
+     "precipitation": 4.5, "precipitation_probability": 90, "wind_bearing": 200},
+    {"datetime": "2030-01-09T11:00:00+00:00", "condition": "sunny", "temperature": 8, "templow": 0},
+]}}}
+
+
+def forecast_ha(make_ha, response=None, weather=True):
+    h = make_ha()
+    states = STATES + ([{"entity_id": "weather.home", "state": "rainy",
+                         "attributes": {"temperature_unit": "°C", "precipitation_unit": "mm"}}] if weather else [])
+    h.http.routes[("GET", "/states")] = FakeResponse(states)
+    h.http.routes[("POST", "/services/weather/get_forecasts")] = response or FakeResponse(FORECAST)
+    return h
+
+
+def test_forecast_daily(make_ha):
+    h = forecast_ha(make_ha)
+    out = json.loads(h.forecast())
+    assert h.http.posted("/services/weather/get_forecasts") == [{"entity_id": "weather.home", "type": "daily"}]
+    assert "return_response" in [c[1] for c in h.http.calls if "get_forecasts" in c[1]][0]
+    assert out["temperature_unit"] == "°C" and out["precipitation_unit"] == "mm"
+    assert out["forecast"][0] == {"time": "Tue 2030-01-08", "condition": "rainy", "temperature": 6, "templow": 1,
+                                  "precipitation": 4.5, "precipitation_probability": 90}
+    assert out["forecast"][1]["time"] == "Wed 2030-01-09"
+
+
+def test_forecast_hourly_shows_the_time_and_unknown_type_is_daily(make_ha):
+    h = forecast_ha(make_ha)
+    assert json.loads(h.forecast("weather.home", "hourly"))["forecast"][0]["time"] == "Tue 2030-01-08 12:00"
+    h.forecast("", "weekly")
+    assert h.http.posted("/services/weather/get_forecasts")[-1]["type"] == "daily"
+
+
+def test_forecast_limits_entries(make_ha):
+    many = {"service_response": {"weather.home": {"forecast": [
+        {"datetime": f"2030-01-08T{i:02d}:00:00+00:00", "temperature": i} for i in range(24)] * 2}}}
+    h = forecast_ha(make_ha, FakeResponse(many))
+    assert len(json.loads(h.forecast("", "hourly"))["forecast"]) == 24
+
+
+def test_forecast_errors(make_ha):
+    assert forecast_ha(make_ha).forecast("sensor.x").startswith("Error: entity_id must be")
+    assert forecast_ha(make_ha, weather=False).forecast().startswith("No weather entity")
+    assert forecast_ha(make_ha, FakeResponse({"message": "no"}, 400)).forecast().startswith("Error 400")
+    empty = FakeResponse({"service_response": {"weather.home": {"forecast": []}}})
+    assert forecast_ha(make_ha, empty).forecast() == "No daily forecast available for weather.home."
 
 
 def test_local_time_is_not_utc():
@@ -376,9 +461,66 @@ def test_restricted_booking_error_hides_details(make_ha):
         "Appointment NOT added (error)."
 
 
-@pytest.mark.xfail(strict=True, reason="#24: restricted callers can book in the past")
+def in_days(days, fmt="%Y-%m-%dT10:00"):
+    return (datetime.now() + timedelta(days=days)).strftime(fmt)
+
+
 def test_restricted_booking_in_the_past_is_refused(make_ha):
     h = make_ha(default_calendars=["calendar.family"])
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT10:00")
-    h.create_event("", "x", yesterday, confirmed=True, restricted=True)
+    for start in (in_days(-1), in_days(-1, "%Y-%m-%d"), (datetime.now() - timedelta(minutes=5)).isoformat()):
+        assert h.create_event("", "x", start, confirmed=True, restricted=True).startswith(
+            "Not added: the start is in the past")
     assert created(h) == []
+
+
+def test_restricted_booking_today_all_day_is_allowed(make_ha):
+    h = make_ha(default_calendars=["calendar.family"])
+    assert h.create_event("", "x", in_days(0, "%Y-%m-%d"), confirmed=True, restricted=True) == "Added: x."
+
+
+def test_restricted_booking_too_long_is_refused(make_ha):
+    h = make_ha(default_calendars=["calendar.family"])
+    out = h.create_event("", "x", in_days(3), in_days(3, "%Y-%m-%dT14:30"), confirmed=True, restricted=True)
+    assert out.startswith("Not added: a booking may last at most 4 hours")
+    out = h.create_event("", "x", in_days(3, "%Y-%m-%d"), in_days(16, "%Y-%m-%d"), confirmed=True, restricted=True)
+    assert out.startswith("Not added: an all-day booking may cover only one day")
+    assert created(h) == []
+    assert h.create_event("", "x", in_days(3), in_days(3, "%Y-%m-%dT14:00"), confirmed=True,
+                          restricted=True) == "Added: x."
+
+
+def test_restricted_booking_max_hours_from_config(make_ha):
+    h = make_ha(default_calendars=["calendar.family"], calendar_max_hours=1.5)
+    out = h.create_event("", "x", in_days(3), in_days(3, "%Y-%m-%dT12:00"), confirmed=True, restricted=True)
+    assert out.startswith("Not added: a booking may last at most 1.5 hours")
+    h = make_ha(default_calendars=["calendar.family"], calendar_max_hours=0)  # 0 = no limit
+    assert h.create_event("", "x", in_days(3), in_days(4), confirmed=True, restricted=True) == "Added: x."
+
+
+def test_restricted_booking_too_far_ahead_is_refused(make_ha):
+    h = make_ha(default_calendars=["calendar.family"], calendar_max_days_ahead=90)
+    out = h.create_event("", "x", in_days(91), confirmed=True, restricted=True)
+    assert out.startswith("Not added: bookings are possible at most 90 days ahead")
+    assert created(h) == []
+    assert h.create_event("", "x", in_days(89), confirmed=True, restricted=True) == "Added: x."
+
+
+def test_restricted_booking_limit_per_call(make_ha):
+    h = make_ha(default_calendars=["calendar.family"])
+    out = h.create_event("", "x", in_days(3), confirmed=True, restricted=True, booked=2)
+    assert out.startswith("Not added: at most 2 appointment(s) can be booked per call")
+    assert created(h) == []
+    assert h.create_event("", "x", in_days(3), confirmed=True, restricted=True, booked=1) == "Added: x."
+    h = make_ha(default_calendars=["calendar.family"], calendar_max_bookings=0)  # 0 = no limit
+    assert h.create_event("", "x", in_days(3), confirmed=True, restricted=True, booked=10) == "Added: x."
+
+
+def test_restricted_booking_is_checked_before_asking(make_ha):
+    h = make_ha(default_calendars=["calendar.family"])
+    assert h.create_event("", "x", in_days(-1), restricted=True).startswith("Not added: the start is in the past")
+    assert h.create_event("", "x", in_days(3), restricted=True).startswith("Read the appointment")
+
+
+def test_admin_booking_has_no_limits(make_ha):
+    h = make_ha(default_calendars=["calendar.family"], calendar_max_days_ahead=90)
+    assert h.create_event("", "x", in_days(-1), in_days(400), confirmed=True, booked=5) == "Added to Familie: x."

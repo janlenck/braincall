@@ -32,7 +32,9 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | `guest` | nothing, takes a message |
 
 Several at once separated by commas, e.g. `shopping, calendar`. The access decides which tools the assistant
-gets in the call. For `calendar`, all-day entries count as busy unless their title contains one of the
+gets in the call. For `calendar` the code also refuses bookings in the past, longer than *Longest booking*
+(default 4 hours; all-day at most one day), further ahead than *Booking lead time* (default 90 days) and more
+than *Bookings per call* (default 2); 0 switches a limit off. All-day entries count as busy unless their title contains one of the
 *Free all-day entries* words (e.g. `gelber`, `sack`, `abfall`): Home Assistant does not pass on Google's
 "free"/"busy". *Instructions* (e.g. `If Jan is free, book her wish date titled "Maryna comes".`) can only
 narrow it.

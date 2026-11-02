@@ -50,6 +50,36 @@ SYNONYMS = {
 # Service data keys that would widen a call beyond the one checked entity (e.g. area_id = whole room)
 TARGET_KEYS = ("entity_id", "area_id", "device_id", "floor_id", "label_id")
 
+# Useful attributes per domain for ha_state: short answers instead of complete attribute dumps
+ATTRS = {
+    "climate": ("current_temperature", "temperature", "target_temp_low", "target_temp_high", "hvac_action",
+                "hvac_modes", "preset_mode", "current_humidity", "humidity", "fan_mode"),
+    "water_heater": ("current_temperature", "temperature", "operation_mode", "away_mode"),
+    "cover": ("current_position", "current_tilt_position"),
+    "light": ("brightness_pct", "color_temp_kelvin", "color_mode", "effect"),
+    "fan": ("percentage", "preset_mode", "oscillating", "direction"),
+    "humidifier": ("current_humidity", "humidity", "mode", "action"),
+    "media_player": ("media_title", "media_artist", "media_album_name", "media_series_title", "app_name",
+                     "volume_level", "is_volume_muted", "source", "source_list"),
+    "vacuum": ("battery_level", "status"),
+    "weather": ("temperature", "apparent_temperature", "temperature_unit", "humidity", "dew_point",
+                "wind_speed", "wind_gust_speed", "wind_speed_unit", "wind_bearing", "pressure", "pressure_unit",
+                "cloud_coverage", "uv_index", "visibility", "visibility_unit", "precipitation_unit"),
+}
+# The one or two most important of them for ha_search / ha_list
+BRIEF_ATTRS = {
+    "climate": ("current_temperature", "temperature"),
+    "water_heater": ("current_temperature", "temperature"),
+    "cover": ("current_position",),
+    "light": ("brightness_pct",),
+    "media_player": ("media_title", "volume_level"),
+    "weather": ("temperature",),
+}
+# Forecast fields worth reading out, and how many entries per forecast type
+FORECAST_KEYS = ("condition", "temperature", "templow", "precipitation", "precipitation_probability",
+                 "wind_speed", "wind_gust_speed", "humidity", "uv_index", "is_daytime")
+FORECAST_LIMIT = {"daily": 7, "hourly": 24, "twice_daily": 14}
+
 WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -103,15 +133,30 @@ class HA:
         return r.json()
 
     @staticmethod
-    def _fmt(s: dict) -> dict:
+    def _attrs(s: dict, table: dict) -> dict:
+        """Allowlisted attributes of the entity's domain; light brightness 0–255 as brightness_pct."""
+        a = dict(s.get("attributes", {}))
+        if isinstance(a.get("brightness"), (int, float)):
+            a["brightness_pct"] = round(a["brightness"] * 100 / 255)
+        if isinstance(a.get("source_list"), list) and len(a["source_list"]) > 30:
+            a["source_list"] = a["source_list"][:30] + ["…"]
+        keys = table.get(s["entity_id"].split(".", 1)[0], ())
+        return {k: a[k] for k in keys if a.get(k) not in (None, "", [])}
+
+    @classmethod
+    def _fmt(cls, s: dict, brief: bool = False) -> dict:
         a = s.get("attributes", {})
-        return {
+        out = {
             "entity_id": s["entity_id"],
             "name": a.get("friendly_name"),
             "state": s.get("state"),
             "unit": a.get("unit_of_measurement"),
             "changed": _local_time(s.get("last_changed", "")),
         }
+        attrs = cls._attrs(s, BRIEF_ATTRS if brief else ATTRS)
+        if attrs:
+            out["attributes"] = attrs
+        return out
 
     def todo_items(self, entity_id: str) -> list:
         """Items of a to-do/shopping list (the entity state itself only holds the count)."""
@@ -167,7 +212,7 @@ class HA:
             if score:
                 scored.append((score, s["entity_id"].startswith("sensor."), s))
         scored.sort(key=lambda x: (-x[0], not x[1], x[2]["entity_id"]))
-        hits = [self._fmt(s) for _, _, s in scored[:limit]]
+        hits = [self._fmt(s, brief=True) for _, _, s in scored[:limit]]
         log.info("Search '%s': %d hits", term, len(scored))
         if not hits:
             return f"No entity found for '{term}'. Try other or English terms, or use ha_list."
@@ -182,14 +227,50 @@ class HA:
             if (f == str(a.get("unit_of_measurement", "")).lower()
                     or f == str(a.get("device_class", "")).lower()
                     or s["entity_id"].startswith(f + ".")):
+                brief = ", ".join(f"{k}={v}" for k, v in self._attrs(s, BRIEF_ATTRS).items())
                 hits.append(f'{s["entity_id"]} | {a.get("friendly_name", "")} | '
-                            f'{s.get("state")} {a.get("unit_of_measurement", "") or ""}')
+                            f'{s.get("state")} {a.get("unit_of_measurement", "") or ""}'.rstrip()
+                            + (f" | {brief}" if brief else ""))
         log.info("List '%s': %d hits", filter_, len(hits))
         if not hits:
             return (f"Nothing for '{filter_}'. Examples: °C, W, kW, kWh, %, temperature, power, energy, "
                     "battery, sensor, climate, switch.")
         extra = f"\n… and {len(hits) - limit} more" if len(hits) > limit else ""
         return "\n".join(hits[:limit]) + extra
+
+    def forecast(self, entity_id: str = "", kind: str = "daily") -> str:
+        """Weather forecast via weather.get_forecasts (daily, hourly or twice_daily)."""
+        kind = kind if kind in FORECAST_LIMIT else "daily"
+        weather = [s for s in self._states() if s["entity_id"].startswith("weather.")]
+        entity_id = (entity_id or "").strip()
+        if entity_id and not entity_id.startswith("weather."):
+            return "Error: entity_id must be a weather.* entity."
+        if not entity_id:
+            if not weather:
+                return "No weather entity (weather.*) found in Home Assistant."
+            entity_id = weather[0]["entity_id"]
+        r = self.http.post(f"{self.base}/services/weather/get_forecasts?return_response",
+                           json={"entity_id": entity_id, "type": kind}, timeout=15, verify=self.verify)
+        if r.status_code >= 400:
+            return f"Error {r.status_code}: {r.text[:200]}"
+        entries = r.json().get("service_response", {}).get(entity_id, {}).get("forecast") or []
+        if not entries:
+            return f"No {kind} forecast available for {entity_id}."
+        state = next((s for s in weather if s["entity_id"] == entity_id), {})
+        units = {k: v for k, v in state.get("attributes", {}).items()
+                 if k in ("temperature_unit", "precipitation_unit", "wind_speed_unit") and v}
+        out = []
+        for e in entries[:FORECAST_LIMIT[kind]]:
+            item = {k: e[k] for k in FORECAST_KEYS if e.get(k) is not None}
+            try:
+                t = datetime.fromisoformat(str(e.get("datetime", "")).replace("Z", "+00:00")).astimezone()
+                item = {"time": f"{_wd(t)} " + t.strftime("%Y-%m-%d" if kind == "daily" else "%Y-%m-%d %H:%M"),
+                        **item}
+            except ValueError:
+                item = {"time": e.get("datetime"), **item}
+            out.append(item)
+        log.info("Forecast %s %s: %d entries", entity_id, kind, len(out))
+        return json.dumps({"entity_id": entity_id, "type": kind, **units, "forecast": out}, ensure_ascii=False)
 
     def fire_event(self, name: str, data: dict):
         if not self.enabled:
@@ -397,11 +478,37 @@ class HA:
                 "all other times are free.")
         return "\n".join([head, "\n".join(lines) or "Nothing busy in this period."])
 
+    def _booking_refusal(self, begin: datetime, stop: datetime, all_day: bool, booked: int) -> str:
+        """Why a booking by a caller without admin is outside the limits; empty if it is within them."""
+        now = datetime.now().astimezone()
+        max_bookings = int(self.cfg.calendar_max_bookings or 0)
+        max_hours = float(self.cfg.calendar_max_hours or 0)
+        max_days = int(self.cfg.calendar_max_days_ahead or 0)
+        if max_bookings and booked >= max_bookings:
+            return (f"Not added: at most {max_bookings} appointment(s) can be booked per call. "
+                    "Tell the caller that no further appointment can be added in this call.")
+        if stop <= begin:
+            return "End must be after start."
+        if (begin.date() < now.date()) if all_day else (begin <= now):
+            return "Not added: the start is in the past. Ask the caller for a time in the future."
+        if all_day and (stop.date() - begin.date()).days > 1:
+            return ("Not added: an all-day booking may cover only one day. "
+                    "Ask the caller for a single day or a time slot.")
+        if not all_day and max_hours and stop - begin > timedelta(hours=max_hours):
+            return (f"Not added: a booking may last at most {max_hours:g} hours. "
+                    "Ask the caller for a shorter appointment.")
+        if max_days and begin > now + timedelta(days=max_days):
+            return (f"Not added: bookings are possible at most {max_days} days ahead. "
+                    "Ask the caller for an earlier date.")
+        return ""
+
     def create_event(self, calendar: str, title: str, start: str, end: str = "",
                      location: str = "", description: str = "", confirmed: bool = False,
-                     restricted: bool = False) -> str:
+                     restricted: bool = False, booked: int = 0) -> str:
         """Create an appointment via calendar.create_event (only calendars whose integration supports it).
-        restricted (callers without admin): only the default calendar, and only into a free slot."""
+        restricted (callers without admin): only the default calendar, only into a free slot and within the
+        limits calendar_max_hours / calendar_max_days_ahead / calendar_max_bookings (booked = already booked
+        in this call)."""
         if restricted:
             calendar = ""
         cals = self._calendars([calendar] if calendar else (self.cfg.default_calendars or []))
@@ -417,9 +524,6 @@ class HA:
             return (f"Calendar '{names}' cannot create appointments (read-only). "
                     f"Writable calendars: {', '.join(all_writable) or 'none'}.")
         cal = writable[0]
-        if not confirmed:
-            return ("Read the appointment (calendar, title, day, time) back to the caller and ask whether to add it. "
-                    "Only call again with confirmed=true after a yes.")
         body = {"entity_id": cal["entity_id"], "summary": title}
         if location:
             body["location"] = location
@@ -433,22 +537,23 @@ class HA:
                 en = en if en.tzinfo else en.astimezone()
                 body["start_date_time"] = st.isoformat()
                 body["end_date_time"] = en.isoformat()
+                begin, stop, all_day = st, en, False
             else:
                 d = datetime.fromisoformat(start).date()
                 e = datetime.fromisoformat(end).date() + timedelta(days=1) if end else d + timedelta(days=1)
                 body["start_date"] = d.isoformat()
                 body["end_date"] = e.isoformat()  # HA: end date is exclusive
-        except ValueError as e:
-            return f"Date not readable ({e}). Format: 2026-10-30T14:00, or 2026-10-30 for all-day."
-        if restricted:
-            if "start_date" in body:
                 begin = datetime.fromisoformat(body["start_date"]).astimezone()
                 stop = datetime.fromisoformat(body["end_date"]).astimezone()
-            else:
-                begin = datetime.fromisoformat(body["start_date_time"])
-                stop = datetime.fromisoformat(body["end_date_time"])
-            if stop <= begin:
-                return "End must be after start."
+                all_day = True
+        except ValueError as e:
+            return f"Date not readable ({e}). Format: 2026-10-30T14:00, or 2026-10-30 for all-day."
+        # Restricted callers: checked before asking, so the caller is not asked to confirm what is refused anyway
+        if restricted:
+            refusal = self._booking_refusal(begin, stop, all_day, booked)
+            if refusal:
+                log.warning("Restricted booking refused (%s – %s): %s", begin, stop, refusal)
+                return refusal
             blocks, errors = self._busy(begin, stop)
             if errors:
                 log.warning("Restricted booking: %s", "; ".join(errors))
@@ -456,6 +561,9 @@ class HA:
             if blocks:
                 return ("Not added: that time is already busy. Check ha_busy_times and suggest a free time "
                         "to the caller.")
+        if not confirmed:
+            return ("Read the appointment (calendar, title, day, time) back to the caller and ask whether to add it. "
+                    "Only call again with confirmed=true after a yes.")
         log.warning("EVENT %s", body)
         r = self.http.post(f"{self.base}/services/calendar/create_event", json=body,
                            timeout=15, verify=self.verify)

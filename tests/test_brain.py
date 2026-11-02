@@ -29,7 +29,7 @@ def names(tools):
     return {t["name"] for t in tools}
 
 
-READ = {"ha_search", "ha_list", "ha_state", "ha_events"}
+READ = {"ha_search", "ha_list", "ha_state", "ha_forecast", "ha_events"}
 SHOP = {"shopping_list", "shopping_edit"}
 
 
@@ -112,6 +112,32 @@ def test_run_tool_create_event_is_restricted_for_non_admin(brain, ha):
                         brain.tools_for(a), a)
         assert ha.calls[0][0] == "create_event"
         assert ha.calls[0][2]["restricted"] is restricted
+
+
+def test_run_tool_counts_restricted_bookings_per_call(brain, ha):
+    ha.create_event = lambda *a, **k: ha.calls.append(k) or ("Added: T." if k["booked"] < 2 else "Not added")
+    a = parse_access("calendar")
+    counters = {}
+    for _ in range(3):
+        brain._run_tool(block("ha_create_event", title="T", start="2030-01-01T10:00", confirmed=True),
+                        brain.tools_for(a), a, counters)
+    assert [k["booked"] for k in ha.calls] == [0, 1, 2]
+    assert counters == {"bookings": 2}  # the refused third booking does not count
+
+
+def test_run_tool_admin_bookings_are_not_counted(brain, ha):
+    ha.create_event = lambda *a, **k: "Added to Familie: T."
+    a = parse_access("admin")
+    counters = {}
+    brain._run_tool(block("ha_create_event", title="T", start="2030-01-01T10:00", confirmed=True),
+                    brain.tools_for(a), a, counters)
+    assert counters == {}
+
+
+def test_run_tool_forecast(brain, ha):
+    a = parse_access("read")
+    assert brain._run_tool(block("ha_forecast", type="hourly"), brain.tools_for(a), a) == "forecast ok"
+    assert ha.calls == [("forecast", ("", "hourly"), {})]
 
 
 def test_run_tool_passes_arguments(brain, ha):
@@ -260,6 +286,19 @@ def test_turn_runs_tools_then_answers(brain, ha):
         {"type": "tool_result", "tool_use_id": "t1", "content": "get_state ok"}]}
     assert said == ["Es sind 21 Grad."]
     assert actions == []  # reading is not an action
+
+
+def test_turn_keeps_booking_count_across_turns(brain, ha):
+    ha.create_event = lambda *a, **k: ha.calls.append(k["booked"]) or "Added: T."
+    counters = {}
+    for _ in range(2):
+        brain.client = SimpleNamespace(messages=FakeMessages(
+            message(tool("ha_create_event", title="T", start="2030-01-01T10:00", confirmed=True), stop="tool_use"),
+            message("Eingetragen.")))
+        brain.turn([{"role": "user", "content": "x"}], lambda s: None, lambda: False,
+                   access=parse_access("calendar"), counters=counters)
+    assert ha.calls == [0, 1]
+    assert counters == {"bookings": 2}
 
 
 def test_turn_records_changing_actions(brain):
