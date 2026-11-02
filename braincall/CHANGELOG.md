@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
 - New tools `ha_energy` and `ha_statistics` (access `admin` and `read`): consumption, solar yield, feed-in,
   battery, gas, water, self-sufficiency and devices from the energy dashboard, and the long-term statistics of
