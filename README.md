@@ -129,7 +129,8 @@ comes from the long-term statistics of Home Assistant, which only the WebSocket 
 - `ha_statistics`: one sensor with a `state_class`: the change for meters (kWh, m³), mean, minimum and maximum
   for measurements (°C, W, %).
 
-The statistics are compiled hourly, so the current hour is not included yet.
+Totals are exact for the range, up to a few minutes ago. A breakdown per hour, day, week or month comes from
+the hourly statistics, so the current hour is only in the totals there.
 
 Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 

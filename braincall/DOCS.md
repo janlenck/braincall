@@ -57,8 +57,7 @@ Callers with access `admin` or `read` can ask for consumption over a period, e.g
 yesterday?" or "What did the PV produce in October?". The answer comes from the energy dashboard
 (*Settings > Dashboards > Energy*): grid import, feed-in, solar, battery, gas, water, home consumption,
 self-sufficiency and the individual devices. Other sensors with a `state_class` work too, e.g. the energy of
-the heat pump or the average outdoor temperature. The statistics are compiled hourly, so the current hour is
-not included yet.
+the heat pump or the average outdoor temperature. Totals reach up to a few minutes ago.
 
 ## On/off switch
 

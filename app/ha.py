@@ -92,6 +92,8 @@ STAT_PERIODS = ("hour", "day", "week", "month")
 STAT_ROWS = {"hour": 48, "day": 31, "week": 26, "month": 24}
 STAT_MAX_DAYS = 1100
 WS_TIMEOUT = 20
+# Units the statistics are requested in, so meters of one kind add up (energy in kWh, gas/water volume in m³)
+STAT_UNITS = {"energy": "kWh", "volume": "m³"}
 # Energy dashboard: order and names of the totals
 ENERGY_KEYS = ("grid_import", "grid_export", "solar", "battery_charge", "battery_discharge", "gas", "water")
 
@@ -176,10 +178,35 @@ def _row_label(t: datetime, period: str) -> str:
 
 
 def _unit(meta: dict) -> str:
-    """Unit of a statistic; energy is always requested in kWh."""
-    if meta.get("unit_class") == "energy":
-        return "kWh"
-    return meta.get("statistics_unit_of_measurement") or meta.get("display_unit_of_measurement") or ""
+    """Unit of the returned values: the requested one (STAT_UNITS), otherwise HA converts into the unit of the
+    entity (display_unit_of_measurement)."""
+    if meta.get("unit_class") in STAT_UNITS:
+        return STAT_UNITS[meta["unit_class"]]
+    return meta.get("display_unit_of_measurement") or meta.get("statistics_unit_of_measurement") or ""
+
+
+def _next_start(t: datetime, period: str) -> datetime:
+    """Start of the following hour, day, week (Monday) or month in local time, correct across DST changes."""
+    if period == "hour":
+        return (t.astimezone(timezone.utc) + timedelta(hours=1)).astimezone()
+    d = t.date()
+    if period == "week":
+        d += timedelta(days=7 - d.weekday())
+    elif period == "month":
+        d = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
+    else:
+        d += timedelta(days=1)
+    return datetime.combine(d, datetime.min.time()).astimezone()
+
+
+def buckets(begin: datetime, stop: datetime, period: str) -> list:
+    """[(start, end)] per period within [begin, stop); the first and last one may be partial."""
+    out, t = [], begin
+    while t < stop:
+        n = min(_next_start(t, period), stop)
+        out.append((t, n))
+        t = n
+    return out
 
 
 def _has_mean(meta: dict) -> bool:
@@ -260,21 +287,17 @@ class HA:
             ws.close()
 
     @staticmethod
-    def _fetch_period(period: str, begin: datetime, stop: datetime) -> str:
-        """Grouping for the query: the requested one, otherwise days (up to 3 months) or months."""
-        if period in STAT_PERIODS:
-            return period
-        return "day" if (stop - begin).days <= 92 else "month"
+    def _during(call, sid: str, begin: datetime, stop: datetime, types: list) -> dict:
+        """One value over exactly [begin, stop): HA combines hourly and 5-minute statistics, weights the mean by
+        time and averages directions (circular mean) correctly."""
+        return call("recorder/statistic_during_period", statistic_id=sid, types=types, units=STAT_UNITS,
+                    fixed_period={"start_time": begin.isoformat(), "end_time": stop.isoformat()}) or {}
 
     @staticmethod
-    def _stat_note(stop: datetime) -> str:
+    def _rows_note(stop: datetime) -> str:
         if stop > datetime.now().astimezone():
-            return "Statistics are compiled hourly: the current hour is not included yet."
+            return "The rows are compiled hourly: the current hour is only in the totals."
         return ""
-
-    def _statistics(self, call, ids: list, begin: datetime, stop: datetime, period: str, types: list) -> dict:
-        return call("recorder/statistics_during_period", start_time=begin.isoformat(), end_time=stop.isoformat(),
-                    statistic_ids=ids, period=period, types=types, units={"energy": "kWh"}) or {}
 
     @staticmethod
     def _energy_roles(prefs: dict) -> list:
@@ -306,6 +329,7 @@ class HA:
         except ValueError as e:
             return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
         period = period if period in STAT_PERIODS else ""
+        spans = buckets(begin, stop, period) if period else []
         with self._ws() as call:
             try:
                 prefs = call("energy/get_prefs")
@@ -318,60 +342,77 @@ class HA:
                 return "The energy dashboard in Home Assistant has no sensors configured."
             ids = list(dict.fromkeys(sid for _, sid, _ in roles))
             meta = {m["statistic_id"]: m for m in call("recorder/get_statistics_metadata", statistic_ids=ids) or []}
-            stats = self._statistics(call, ids, begin, stop, self._fetch_period(period, begin, stop), ["change"])
+            change = {sid: self._during(call, sid, begin, stop, ["change"]).get("change") for sid in ids}
+            stats = {}
+            if spans and len(spans) <= STAT_ROWS[period]:
+                # Hourly rows, or daily rows added up per week/month. HA stretches end_time to the end of the
+                # period it falls in, so for days the last included second is sent, not the next midnight.
+                fetch = "hour" if period == "hour" else "day"
+                last = stop if fetch == "hour" else stop - timedelta(seconds=1)
+                stats = call("recorder/statistics_during_period", start_time=begin.isoformat(),
+                             end_time=last.isoformat(), statistic_ids=ids, period=fetch, types=["change"],
+                             units=STAT_UNITS) or {}
 
-        def change(sid):
-            return sum(r.get("change") or 0 for r in stats.get(sid) or [])
-
-        totals, units, devices, missing = {}, {}, {}, []
+        totals, devices, missing = {}, {}, []
         for role, sid, name in roles:
-            if not stats.get(sid):
+            if change.get(sid) is None:
                 missing.append(sid)
-            m = meta.get(sid, {})
+            value, unit = change.get(sid) or 0.0, _unit(meta.get(sid, {}))
             if role in ("device", "device_water"):
-                devices[name or m.get("name") or sid] = f"{_num(change(sid))} {_unit(m)}".rstrip()
+                label = name or meta.get(sid, {}).get("name") or sid
+                if label in devices:  # two devices with the same name: keep both
+                    label = f"{label} ({sid})"
+                devices[label] = f"{_num(value)} {unit}".rstrip() if change.get(sid) is not None else "no data"
                 continue
-            totals[role] = totals.get(role, 0.0) + change(sid)
-            units.setdefault(role, _unit(m))
+            by_unit = totals.setdefault(role, {})
+            by_unit[unit] = by_unit.get(unit, 0.0) + value
         out = {"range": f"{begin:%Y-%m-%d} to {stop - timedelta(seconds=1):%Y-%m-%d}"}
-        out["totals"] = {k: f"{_num(totals[k])} {units[k]}".rstrip() for k in ENERGY_KEYS if k in totals}
-        imp, exp = totals.get("grid_import"), totals.get("grid_export", 0.0)
-        solar, charge, discharge = (totals.get(k, 0.0) for k in ("solar", "battery_charge", "battery_discharge"))
-        if imp is not None and all(units.get(k, "kWh") == "kWh" for k in ENERGY_KEYS[:5]):
+        out["totals"] = {}
+        for k in ENERGY_KEYS:
+            if k in totals:  # gas in m³ and in kWh are not added up
+                parts = [f"{_num(v)} {u}".rstrip() for u, v in totals[k].items()]
+                out["totals"][k] = parts[0] if len(parts) == 1 else parts
+        electric = {k: totals[k] for k in ENERGY_KEYS[:5] if k in totals}
+        if "grid_import" in electric and all(set(v) == {"kWh"} for v in electric.values()):
+            kwh = {k: v["kWh"] for k, v in electric.items()}
+            imp, exp = kwh["grid_import"], kwh.get("grid_export", 0.0)
+            solar, charge, discharge = (kwh.get(k, 0.0) for k in ("solar", "battery_charge", "battery_discharge"))
             home = imp + solar + discharge - exp - charge
             out["totals"]["home_consumption"] = f"{_num(home)} kWh"
-            if "solar" in totals:
+            if "solar" in kwh:
                 out["totals"]["solar_used_in_house_approx"] = f"{_num(max(0.0, solar - exp - charge))} kWh"
             if home > 0:
                 out["totals"]["self_sufficiency"] = f"{round(max(0.0, 1 - imp / home) * 100)} %"
         if devices:
             out["devices"] = devices
-        if period:
-            rows = self._energy_rows(roles, stats, period)
-            if len(rows) > STAT_ROWS[period]:
-                out["rows"] = f"{len(rows)} rows, too many to read out: choose a longer period."
+        if spans:
+            if len(spans) > STAT_ROWS[period]:
+                out["rows"] = f"{len(spans)} rows, too many to read out: choose a longer period."
             else:
-                out["rows"] = rows
+                out["rows"] = self._energy_rows(roles, stats, spans, period)
+                note = self._rows_note(stop)
+                if note:
+                    out["note"] = note
         if missing:
             out["no_data"] = missing
-        note = self._stat_note(stop)
-        if note:
-            out["note"] = note
         log.info("Energy %s, %s: %d statistics", out["range"], period or "total", len(ids))
         return json.dumps(out, ensure_ascii=False)
 
     @staticmethod
-    def _energy_rows(roles: list, stats: dict, period: str) -> list:
-        """Per period one row with the sums of grid, solar, battery, gas and water (devices only in the totals)."""
-        rows = {}
+    def _energy_rows(roles: list, stats: dict, spans: list, period: str) -> list:
+        """Per period one row with the sums of grid, solar, battery, gas and water (devices only in the totals).
+        Rows outside the range are dropped."""
+        sums = [{} for _ in spans]
         for role, sid, _ in roles:
             if role in ("device", "device_water"):
                 continue
             for r in stats.get(sid) or []:
                 t = _row_time(r.get("start"))
-                row = rows.setdefault(t, {})
-                row[role] = row.get(role, 0.0) + (r.get("change") or 0)
-        return [{"time": _row_label(t, period), **{k: _num(v) for k, v in rows[t].items()}} for t in sorted(rows)]
+                i = next((i for i, (b, e) in enumerate(spans) if b <= t < e), None)
+                if i is not None:
+                    sums[i][role] = sums[i].get(role, 0.0) + (r.get("change") or 0)
+        return [{"time": _row_label(b, period), **{k: _num(v) for k, v in row.items()}}
+                for (b, _), row in zip(spans, sums, strict=True) if row]
 
     def statistics(self, entity_id: str, start: str = "", end: str = "", period: str = "") -> str:
         """Long-term statistics of one sensor: change for meters (kWh, m³), mean/min/max for measurements."""
@@ -383,6 +424,7 @@ class HA:
         except ValueError as e:
             return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
         period = period if period in STAT_PERIODS else ""
+        spans = buckets(begin, stop, period) if period else []
         with self._ws() as call:
             metas = call("recorder/get_statistics_metadata", statistic_ids=[entity_id]) or []
             if not metas:
@@ -392,42 +434,24 @@ class HA:
             meter = bool(m.get("has_sum"))
             if not meter and not _has_mean(m):
                 return f"{entity_id} has statistics, but neither sums nor mean values."
-            types = ["change"] if meter else ["mean", "min", "max"]
-            rows = self._statistics(call, [entity_id], begin, stop, self._fetch_period(period, begin, stop),
-                                    types).get(entity_id) or []
-        unit = _unit(m)
-        out = {"entity_id": entity_id, "name": m.get("name") or entity_id, "unit": unit,
+            keys = ["change"] if meter else ["mean", "min", "max"]
+            total = self._during(call, entity_id, begin, stop, keys)
+            rows = []
+            if spans and len(spans) <= STAT_ROWS[period]:  # one exact query per row, also for partial periods
+                rows = [(b, self._during(call, entity_id, b, e, keys)) for b, e in spans]
+        out = {"entity_id": entity_id, "name": m.get("name") or entity_id, "unit": _unit(m),
                "range": f"{begin:%Y-%m-%d} to {stop - timedelta(seconds=1):%Y-%m-%d}"}
-        if not rows:
+        values = {k: _num(total[k]) for k in keys if total.get(k) is not None}
+        if not values:
             out["result"] = "No data in this range."
             return json.dumps(out, ensure_ascii=False)
-        if meter:
-            out["change"] = _num(sum(r.get("change") or 0 for r in rows))
-            listed = [{"time": _row_label(_row_time(r["start"]), period), "change": _num(r.get("change") or 0)}
-                      for r in rows]
-        else:
-            weighted = [(r["mean"], (r.get("end") or 0) - (r.get("start") or 0) or 1) for r in rows
-                        if r.get("mean") is not None and isinstance(r.get("start"), (int, float))]
-            means = [r["mean"] for r in rows if r.get("mean") is not None]
-            if weighted:
-                out["mean"] = _num(sum(v * w for v, w in weighted) / sum(w for _, w in weighted))
-            elif means:
-                out["mean"] = _num(sum(means) / len(means))
-            lows = [r["min"] for r in rows if r.get("min") is not None]
-            highs = [r["max"] for r in rows if r.get("max") is not None]
-            if lows:
-                out["min"] = _num(min(lows))
-            if highs:
-                out["max"] = _num(max(highs))
-            listed = [{"time": _row_label(_row_time(r["start"]), period),
-                       **{k: _num(r[k]) for k in ("mean", "min", "max") if r.get(k) is not None}} for r in rows]
-        if period:
-            out["rows"] = (listed if len(listed) <= STAT_ROWS[period]
-                           else f"{len(listed)} rows, too many to read out: choose a longer period.")
-        note = self._stat_note(stop)
-        if note:
-            out["note"] = note
-        log.info("Statistics %s %s, %s: %d rows", entity_id, out["range"], period or "total", len(rows))
+        out.update(values)
+        if spans:
+            out["rows"] = ([{"time": _row_label(b, period), **{k: _num(r[k]) for k in keys if r.get(k) is not None}}
+                            for b, r in rows if any(r.get(k) is not None for k in keys)]
+                           if len(spans) <= STAT_ROWS[period]
+                           else f"{len(spans)} rows, too many to read out: choose a longer period.")
+        log.info("Statistics %s %s, %s", entity_id, out["range"], period or "total")
         return json.dumps(out, ensure_ascii=False)
 
     # ------------------------------------------------------------------ states
