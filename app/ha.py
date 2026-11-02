@@ -1,10 +1,16 @@
-"""Home Assistant access via the REST API (inside an add-on via the Supervisor proxy)."""
+"""Home Assistant access via the REST API (inside an add-on via the Supervisor proxy).
+Long-term statistics (energy dashboard) only exist in the WebSocket API, so those use a short WebSocket session."""
+import contextlib
+import itertools
 import json
 import logging
+import ssl
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+import websocket
 
 log = logging.getLogger("ha")
 
@@ -82,6 +88,24 @@ FORECAST_LIMIT = {"daily": 7, "hourly": 24, "twice_daily": 14}
 
 WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+# Long-term statistics: grouping periods, the most rows read out per period, the longest range in days
+STAT_PERIODS = ("hour", "day", "week", "month")
+STAT_ROWS = {"hour": 48, "day": 31, "week": 26, "month": 24}
+STAT_MAX_DAYS = 1100
+WS_TIMEOUT = 20
+# Units the statistics are requested in, so meters of one kind add up (energy in kWh, gas/water volume in m³)
+STAT_UNITS = {"energy": "kWh", "volume": "m³"}
+# Energy dashboard: order and names of the totals
+ENERGY_KEYS = ("grid_import", "grid_export", "solar", "battery_charge", "battery_discharge", "gas", "water")
+
+
+class HAError(Exception):
+    """Error answer of the WebSocket API; code e.g. 'not_found'."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
 
 def _wd(d) -> str:
     return WEEKDAY[d.weekday()]
@@ -104,21 +128,123 @@ def _local_time(iso: str) -> str:
         return iso
 
 
+def _num(v: float) -> float:
+    """Rounded for the phone: 2 decimals below 10, otherwise 1."""
+    return round(v, 2) if abs(v) < 10 else round(v, 1)
+
+
+def _span_of(text: str):
+    """'2026-10-05' -> that day, '2026-10' -> that month, '2026' -> that year: (first day, last day)."""
+    t = (text or "").strip()
+    if len(t) == 4 and t.isdigit():
+        return date(int(t), 1, 1), date(int(t), 12, 31)
+    if len(t) == 7 and t[4] == "-":
+        first = date(int(t[:4]), int(t[5:]), 1)
+        return first, (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    d = datetime.fromisoformat(t).date()
+    return d, d
+
+
+def _midnight(d: date, tz=None) -> datetime:
+    """Midnight of a day in tz (None = timezone of the machine)."""
+    t = datetime.combine(d, datetime.min.time())
+    return t.replace(tzinfo=tz) if tz else t.astimezone()
+
+
+def stat_range(start: str = "", end: str = "", tz=None):
+    """Midnight of the first day up to the midnight after the last day (end inclusive), in tz.
+    Without start: today. Without end: the whole day, month or year given as start."""
+    today = datetime.now(tz).astimezone(tz).date()
+    first, last = _span_of(start) if start else (today, today)
+    if end:
+        last = _span_of(end)[1]
+    if last < first:
+        first, last = last, first
+    if (last - first).days >= STAT_MAX_DAYS:
+        raise ValueError(f"Range too long, at most {STAT_MAX_DAYS} days.")
+    return _midnight(first, tz), _midnight(last + timedelta(days=1), tz)
+
+
+def _row_time(v, tz=None) -> datetime:
+    """Start of a statistics row: milliseconds since 1970 (newer HA) or an ISO string (older HA)."""
+    if isinstance(v, (int, float)):
+        return datetime.fromtimestamp(v / 1000, timezone.utc).astimezone(tz)
+    return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(tz)
+
+
+def _row_label(t: datetime, period: str) -> str:
+    if period == "hour":
+        return f"{_wd(t)} " + t.strftime("%Y-%m-%d %H:%M")
+    if period == "week":
+        return "week from " + t.strftime("%Y-%m-%d")
+    if period == "month":
+        return t.strftime("%Y-%m")
+    return f"{_wd(t)} " + t.strftime("%Y-%m-%d")
+
+
+def _unit(meta: dict) -> str:
+    """Unit of the returned values: the requested one (STAT_UNITS), otherwise HA converts into the unit of the
+    entity (display_unit_of_measurement)."""
+    if meta.get("unit_class") in STAT_UNITS:
+        return STAT_UNITS[meta["unit_class"]]
+    return meta.get("display_unit_of_measurement") or meta.get("statistics_unit_of_measurement") or ""
+
+
+def _next_start(t: datetime, period: str, tz=None) -> datetime:
+    """Start of the following hour, day, week (Monday) or month in tz, correct across DST changes."""
+    if period == "hour":
+        return (t.astimezone(timezone.utc) + timedelta(hours=1)).astimezone(tz)
+    d = t.date()
+    if period == "week":
+        d += timedelta(days=7 - d.weekday())
+    elif period == "month":
+        d = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
+    else:
+        d += timedelta(days=1)
+    return _midnight(d, tz)
+
+
+def buckets(begin: datetime, stop: datetime, period: str, tz=None) -> list:
+    """[(start, end)] per period within [begin, stop) in tz; the first and last one may be partial.
+    Compared as timestamps: Python compares datetimes of the same zone by wall clock and ignores fold,
+    so the repeated hour at the end of summer time would collapse."""
+    out, t = [], begin
+    while t.timestamp() < stop.timestamp():
+        n = _next_start(t, period, tz)
+        n = n if n.timestamp() < stop.timestamp() else stop
+        out.append((t, n))
+        t = n
+    return out
+
+
+def _has_mean(meta: dict) -> bool:
+    mt = meta.get("mean_type")  # newer HA: 0 none, 1 arithmetic, 2 circular; older: has_mean
+    return bool(meta.get("has_mean")) or (mt not in (None, 0, "none"))
+
+
 class HA:
     def __init__(self, cfg):
         self.cfg = cfg
         self.verify = True
         if cfg.supervisor_token:
             self.base = "http://supervisor/core/api"
+            self.ws_url = "ws://supervisor/core/websocket"
             token = cfg.supervisor_token
         elif cfg.ha_url and cfg.ha_token:
             self.base = cfg.ha_url.rstrip("/") + "/api"
+            self.ws_url = "ws" + self.base.removeprefix("http") + "/websocket"  # http -> ws, https -> wss
             token = cfg.ha_token
             v = cfg.ha_verify_ssl
             self.verify = v if isinstance(v, str) and v else bool(v)
         else:
             self.base = None
+            self.ws_url = None
             token = ""
+        self.token = token
+        try:  # dates in statistics follow the configured timezone, like the current time in the prompt
+            self.tz = ZoneInfo(cfg.timezone) if cfg.timezone else None
+        except (ZoneInfoNotFoundError, ValueError):
+            self.tz = None
         self.http = requests.Session()
         self.http.headers["Authorization"] = f"Bearer {token}"
         self._cache = (0.0, [])
@@ -132,6 +258,218 @@ class HA:
         r.raise_for_status()
         return r.json()
 
+    # ------------------------------------------------------------------ websocket
+    def _sslopt(self) -> dict:
+        """TLS for wss:// like the REST calls: ha_verify_ssl true, false or the path to a CA file."""
+        if not str(self.ws_url).startswith("wss:"):
+            return {}
+        if self.verify is False:
+            return {"cert_reqs": ssl.CERT_NONE, "check_hostname": False}
+        return {"context": ssl.create_default_context(cafile=self.verify if isinstance(self.verify, str) else None)}
+
+    @contextlib.contextmanager
+    def _ws(self):
+        """Short WebSocket session: logs in, yields call(type, **data) -> result, closes afterwards."""
+        if not self.ws_url:
+            raise HAError("Home Assistant is not configured.")
+        ws = websocket.create_connection(self.ws_url, timeout=WS_TIMEOUT, sslopt=self._sslopt())
+        try:
+            msg = json.loads(ws.recv())
+            if msg.get("type") == "auth_required":
+                ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+                msg = json.loads(ws.recv())
+            if msg.get("type") != "auth_ok":
+                raise HAError(f"WebSocket login failed: {msg.get('message') or msg.get('type')}", "auth")
+            ids = itertools.count(1)
+
+            def call(type_: str, **data):
+                n = next(ids)
+                ws.send(json.dumps({"id": n, "type": type_, **data}))
+                while True:
+                    msg = json.loads(ws.recv())
+                    if msg.get("id") == n and msg.get("type") == "result":
+                        break
+                if not msg.get("success"):
+                    err = msg.get("error") or {}
+                    raise HAError(err.get("message") or err.get("code") or "unknown error", err.get("code") or "")
+                return msg.get("result")
+
+            yield call
+        finally:
+            ws.close()
+
+    @staticmethod
+    def _during(call, sid: str, begin: datetime, stop: datetime, types: list) -> dict:
+        """One value over exactly [begin, stop): HA combines hourly and 5-minute statistics, weights the mean by
+        time and averages directions (circular mean) correctly."""
+        return call("recorder/statistic_during_period", statistic_id=sid, types=types, units=STAT_UNITS,
+                    fixed_period={"start_time": begin.isoformat(), "end_time": stop.isoformat()}) or {}
+
+    @staticmethod
+    def _rows_note(stop: datetime) -> str:
+        if stop > datetime.now(timezone.utc):
+            return "The rows are compiled hourly: the current hour is only in the totals."
+        return ""
+
+    @staticmethod
+    def _energy_roles(prefs: dict) -> list:
+        """[(role, statistic_id, name)] from the energy dashboard settings (energy/get_prefs)."""
+        roles = []
+        for src in prefs.get("energy_sources") or []:
+            kind = src.get("type")
+            if kind == "grid":
+                roles += [("grid_import", f.get("stat_energy_from"), "") for f in src.get("flow_from") or []]
+                roles += [("grid_export", f.get("stat_energy_to"), "") for f in src.get("flow_to") or []]
+                roles += [("grid_import", src.get("stat_energy_from"), ""),  # newer HA: one entry per meter
+                          ("grid_export", src.get("stat_energy_to"), "")]
+            elif kind == "solar":
+                roles.append(("solar", src.get("stat_energy_from"), ""))
+            elif kind == "battery":
+                roles += [("battery_discharge", src.get("stat_energy_from"), ""),
+                          ("battery_charge", src.get("stat_energy_to"), "")]
+            elif kind in ("gas", "water"):
+                roles.append((kind, src.get("stat_energy_from"), ""))
+        for key, role in (("device_consumption", "device"), ("device_consumption_water", "device_water")):
+            roles += [(role, d.get("stat_consumption"), d.get("name") or "") for d in prefs.get(key) or []]
+        return list(dict.fromkeys((r, sid, name) for r, sid, name in roles if sid))  # each meter counted once
+
+    def energy(self, start: str = "", end: str = "", period: str = "") -> str:
+        """Totals of the energy dashboard (grid, solar, battery, gas, water, devices) for a date range,
+        optionally broken down per hour, day, week or month."""
+        try:
+            begin, stop = stat_range(start, end, self.tz)
+        except ValueError as e:
+            return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
+        period = period if period in STAT_PERIODS else ""
+        spans = buckets(begin, stop, period, self.tz) if period else []
+        with self._ws() as call:
+            try:
+                prefs = call("energy/get_prefs")
+            except HAError as e:
+                if e.code == "not_found":
+                    return "The energy dashboard is not set up in Home Assistant (Settings > Dashboards > Energy)."
+                raise
+            roles = self._energy_roles(prefs or {})
+            if not roles:
+                return "The energy dashboard in Home Assistant has no sensors configured."
+            ids = list(dict.fromkeys(sid for _, sid, _ in roles))
+            meta = {m["statistic_id"]: m for m in call("recorder/get_statistics_metadata", statistic_ids=ids) or []}
+            change = {sid: self._during(call, sid, begin, stop, ["change"]).get("change") for sid in ids}
+            stats = {}
+            if spans and len(spans) <= STAT_ROWS[period]:
+                # Hourly rows, or daily rows added up per week/month. HA stretches end_time to the end of the
+                # period it falls in, so for days the last included second is sent, not the next midnight.
+                fetch = "hour" if period == "hour" else "day"
+                last = stop if fetch == "hour" else stop - timedelta(seconds=1)
+                stats = call("recorder/statistics_during_period", start_time=begin.isoformat(),
+                             end_time=last.isoformat(), statistic_ids=ids, period=fetch, types=["change"],
+                             units=STAT_UNITS) or {}
+
+        totals, devices, missing = {}, {}, []
+        for role, sid, name in roles:
+            if change.get(sid) is None:
+                missing.append(sid)
+            value, unit = change.get(sid) or 0.0, _unit(meta.get(sid, {}))
+            if role in ("device", "device_water"):
+                label = name or meta.get(sid, {}).get("name") or sid
+                if label in devices:  # two devices with the same name: keep both
+                    label = f"{label} ({sid})"
+                devices[label] = f"{_num(value)} {unit}".rstrip() if change.get(sid) is not None else "no data"
+                continue
+            by_unit = totals.setdefault(role, {})
+            by_unit[unit] = by_unit.get(unit, 0.0) + value
+        out = {"range": f"{begin:%Y-%m-%d} to {stop - timedelta(seconds=1):%Y-%m-%d}"}
+        out["totals"] = {}
+        for k in ENERGY_KEYS:
+            if k in totals:  # gas in m³ and in kWh are not added up
+                parts = [f"{_num(v)} {u}".rstrip() for u, v in totals[k].items()]
+                out["totals"][k] = parts[0] if len(parts) == 1 else parts
+        electric = {k: totals[k] for k in ENERGY_KEYS[:5] if k in totals}
+        # Derived figures only when every electricity meter has data: a missing one is unknown, not zero
+        complete = not any(r in ENERGY_KEYS[:5] and change.get(sid) is None for r, sid, _ in roles)
+        if complete and "grid_import" in electric and all(set(v) == {"kWh"} for v in electric.values()):
+            kwh = {k: v["kWh"] for k, v in electric.items()}
+            imp, exp = kwh["grid_import"], kwh.get("grid_export", 0.0)
+            solar, charge, discharge = (kwh.get(k, 0.0) for k in ("solar", "battery_charge", "battery_discharge"))
+            home = imp + solar + discharge - exp - charge
+            out["totals"]["home_consumption"] = f"{_num(home)} kWh"
+            if "solar" in kwh:
+                out["totals"]["solar_used_in_house_approx"] = f"{_num(max(0.0, solar - exp - charge))} kWh"
+            if home > 0:
+                out["totals"]["self_sufficiency"] = f"{round(max(0.0, 1 - imp / home) * 100)} %"
+        if devices:
+            out["devices"] = devices
+        if spans:
+            if len(spans) > STAT_ROWS[period]:
+                out["rows"] = f"{len(spans)} rows, too many to read out: choose a longer period."
+            else:
+                # one column per role; a role with meters in different units (gas m³ / kWh) gets one per unit
+                columns = {sid: role if len(totals[role]) == 1 else f"{role} ({_unit(meta.get(sid, {}))})"
+                           for role, sid, _ in roles if role in totals}
+                out["rows"] = self._energy_rows(columns, stats, spans, period, self.tz)
+                note = self._rows_note(stop)
+                if note:
+                    out["note"] = note
+        if missing:
+            out["no_data"] = missing
+        log.info("Energy %s, %s: %d statistics", out["range"], period or "total", len(ids))
+        return json.dumps(out, ensure_ascii=False)
+
+    @staticmethod
+    def _energy_rows(columns: dict, stats: dict, spans: list, period: str, tz=None) -> list:
+        """Per period one row with the sums per column ({statistic_id: column}, devices only in the totals).
+        Rows outside the range are dropped."""
+        sums = [{} for _ in spans]
+        for sid, col in columns.items():
+            for r in stats.get(sid) or []:
+                t = _row_time(r.get("start"), tz).timestamp()  # instants, not wall clock (DST)
+                i = next((i for i, (b, e) in enumerate(spans) if b.timestamp() <= t < e.timestamp()), None)
+                if i is not None:
+                    sums[i][col] = sums[i].get(col, 0.0) + (r.get("change") or 0)
+        return [{"time": _row_label(b, period), **{k: _num(v) for k, v in row.items()}}
+                for (b, _), row in zip(spans, sums, strict=True) if row]
+
+    def statistics(self, entity_id: str, start: str = "", end: str = "", period: str = "") -> str:
+        """Long-term statistics of one sensor: change for meters (kWh, m³), mean/min/max for measurements."""
+        entity_id = (entity_id or "").strip()
+        if not entity_id:
+            return "Error: entity_id missing."
+        try:
+            begin, stop = stat_range(start, end, self.tz)
+        except ValueError as e:
+            return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
+        period = period if period in STAT_PERIODS else ""
+        spans = buckets(begin, stop, period, self.tz) if period else []
+        with self._ws() as call:
+            metas = call("recorder/get_statistics_metadata", statistic_ids=[entity_id]) or []
+            if not metas:
+                return (f"No long-term statistics for {entity_id}. Only sensors with a state_class have them; "
+                        "check the entity_id with ha_search.")
+            m = metas[0]
+            meter = bool(m.get("has_sum"))
+            if not meter and not _has_mean(m):
+                return f"{entity_id} has statistics, but neither sums nor mean values."
+            keys = ["change"] if meter else ["mean", "min", "max"]
+            total = self._during(call, entity_id, begin, stop, keys)
+            rows = []
+            if spans and len(spans) <= STAT_ROWS[period]:  # one exact query per row, also for partial periods
+                rows = [(b, self._during(call, entity_id, b, e, keys)) for b, e in spans]
+        out = {"entity_id": entity_id, "name": m.get("name") or entity_id, "unit": _unit(m),
+               "range": f"{begin:%Y-%m-%d} to {stop - timedelta(seconds=1):%Y-%m-%d}"}
+        values = {k: _num(total[k]) for k in keys if total.get(k) is not None}
+        if not values:
+            out["result"] = "No data in this range."
+            return json.dumps(out, ensure_ascii=False)
+        out.update(values)
+        if spans:
+            out["rows"] = ([{"time": _row_label(b, period), **{k: _num(r[k]) for k in keys if r.get(k) is not None}}
+                            for b, r in rows if any(r.get(k) is not None for k in keys)]
+                           if len(spans) <= STAT_ROWS[period]
+                           else f"{len(spans)} rows, too many to read out: choose a longer period.")
+        log.info("Statistics %s %s, %s", entity_id, out["range"], period or "total")
+        return json.dumps(out, ensure_ascii=False)
+
+    # ------------------------------------------------------------------ states
     @staticmethod
     def _attrs(s: dict, table: dict) -> dict:
         """Allowlisted attributes of the entity's domain; light brightness 0–255 as brightness_pct."""

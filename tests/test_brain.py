@@ -29,7 +29,7 @@ def names(tools):
     return {t["name"] for t in tools}
 
 
-READ = {"ha_search", "ha_list", "ha_state", "ha_forecast", "ha_events"}
+READ = {"ha_search", "ha_list", "ha_state", "ha_forecast", "ha_energy", "ha_statistics", "ha_events"}
 SHOP = {"shopping_list", "shopping_edit"}
 
 
@@ -138,6 +138,23 @@ def test_run_tool_forecast(brain, ha):
     a = parse_access("read")
     assert brain._run_tool(block("ha_forecast", type="hourly"), brain.tools_for(a), a) == "forecast ok"
     assert ha.calls == [("forecast", ("", "hourly"), {})]
+
+
+def test_run_tool_energy_and_statistics(brain, ha):
+    a = parse_access("read")
+    tools = brain.tools_for(a)
+    assert brain._run_tool(block("ha_energy", start="2026-10"), tools, a) == "energy ok"
+    assert brain._run_tool(block("ha_statistics", entity_id="sensor.wp", start="2026-11-01", end="2026-11-02",
+                                 period="day"), tools, a) == "statistics ok"
+    assert ha.calls == [("energy", ("2026-10", "", ""), {}),
+                        ("statistics", ("sensor.wp", "2026-11-01", "2026-11-02", "day"), {})]
+
+
+@pytest.mark.parametrize("access", ["guest", "calendar", "shopping"])
+def test_energy_not_for_callers_without_read(brain, ha, access):
+    a = parse_access(access)
+    assert brain._run_tool(block("ha_energy"), brain.tools_for(a), a) == "Not allowed in this call."
+    assert ha.calls == []
 
 
 def test_run_tool_passes_arguments(brain, ha):

@@ -9,6 +9,7 @@ REQUIRED = {
     "pyVoIP": "pyVoIP==1.6.8",
     "anthropic": "anthropic>=0.40",
     "requests": "requests>=2.31",
+    "websocket": "websocket-client>=1.7",
     "numpy": "numpy>=1.26",
     "tzdata": "tzdata",
     "truststore": "truststore>=0.9",

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0
+
+- New tools `ha_energy` and `ha_statistics` (access `admin` and `read`): consumption, solar yield, feed-in,
+  battery, gas, water, self-sufficiency and devices from the energy dashboard, and the long-term statistics of
+  single sensors (change for meters, mean/min/max for measurements) for a day, month, year or date range,
+  optionally per hour, day, week or month. They use the WebSocket API of Home Assistant (new dependency
+  `websocket-client`)
+
 ## 1.2.0
 
 - Speech recognition no longer discards real requests that mention music, subtitles or a web address
