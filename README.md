@@ -35,6 +35,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
 | `repository.yaml` | makes this repository an add-on repository for Home Assistant |
+| `tests/` | automated tests (pytest), see [Tests](#tests) |
 
 ## Home Assistant add-on
 
@@ -144,6 +145,21 @@ After each call the agent fires the HA event `braincall_call`
 - If the FRITZ!Box is restarted or unreachable, BrainCall sets up the SIP connection again after
   5 minutes without registration and keeps trying every 5 minutes. Calls in between fail.
 - Costs are billed to your Anthropic and OpenAI API accounts.
+
+## Tests
+
+The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: network access is replaced by fakes.
+They cover access rights and tools per caller, Home Assistant control limits, calendars and restricted bookings,
+configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes.
+
+```bash
+python -m pip install -r requirements.txt pytest
+python -m pytest -q
+```
+
+On Windows use the virtual environment of `start.bat`: `%LOCALAPPDATA%\braincall\venv\Scripts\python.exe -m pytest -q`
+(pytest installed there once). Tests marked `xfail` describe known bugs with an open issue; once fixed they fail
+until the marker is removed. CI runs the tests on Python 3.12 and 3.13.
 
 ## License
 
