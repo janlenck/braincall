@@ -1,5 +1,6 @@
 """STT and TTS via the OpenAI API."""
 import logging
+import re
 import unicodedata
 
 import numpy as np
@@ -16,10 +17,14 @@ TTS_URL = "https://api.openai.com/v1/audio/speech"
 # it describes the spoken languages and prevents misdetection as Polish, Serbian, Chinese …
 STT_HINT = "Telefongespräch auf Deutsch oder Ukrainisch (українською)."
 
-# Typical phrases the speech recognition invents from noise or echo (they occur in German, hence German text)
-HALLUCINATIONS = ("telefongespräch auf deutsch", "українською)", "telefonat mit jan", "untertitel",
-                  "vielen dank fürs zuschauen", "danke fürs zuschauen",
-                  "copyright", "amara.org", "www.", "musik", "♪")
+# Typical phrases the speech recognition invents from noise or echo (they occur in German, hence German text).
+# Discarded only as the whole utterance, so "Mach Musik an" still reaches Claude.
+HALLUCINATIONS = {"musik", "untertitel", "vielen dank fürs zuschauen", "danke fürs zuschauen"}
+# Unambiguous patterns, discarded wherever they occur: subtitle credits, music markers, echoes of STT_HINT
+HALLUCINATION_PATTERNS = re.compile(
+    r"♪|♫|[\[(*]\s*musik\s*[\])*]|\buntertitel(?:ung)?\s+(?:von|im auftrag|der|des|durch|by)\b"
+    r"|amara\.org|f[üu]r'?s zuschauen|^copyright\b|©|^www\.\S+$"
+    r"|telefongespräch auf deutsch|українською\)")
 
 
 class Speech:
@@ -27,6 +32,16 @@ class Speech:
         self.cfg = cfg
         self.http = requests.Session()
         self.http.headers["Authorization"] = f"Bearer {cfg.openai_api_key}"
+        first = (cfg.owner_name or "").strip().split(" ")[0].lower()
+        self.hallucinations = HALLUCINATIONS | ({f"telefonat mit {first}"} if first else set())
+
+    def is_hallucination(self, text: str) -> bool:
+        """True for empty text, invented phrases and text that is neither Latin nor Cyrillic script."""
+        norm = " ".join(text.lower().split()).strip(" .!?,…")
+        letters = [c for c in norm if c.isalpha()]
+        ok = sum(unicodedata.name(c, "").startswith(("LATIN", "CYRILLIC")) for c in letters)
+        return (len(norm) < 2 or norm in self.hallucinations or bool(HALLUCINATION_PATTERNS.search(norm))
+                or ok < len(letters) / 2)
 
     def transcribe(self, pcm: np.ndarray, language: str = "de") -> str:
         files = {"file": ("utterance.wav", to_wav(pcm), "audio/wav")}
@@ -38,10 +53,7 @@ class Speech:
         r = self.http.post(STT_URL, files=files, data=data, timeout=30)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()
-        norm = text.lower().strip(" .!?,")
-        letters = [c for c in norm if c.isalpha()]
-        ok = sum(unicodedata.name(c, "").startswith(("LATIN", "CYRILLIC")) for c in letters)
-        if not norm or any(h in norm for h in HALLUCINATIONS) or len(norm) < 2 or ok < len(letters) / 2:
+        if self.is_hallucination(text):
             if text:
                 log.info("(discarded: %s)", text)
             return ""

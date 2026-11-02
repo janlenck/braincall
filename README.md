@@ -90,7 +90,9 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
   - `read`: read everything (states, sensors, appointments with details), change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
-    A busy slot is refused by the code. All-day entries count as busy unless their title contains one of the
+    A busy slot is refused by the code, and so are bookings in the past, longer than `calendar_max_hours`
+    (default 4; all-day at most one day), more than `calendar_max_days_ahead` days ahead (default 90) and more
+    than `calendar_max_bookings` per call (default 2); 0 switches a limit off. All-day entries count as busy unless their title contains one of the
     `all_day_free_words` (e.g. `["gelber", "sack", "abfall"]`); Home Assistant does not pass on Google's
     "free"/"busy".
   - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).

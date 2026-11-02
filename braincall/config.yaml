@@ -57,6 +57,9 @@ options:
   default_calendars: []
   all_day_free_words: []
   calendar_write: true
+  calendar_max_hours: 4
+  calendar_max_days_ahead: 90
+  calendar_max_bookings: 2
   control_domains:
     - light
     - switch
@@ -129,6 +132,9 @@ schema:
   all_day_free_words:
     - str?
   calendar_write: bool
+  calendar_max_hours: float(0,168)
+  calendar_max_days_ahead: int(0,3650)
+  calendar_max_bookings: int(0,50)
   control_domains:
     - str
   confirm_domains:

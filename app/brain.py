@@ -68,8 +68,10 @@ TOOL_SEARCH = {
 }
 TOOL_STATE = {
     "name": "ha_state",
-    "description": "Returns the current state of exactly one Home Assistant entity "
-                   "(for todo lists including the items).",
+    "description": "Returns the current state of exactly one Home Assistant entity with its useful attributes "
+                   "(thermostat: current_temperature, target temperature, hvac_action; cover: current_position; "
+                   "light: brightness_pct; media player: title, volume, source; weather: temperature, humidity, "
+                   "wind; todo lists: the items).",
     "input_schema": {
         "type": "object",
         "properties": {"entity_id": {"type": "string"}},
@@ -85,6 +87,19 @@ TOOL_LIST = {
         "type": "object",
         "properties": {"filter": {"type": "string"}},
         "required": ["filter"],
+    },
+}
+TOOL_FORECAST = {
+    "name": "ha_forecast",
+    "description": "Weather forecast from a Home Assistant weather entity (e.g. 'will it rain tomorrow?'). "
+                   "Without entity_id the first weather.* entity is used. type: daily (default, 7 days), "
+                   "hourly (24 hours) or twice_daily.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "entity_id": {"type": "string", "description": "weather.* entity, optional"},
+            "type": {"type": "string", "enum": ["daily", "hourly", "twice_daily"]},
+        },
     },
 }
 TOOL_CONTROL = {
@@ -168,6 +183,7 @@ TOOL_SHOPPING_EDIT = {
         "required": ["action", "item"],
     },
 }
+READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_EVENTS]
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for the summary after the call
 
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
@@ -223,7 +239,7 @@ class Brain:
         self.cfg = cfg
         self.ha = ha
         self.client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
-        self.tools = [TOOL_HANGUP] + ([TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_EVENTS] if ha.enabled else [])
+        self.tools = [TOOL_HANGUP] + (READ_TOOLS if ha.enabled else [])
         if ha.enabled and cfg.control_domains:
             self.tools.append(TOOL_CONTROL)
         if ha.enabled and cfg.calendar_write:
@@ -241,7 +257,7 @@ class Brain:
             return [TOOL_HANGUP]
         tools = [TOOL_HANGUP]
         if "read" in access:
-            tools += [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_EVENTS]
+            tools += READ_TOOLS
         elif "calendar" in access:
             tools.append(self.tool_busy)
         if "calendar" in access and self.cfg.calendar_write:
@@ -259,8 +275,10 @@ class Brain:
             prompt += "\n" + self.cfg.extra_prompt
         return prompt
 
-    def _run_tool(self, block, tools: list, access) -> str:
+    def _run_tool(self, block, tools: list, access, counters: dict | None = None) -> str:
+        """counters: per-call state, e.g. {"bookings": 1} = restricted bookings already made in this call."""
         log.info("Tool %s %s", block.name, block.input)
+        counters = {} if counters is None else counters
         i = block.input
         if block.name not in {t["name"] for t in tools}:
             log.warning("Tool %s not allowed for access %s", block.name, ",".join(sorted(access)))
@@ -270,14 +288,21 @@ class Brain:
                 return self.ha.search(i.get("query", ""))
             if block.name == "ha_list":
                 return self.ha.list_by(i.get("filter", ""))
+            if block.name == "ha_forecast":
+                return self.ha.forecast(i.get("entity_id", ""), i.get("type") or "daily")
             if block.name == "ha_events":
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":
                 return self.ha.busy_times(i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_create_event":
-                return self.ha.create_event(i.get("calendar", ""), i.get("title", ""), i.get("start", ""),
-                                            i.get("end", ""), i.get("location", ""), i.get("description", ""),
-                                            bool(i.get("confirmed")), restricted="admin" not in access)
+                restricted = "admin" not in access
+                out = self.ha.create_event(i.get("calendar", ""), i.get("title", ""), i.get("start", ""),
+                                           i.get("end", ""), i.get("location", ""), i.get("description", ""),
+                                           bool(i.get("confirmed")), restricted=restricted,
+                                           booked=counters.get("bookings", 0))
+                if restricted and str(out).startswith("Added"):
+                    counters["bookings"] = counters.get("bookings", 0) + 1
+                return out
             if block.name == "shopping_list":
                 return self.ha.shopping(i.get("list", ""))
             if block.name == "shopping_edit":
@@ -318,10 +343,12 @@ class Brain:
             i += 1
 
     def turn(self, messages: list, on_sentence, should_abort, access=frozenset({"guest"}),
-             language: str = "de", actions: list | None = None) -> bool:
+             language: str = "de", actions: list | None = None, counters: dict | None = None) -> bool:
         """One assistant turn including the tool loop. Returns True = hang up.
-        actions collects the changing tool calls (for the summary after the call)."""
+        actions collects the changing tool calls (for the summary after the call),
+        counters keeps per-call limits across turns (bookings by callers without admin)."""
         tools = self.tools_for(access)
+        counters = {} if counters is None else counters
         for _ in range(8):
             self._repair(messages)
             splitter = SentenceSplitter(on_sentence)
@@ -368,7 +395,7 @@ class Brain:
                     hang = True
                     out = "Hung up."
                 else:
-                    out = self._run_tool(b, tools, access)
+                    out = self._run_tool(b, tools, access, counters)
                     if b.name in MUTATING and actions is not None:
                         actions.append(f"{b.name} {json.dumps(b.input, ensure_ascii=False)} -> {out[:150]}")
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})

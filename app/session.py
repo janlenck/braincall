@@ -46,6 +46,7 @@ class CallSession:
         self.transcript: list[str] = []
         self.access = frozenset({"guest"})
         self.actions: list[str] = []  # changing tool calls, for the summary
+        self.counters: dict[str, int] = {}  # per-call limits, e.g. bookings by callers without admin
         self.caller_turns = 0
         self.seg_voiced = 0
         self.language = cfg.language or "de"
@@ -242,7 +243,8 @@ class CallSession:
         self.interrupt.clear()
         hang = self.brain.turn(messages, self.say,
                                lambda: self.interrupt.is_set() or not self.alive(),
-                               access=self.access, language=self.language, actions=self.actions)
+                               access=self.access, language=self.language, actions=self.actions,
+                               counters=self.counters)
         self.wait_spoken()
         self.interrupt.clear()
         return hang

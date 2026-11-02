@@ -58,6 +58,10 @@ DEFAULTS = {
     "default_calendars": [],   # entity_ids or name parts; empty = all
     "all_day_free_words": [],  # all-day entries whose title contains one of these do not count as busy
     "calendar_write": True,    # allow creating appointments (access admin/calendar, with confirmation)
+    # limits for bookings by callers without admin (0 = no limit)
+    "calendar_max_hours": 4,         # longest timed booking; all-day bookings are always at most one day
+    "calendar_max_days_ahead": 90,   # how far ahead
+    "calendar_max_bookings": 2,      # appointments per call
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
 }
 

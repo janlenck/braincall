@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Speech recognition no longer discards real requests that mention music, subtitles or a web address
+  ("Mach Musik an"): typical invented phrases are only dropped as the whole utterance ("Musik", "Untertitel")
+  or by unambiguous patterns ("[Musik]", "♪", "Untertitel im Auftrag des ZDF", amara.org). "Telefonat mit …"
+  uses the first name from *Owner name* instead of a fixed name
+- `ha_state` returns the useful attributes per domain: thermostat current and target temperature and
+  `hvac_action`, cover position, light brightness, media title/artist/volume/source, weather temperature,
+  humidity and wind. `ha_search` and `ha_list` show the one or two most important of them
+- New tool `ha_forecast` (access `admin` and `read`): weather forecast daily, hourly or twice daily via
+  `weather.get_forecasts`
+- Bookings by callers with access `calendar` are limited by the code: no start in the past, at most
+  *Longest booking* (`calendar_max_hours`, default 4; all-day at most one day), at most *Booking lead time*
+  (`calendar_max_days_ahead`, default 90) ahead and at most *Bookings per call* (`calendar_max_bookings`,
+  default 2). The limits are checked before the caller is asked to confirm
+
 ## 1.1.2
 
 - Console log lines show the date as well as the time (`YYYY-MM-DD HH:MM:SS`), like the log file

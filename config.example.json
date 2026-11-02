@@ -111,6 +111,9 @@
   "all_day_free_words": ["gelber sack", "abfall"],  // all-day entries with these words in the title are free
                                       // (Home Assistant does not pass on Google's "free"/"busy")
   "calendar_write": true,             // callers with access admin/calendar may create appointments
+  "calendar_max_hours": 4,            // callers without admin: longest booking (all-day: one day); 0 = no limit
+  "calendar_max_days_ahead": 90,      // callers without admin: how far ahead they may book; 0 = no limit
+  "calendar_max_bookings": 2,         // callers without admin: appointments per call; 0 = no limit
   "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                       "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
   "confirm_domains": ["cover", "lock", "alarm_control_panel"]  // ask for an explicit "yes" first

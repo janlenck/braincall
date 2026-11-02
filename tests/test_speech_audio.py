@@ -14,8 +14,8 @@ from speech import Speech
 PCM = np.zeros(1600, dtype=np.int16)
 
 
-def stt(text, language="de"):
-    s = Speech(make_cfg(openai_api_key="test"))
+def stt(text, language="de", **cfg):
+    s = Speech(make_cfg(openai_api_key="test", **cfg))
     s.http = FakeHTTP({("POST", "/audio/transcriptions"): FakeResponse({"text": text})})
     return s.transcribe(PCM, language), s.http.calls[0][2]["data"]
 
@@ -26,6 +26,12 @@ def stt(text, language="de"):
     "Привіт, як справи?",
     "Ja.",
     "Schalte das Licht im Büro an",
+    "Mach Musik im Wohnzimmer an",
+    "Musik lauter",
+    "Mach Musik an.",
+    "Die Untertitel sind zu klein",
+    "Schau mal auf www.example.de nach",
+    "Danke, das wars.",
 ])
 def test_transcribe_keeps_real_speech(text):
     assert stt(text)[0] == text
@@ -38,6 +44,16 @@ def test_transcribe_keeps_real_speech(text):
     "Vielen Dank fürs Zuschauen!",
     "Copyright WDR 2020",
     "♪",
+    "♪ La la la ♪",
+    "Musik",
+    "[Musik]",
+    "(Musik)",
+    "Untertitel",
+    "Untertitel von Stephanie Geiges",
+    "Untertitelung des ZDF für funk, 2017",
+    "Untertitel der Amara.org-Community",
+    "www.zdf.de",
+    "Telefongespräch auf Deutsch oder Ukrainisch (українською).",
     "你好，今天天气怎么样",  # neither Latin nor Cyrillic: misdetected language
     "a",
 ])
@@ -45,9 +61,11 @@ def test_transcribe_discards_hallucinations(text):
     assert stt(text)[0] == ""
 
 
-@pytest.mark.xfail(strict=True, reason="#20: substring filter drops real requests that mention music")
-def test_transcribe_keeps_music_requests():
-    assert stt("Mach Musik im Wohnzimmer an")[0] == "Mach Musik im Wohnzimmer an"
+def test_transcribe_owner_phrase_comes_from_owner_name():
+    assert stt("Telefonat mit Maria.", owner_name="Maria Muster")[0] == ""
+    assert stt("Telefonat mit Jan.", owner_name="Maria Muster")[0] == "Telefonat mit Jan."
+    assert stt("Ich hatte ein Telefonat mit Maria", owner_name="Maria Muster")[0] != ""
+    assert stt("Telefonat mit Maria.")[0] == "Telefonat mit Maria."  # no owner_name: nothing to match
 
 
 def test_transcribe_language_or_hint():

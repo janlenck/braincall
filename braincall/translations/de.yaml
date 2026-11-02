@@ -116,6 +116,15 @@ configuration:
   calendar_write:
     name: Termine anlegen
     description: Anrufer mit access admin oder calendar dürfen Termine eintragen (nach Bestätigung).
+  calendar_max_hours:
+    name: Längste Buchung (Stunden)
+    description: 'Anrufer mit access „calendar“: längster Termin, den sie buchen dürfen; ganztägig höchstens ein Tag. 0 = keine Grenze.'
+  calendar_max_days_ahead:
+    name: Buchungsvorlauf (Tage)
+    description: 'Anrufer mit access „calendar“: so viele Tage im Voraus dürfen sie buchen. 0 = keine Grenze.'
+  calendar_max_bookings:
+    name: Buchungen pro Anruf
+    description: 'Anrufer mit access „calendar“: Termine pro Anruf. 0 = keine Grenze.'
   control_domains:
     name: Steuerbare Bereiche
     description: Domains, die gesteuert werden dürfen; leer = nichts steuern.

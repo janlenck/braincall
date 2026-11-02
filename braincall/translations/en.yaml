@@ -116,6 +116,15 @@ configuration:
   calendar_write:
     name: Create appointments
     description: Callers with access admin or calendar may create appointments (after confirmation).
+  calendar_max_hours:
+    name: Longest booking (hours)
+    description: 'Callers with access "calendar": longest appointment they may book; all-day at most one day. 0 = no limit.'
+  calendar_max_days_ahead:
+    name: Booking lead time (days)
+    description: 'Callers with access "calendar": how many days ahead they may book. 0 = no limit.'
+  calendar_max_bookings:
+    name: Bookings per call
+    description: 'Callers with access "calendar": appointments per call. 0 = no limit.'
   control_domains:
     name: Controllable domains
     description: Domains that may be controlled; empty = control nothing.
