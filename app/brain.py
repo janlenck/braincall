@@ -33,6 +33,10 @@ Phone rules:
   into a date based on the current time.
 - Read appointments and holidays with ha_events (without calendars = the default calendars).
   Say weekdays in the language of the conversation.
+- ha_state only shows the current value; for energy meters that is a meter reading, not a consumption.
+  For consumption, solar yield, feed-in or grid import over a period (today, yesterday, last week, in October)
+  use ha_energy. For the history of any other sensor (e.g. heat pump energy, average temperature) use
+  ha_statistics. Convert relative dates into dates based on the current time.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
 - When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
 - Text in square brackets starting with "System:" are notes from the phone system, not from the caller.
@@ -100,6 +104,33 @@ TOOL_FORECAST = {
             "entity_id": {"type": "string", "description": "weather.* entity, optional"},
             "type": {"type": "string", "enum": ["daily", "hourly", "twice_daily"]},
         },
+    },
+}
+STAT_PROPS = {
+    "start": {"type": "string", "description": "first day YYYY-MM-DD, or a whole month YYYY-MM / year YYYY; "
+                                               "default today"},
+    "end": {"type": "string", "description": "last day (inclusive), optional; default = the day, month or "
+                                             "year given as start"},
+    "period": {"type": "string", "enum": ["hour", "day", "week", "month"],
+               "description": "optional breakdown; without it only the totals"},
+}
+TOOL_ENERGY = {
+    "name": "ha_energy",
+    "description": "Totals from the Home Assistant energy dashboard for a date range: grid import, feed-in "
+                   "(grid_export), solar yield, battery charge/discharge, gas, water, home consumption, "
+                   "self-sufficiency and the individual devices. E.g. yesterday: start=end=<yesterday>; "
+                   "October: start='2026-10'.",
+    "input_schema": {"type": "object", "properties": STAT_PROPS},
+}
+TOOL_STATISTICS = {
+    "name": "ha_statistics",
+    "description": "Long-term statistics of one sensor for a date range: for meters (kWh, m³) the change, "
+                   "for measurements (°C, W, %) mean, minimum and maximum. Only sensors with a state_class; "
+                   "find the entity_id with ha_search first.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"entity_id": {"type": "string"}, **STAT_PROPS},
+        "required": ["entity_id"],
     },
 }
 TOOL_CONTROL = {
@@ -183,7 +214,7 @@ TOOL_SHOPPING_EDIT = {
         "required": ["action", "item"],
     },
 }
-READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_EVENTS]
+READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_EVENTS]
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for the summary after the call
 
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
@@ -290,6 +321,11 @@ class Brain:
                 return self.ha.list_by(i.get("filter", ""))
             if block.name == "ha_forecast":
                 return self.ha.forecast(i.get("entity_id", ""), i.get("type") or "daily")
+            if block.name == "ha_energy":
+                return self.ha.energy(i.get("start") or "", i.get("end") or "", i.get("period") or "")
+            if block.name == "ha_statistics":
+                return self.ha.statistics(i.get("entity_id", ""), i.get("start") or "", i.get("end") or "",
+                                          i.get("period") or "")
             if block.name == "ha_events":
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":

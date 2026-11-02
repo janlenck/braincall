@@ -27,7 +27,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/main.py` | entry point: SIP phone, HTTP trigger, incoming/outgoing calls |
 | `app/session.py` | one call: listening, barge-in, turn taking |
 | `app/brain.py` | Claude prompt, tools, sentence streaming |
-| `app/ha.py` | Home Assistant: search, state, control, lists, calendars |
+| `app/ha.py` | Home Assistant: search, state, control, lists, calendars, energy and long-term statistics |
 | `app/speech.py` | OpenAI speech-to-text and text-to-speech |
 | `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
@@ -87,7 +87,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - `access` (several possible, `"shopping, calendar"` or a list) decides which tools Claude gets in the call.
   The code enforces it, not the prompt: a caller cannot talk the assistant into more.
   - `admin`: everything, read and control Home Assistant, appointments.
-  - `read`: read everything (states, sensors, appointments with details), change nothing.
+  - `read`: read everything (states, sensors, energy and long-term statistics, appointments with details),
+    change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
     A busy slot is refused by the code, and so are bookings in the past, longer than `calendar_max_hours`
@@ -117,6 +118,18 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 
 Read access needs `ha_url` and a long-lived `ha_token`. Certificates from the Windows certificate store
 (own CA) are trusted automatically.
+
+Consumption over a period ("How much power did I use yesterday?", "What did the PV produce in October?")
+comes from the long-term statistics of Home Assistant, which only the WebSocket API offers
+(`/api/websocket`, same URL, token and `ha_verify_ssl`). Callers with access `admin` or `read` get two tools:
+
+- `ha_energy`: totals of the energy dashboard (*Settings > Dashboards > Energy*) for a day, a month, a year or
+  a date range: grid import, feed-in, solar, battery, gas, water, home consumption, self-sufficiency and the
+  individual devices, optionally per hour, day, week or month.
+- `ha_statistics`: one sensor with a `state_class`: the change for meters (kWh, m³), mean, minimum and maximum
+  for measurements (°C, W, %).
+
+The statistics are compiled hourly, so the current hour is not included yet.
 
 Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 

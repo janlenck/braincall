@@ -1,6 +1,7 @@
 pyVoIP==1.6.8
 anthropic>=0.40
 requests>=2.31
+websocket-client>=1.7
 numpy>=1.26
 tzdata
 truststore>=0.9

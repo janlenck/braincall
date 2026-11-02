@@ -26,7 +26,7 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | access | may |
 |---|---|
 | `admin` | everything: read and control Home Assistant, appointments |
-| `read` | read everything (also appointments with details), change nothing |
+| `read` | read everything (also energy statistics and appointments with details), change nothing |
 | `calendar` | only free/busy times, no details; books an appointment in a free slot without asking you |
 | `shopping` | only the lists in *Shopping lists* |
 | `guest` | nothing, takes a message |
@@ -50,6 +50,15 @@ allowed to call are dropped) and used instead of *Callers*. The log shows the co
 
 Logs (`braincall.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
+
+## Energy and statistics
+
+Callers with access `admin` or `read` can ask for consumption over a period, e.g. "How much power did I use
+yesterday?" or "What did the PV produce in October?". The answer comes from the energy dashboard
+(*Settings > Dashboards > Energy*): grid import, feed-in, solar, battery, gas, water, home consumption,
+self-sufficiency and the individual devices. Other sensors with a `state_class` work too, e.g. the energy of
+the heat pump or the average outdoor temperature. The statistics are compiled hourly, so the current hour is
+not included yet.
 
 ## On/off switch
 
