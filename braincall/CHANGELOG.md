@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - Speech recognition no longer discards real requests that mention music, subtitles or a web address
   ("Mach Musik an"): typical invented phrases are only dropped as the whole utterance ("Musik", "Untertitel")
