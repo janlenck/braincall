@@ -88,10 +88,14 @@ class FakeHTTP:
         return [kw.get("json") for m, url, kw in self.calls if m == "POST" and path_part in url]
 
 
+# Environment variables config.load() reads: a developer's BrainCall setup must not leak into the tests
+CONFIG_ENV = ("BRAINCALL_CONFIG", "CONFIG_PATH", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HA_TOKEN",
+              "BRAINCALL_SIP_PASSWORD", "BRAINCALL_API_TOKEN", "BRAINCALL_LOG_DIR", "SUPERVISOR_TOKEN")
+
+
 @pytest.fixture
 def tmp_env(monkeypatch):
     """No secrets or config paths from the developer's environment leak into config.load()."""
-    for key in ("BRAINCALL_CONFIG", "CONFIG_PATH", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HA_TOKEN",
-                "BRAINCALL_SIP_PASSWORD", "BRAINCALL_API_TOKEN", "BRAINCALL_LOG_DIR", "SUPERVISOR_TOKEN"):
+    for key in CONFIG_ENV:
         monkeypatch.delenv(key, raising=False)
     return os.environ

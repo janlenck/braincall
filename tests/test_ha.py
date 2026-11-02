@@ -139,9 +139,10 @@ def test_get_state_climate_has_current_temperature(make_ha):
 def test_local_time_is_not_utc():
     out = ha_mod._local_time("2025-01-01T10:00:00+00:00")
     assert out == "2025-01-01 11:00 local time"  # Europe/Berlin in winter, older than a day: with date
-    recent = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
-    local = (datetime.now() - timedelta(minutes=90)).strftime("%H:%M")
-    assert ha_mod._local_time(recent) == f"{local} local time (90 minutes ago)"
+    # 30 s margin: the helper reads the clock again, a few seconds later must still count as 90 minutes
+    recent = datetime.now(timezone.utc) - timedelta(minutes=90, seconds=30)
+    local = recent.astimezone().strftime("%H:%M")  # same instant as the input, also across DST changes
+    assert ha_mod._local_time(recent.isoformat()) == f"{local} local time (90 minutes ago)"
     assert ha_mod._local_time("garbage") == "garbage"
 
 

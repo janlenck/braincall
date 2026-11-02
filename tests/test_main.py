@@ -14,6 +14,7 @@ import pytest
 from pyVoIP.VoIP import PhoneStatus
 
 import config
+from conftest import CONFIG_ENV
 
 CALLERS = [
     {"number": "*", "name": "Unknown", "access": "guest"},
@@ -33,10 +34,8 @@ def main(tmp_path_factory):
         "owner_name": "Jan Lenck", "log_dir": str(tmp / "logs"), "callers": CALLERS,
         "notify_services": ["notify.phone"], "api_token": "secret",
     }), encoding="utf-8")
-    saved = {k: os.environ.get(k) for k in ("BRAINCALL_CONFIG", "BRAINCALL_LOG_DIR", "SUPERVISOR_TOKEN")}
+    saved = {k: os.environ.pop(k, None) for k in CONFIG_ENV}  # e.g. BRAINCALL_API_TOKEN would beat "secret"
     os.environ["BRAINCALL_CONFIG"] = str(cfg_file)
-    os.environ.pop("BRAINCALL_LOG_DIR", None)
-    os.environ.pop("SUPERVISOR_TOKEN", None)
     hooks = sys.excepthook, threading.excepthook
     try:
         module = importlib.import_module("main")
