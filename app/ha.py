@@ -7,6 +7,7 @@ import logging
 import ssl
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 import websocket
@@ -144,10 +145,16 @@ def _span_of(text: str):
     return d, d
 
 
-def stat_range(start: str = "", end: str = ""):
-    """Local midnight of the first day up to the midnight after the last day (end inclusive).
+def _midnight(d: date, tz=None) -> datetime:
+    """Midnight of a day in tz (None = timezone of the machine)."""
+    t = datetime.combine(d, datetime.min.time())
+    return t.replace(tzinfo=tz) if tz else t.astimezone()
+
+
+def stat_range(start: str = "", end: str = "", tz=None):
+    """Midnight of the first day up to the midnight after the last day (end inclusive), in tz.
     Without start: today. Without end: the whole day, month or year given as start."""
-    today = datetime.now().astimezone().date()
+    today = datetime.now(tz).astimezone(tz).date()
     first, last = _span_of(start) if start else (today, today)
     if end:
         last = _span_of(end)[1]
@@ -155,16 +162,14 @@ def stat_range(start: str = "", end: str = ""):
         first, last = last, first
     if (last - first).days >= STAT_MAX_DAYS:
         raise ValueError(f"Range too long, at most {STAT_MAX_DAYS} days.")
-    begin = datetime.combine(first, datetime.min.time()).astimezone()
-    stop = datetime.combine(last + timedelta(days=1), datetime.min.time()).astimezone()
-    return begin, stop
+    return _midnight(first, tz), _midnight(last + timedelta(days=1), tz)
 
 
-def _row_time(v) -> datetime:
+def _row_time(v, tz=None) -> datetime:
     """Start of a statistics row: milliseconds since 1970 (newer HA) or an ISO string (older HA)."""
     if isinstance(v, (int, float)):
-        return datetime.fromtimestamp(v / 1000, timezone.utc).astimezone()
-    return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone()
+        return datetime.fromtimestamp(v / 1000, timezone.utc).astimezone(tz)
+    return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(tz)
 
 
 def _row_label(t: datetime, period: str) -> str:
@@ -185,10 +190,10 @@ def _unit(meta: dict) -> str:
     return meta.get("display_unit_of_measurement") or meta.get("statistics_unit_of_measurement") or ""
 
 
-def _next_start(t: datetime, period: str) -> datetime:
-    """Start of the following hour, day, week (Monday) or month in local time, correct across DST changes."""
+def _next_start(t: datetime, period: str, tz=None) -> datetime:
+    """Start of the following hour, day, week (Monday) or month in tz, correct across DST changes."""
     if period == "hour":
-        return (t.astimezone(timezone.utc) + timedelta(hours=1)).astimezone()
+        return (t.astimezone(timezone.utc) + timedelta(hours=1)).astimezone(tz)
     d = t.date()
     if period == "week":
         d += timedelta(days=7 - d.weekday())
@@ -196,14 +201,14 @@ def _next_start(t: datetime, period: str) -> datetime:
         d = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
     else:
         d += timedelta(days=1)
-    return datetime.combine(d, datetime.min.time()).astimezone()
+    return _midnight(d, tz)
 
 
-def buckets(begin: datetime, stop: datetime, period: str) -> list:
-    """[(start, end)] per period within [begin, stop); the first and last one may be partial."""
+def buckets(begin: datetime, stop: datetime, period: str, tz=None) -> list:
+    """[(start, end)] per period within [begin, stop) in tz; the first and last one may be partial."""
     out, t = [], begin
     while t < stop:
-        n = min(_next_start(t, period), stop)
+        n = min(_next_start(t, period, tz), stop)
         out.append((t, n))
         t = n
     return out
@@ -233,6 +238,10 @@ class HA:
             self.ws_url = None
             token = ""
         self.token = token
+        try:  # dates in statistics follow the configured timezone, like the current time in the prompt
+            self.tz = ZoneInfo(cfg.timezone) if cfg.timezone else None
+        except (ZoneInfoNotFoundError, ValueError):
+            self.tz = None
         self.http = requests.Session()
         self.http.headers["Authorization"] = f"Bearer {token}"
         self._cache = (0.0, [])
@@ -295,7 +304,7 @@ class HA:
 
     @staticmethod
     def _rows_note(stop: datetime) -> str:
-        if stop > datetime.now().astimezone():
+        if stop > datetime.now(timezone.utc):
             return "The rows are compiled hourly: the current hour is only in the totals."
         return ""
 
@@ -325,11 +334,11 @@ class HA:
         """Totals of the energy dashboard (grid, solar, battery, gas, water, devices) for a date range,
         optionally broken down per hour, day, week or month."""
         try:
-            begin, stop = stat_range(start, end)
+            begin, stop = stat_range(start, end, self.tz)
         except ValueError as e:
             return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
         period = period if period in STAT_PERIODS else ""
-        spans = buckets(begin, stop, period) if period else []
+        spans = buckets(begin, stop, period, self.tz) if period else []
         with self._ws() as call:
             try:
                 prefs = call("energy/get_prefs")
@@ -373,7 +382,9 @@ class HA:
                 parts = [f"{_num(v)} {u}".rstrip() for u, v in totals[k].items()]
                 out["totals"][k] = parts[0] if len(parts) == 1 else parts
         electric = {k: totals[k] for k in ENERGY_KEYS[:5] if k in totals}
-        if "grid_import" in electric and all(set(v) == {"kWh"} for v in electric.values()):
+        # Derived figures only when every electricity meter has data: a missing one is unknown, not zero
+        complete = not any(r in ENERGY_KEYS[:5] and change.get(sid) is None for r, sid, _ in roles)
+        if complete and "grid_import" in electric and all(set(v) == {"kWh"} for v in electric.values()):
             kwh = {k: v["kWh"] for k, v in electric.items()}
             imp, exp = kwh["grid_import"], kwh.get("grid_export", 0.0)
             solar, charge, discharge = (kwh.get(k, 0.0) for k in ("solar", "battery_charge", "battery_discharge"))
@@ -389,7 +400,10 @@ class HA:
             if len(spans) > STAT_ROWS[period]:
                 out["rows"] = f"{len(spans)} rows, too many to read out: choose a longer period."
             else:
-                out["rows"] = self._energy_rows(roles, stats, spans, period)
+                # one column per role; a role with meters in different units (gas m³ / kWh) gets one per unit
+                columns = {sid: role if len(totals[role]) == 1 else f"{role} ({_unit(meta.get(sid, {}))})"
+                           for role, sid, _ in roles if role in totals}
+                out["rows"] = self._energy_rows(columns, stats, spans, period, self.tz)
                 note = self._rows_note(stop)
                 if note:
                     out["note"] = note
@@ -399,18 +413,16 @@ class HA:
         return json.dumps(out, ensure_ascii=False)
 
     @staticmethod
-    def _energy_rows(roles: list, stats: dict, spans: list, period: str) -> list:
-        """Per period one row with the sums of grid, solar, battery, gas and water (devices only in the totals).
+    def _energy_rows(columns: dict, stats: dict, spans: list, period: str, tz=None) -> list:
+        """Per period one row with the sums per column ({statistic_id: column}, devices only in the totals).
         Rows outside the range are dropped."""
         sums = [{} for _ in spans]
-        for role, sid, _ in roles:
-            if role in ("device", "device_water"):
-                continue
+        for sid, col in columns.items():
             for r in stats.get(sid) or []:
-                t = _row_time(r.get("start"))
+                t = _row_time(r.get("start"), tz)
                 i = next((i for i, (b, e) in enumerate(spans) if b <= t < e), None)
                 if i is not None:
-                    sums[i][role] = sums[i].get(role, 0.0) + (r.get("change") or 0)
+                    sums[i][col] = sums[i].get(col, 0.0) + (r.get("change") or 0)
         return [{"time": _row_label(b, period), **{k: _num(v) for k, v in row.items()}}
                 for (b, _), row in zip(spans, sums, strict=True) if row]
 
@@ -420,11 +432,11 @@ class HA:
         if not entity_id:
             return "Error: entity_id missing."
         try:
-            begin, stop = stat_range(start, end)
+            begin, stop = stat_range(start, end, self.tz)
         except ValueError as e:
             return f"Error: {e} Dates as YYYY-MM-DD, YYYY-MM or YYYY."
         period = period if period in STAT_PERIODS else ""
-        spans = buckets(begin, stop, period) if period else []
+        spans = buckets(begin, stop, period, self.tz) if period else []
         with self._ws() as call:
             metas = call("recorder/get_statistics_metadata", statistic_ids=[entity_id]) or []
             if not metas:

@@ -1,8 +1,11 @@
 """Long-term statistics over the WebSocket API: energy dashboard totals and statistics of single sensors."""
 import json
 import math
+import os
 import ssl
+import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -49,8 +52,15 @@ DAILY = {
 }
 
 
+BERLIN = ZoneInfo("Europe/Berlin")  # timezone of Home Assistant and of the configuration (default)
+
+
 def local(day: str) -> datetime:
-    return datetime.fromisoformat(day).astimezone()
+    return datetime.fromisoformat(day).replace(tzinfo=BERLIN)
+
+
+def berlin_midnight(t: datetime) -> datetime:
+    return datetime.combine(t.astimezone(BERLIN).date(), datetime.min.time(), tzinfo=BERLIN)
 
 
 def hourly_changes(per_day: dict) -> list:
@@ -96,16 +106,16 @@ class FakeRecorder:
     def rows(self, msg):
         assert msg["types"] == ["change"] and msg["units"] == {"energy": "kWh", "volume": "m³"}
         b, e, period = self._t(msg["start_time"]), self._t(msg["end_time"]), msg["period"]
-        if period == "day":  # like HA: align to whole local days, end_time to the end of its day
-            b = datetime.combine(b.astimezone().date(), datetime.min.time()).astimezone()
-            e = datetime.combine(e.astimezone().date() + timedelta(days=1), datetime.min.time()).astimezone()
+        if period == "day":  # like HA: align to whole days in its timezone, end_time to the end of its day
+            b = berlin_midnight(b)
+            e = berlin_midnight(e) + timedelta(days=1)
         out = {}
         for sid in msg["statistic_ids"]:
             groups = {}
             for t, v in self.changes.get(sid, []):
                 if b <= t < e:
-                    key = t if period == "hour" else datetime.combine(t.astimezone().date(), datetime.min.time())
-                    groups[key.astimezone()] = groups.get(key.astimezone(), 0.0) + v
+                    key = t if period == "hour" else berlin_midnight(t)
+                    groups[key] = groups.get(key, 0.0) + v
             if groups:
                 out[sid] = [{"start": k.timestamp() * 1000, "change": v} for k, v in sorted(groups.items())]
         return out
@@ -396,8 +406,72 @@ def test_energy_rows_with_iso_start_times():
     spans = buckets(*stat_range("2025-10-01"), "day")
     stats = {"sensor.pv": [{"start": "2025-09-30T22:00:00+00:00", "change": 7.0},
                            {"start": "2025-10-01T22:00:00+00:00", "change": 9.0}]}  # outside: dropped
-    assert HA._energy_rows([("solar", "sensor.pv", "")], stats, spans, "day") == \
-        [{"time": "Wed 2025-10-01", "solar": 7.0}]
+    assert HA._energy_rows({"sensor.pv": "solar"}, stats, spans, "day") == [{"time": "Wed 2025-10-01", "solar": 7.0}]
+
+
+def test_energy_missing_electricity_meter_gives_no_derived_figures(connect):
+    """An unknown grid import is not zero: no home consumption or self-sufficiency from it."""
+    rec = FakeRecorder()
+    del rec.changes["sensor.grid_import_t2"]
+    connect(recorder=rec)
+    out = json.loads(make_ha().energy("2025-10-01"))
+    assert out["no_data"] == ["sensor.grid_import_t2", "sensor.wallbox_energy"]
+    assert "home_consumption" not in out["totals"] and "self_sufficiency" not in out["totals"]
+    assert "solar_used_in_house_approx" not in out["totals"]
+    assert out["totals"]["grid_import"] == "3.0 kWh"
+
+
+def test_energy_gas_rows_in_different_units_are_not_added_up(connect):
+    META["sensor.gas_m3"] = {"unit_class": "volume", "statistics_unit_of_measurement": "L", "has_sum": True}
+    META["sensor.gas_kwh"] = energy_meta()
+    rec = FakeRecorder({"sensor.gas_m3": hourly_changes({"2025-10-01": 2.4}),
+                        "sensor.gas_kwh": hourly_changes({"2025-10-01": 12.0}),
+                        "sensor.pv_energy": hourly_changes({"2025-10-01": 10.0})})
+    try:
+        connect(recorder=rec, prefs={"energy_sources": [{"type": "gas", "stat_energy_from": "sensor.gas_m3"},
+                                                        {"type": "gas", "stat_energy_from": "sensor.gas_kwh"},
+                                                        {"type": "solar", "stat_energy_from": "sensor.pv_energy"}]})
+        out = json.loads(make_ha().energy("2025-10-01", period="day"))
+    finally:
+        del META["sensor.gas_m3"], META["sensor.gas_kwh"]
+    assert out["rows"] == [{"time": "Wed 2025-10-01", "gas (m³)": 2.4, "gas (kWh)": 12.0, "solar": 10.0}]
+
+
+@pytest.fixture
+def utc_machine():
+    """The machine runs in UTC while BrainCall and Home Assistant are configured for Europe/Berlin."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("needs time.tzset")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    yield  # the autouse fixture in conftest.py restores the timezone afterwards
+
+
+def test_energy_uses_the_configured_timezone(connect, utc_machine):
+    ws = connect()
+    out = json.loads(make_ha(timezone="Europe/Berlin").energy("2025-10-01", "2025-10-02", "day"))
+    assert ws.commands("recorder/statistic_during_period")[0]["fixed_period"] == {
+        "start_time": "2025-10-01T00:00:00+02:00", "end_time": "2025-10-03T00:00:00+02:00"}
+    q = ws.commands("recorder/statistics_during_period")[0]
+    assert q["start_time"] == "2025-10-01T00:00:00+02:00" and q["end_time"] == "2025-10-02T23:59:59+02:00"
+    assert [r["time"] for r in out["rows"]] == ["Wed 2025-10-01", "Thu 2025-10-02"]
+    assert out["totals"]["solar"] == "24.0 kWh"
+
+
+def test_statistics_rows_use_the_configured_timezone(connect, utc_machine):
+    day = datetime(2025, 10, 25, 22, tzinfo=timezone.utc)  # 2025-10-26 00:00 in Berlin, 25 hours long
+    ws = connect(recorder=FakeRecorder({"sensor.wp_energy": [(day + timedelta(hours=h), 1.0) for h in range(26)]}))
+    out = json.loads(make_ha(timezone="Europe/Berlin").statistics("sensor.wp_energy", "2025-10-26", period="hour"))
+    assert out["change"] == 25.0
+    assert len(out["rows"]) == 25  # end of summer time in Berlin, not in UTC
+    assert out["rows"][2]["time"] == "Sun 2025-10-26 02:00" and out["rows"][3]["time"] == "Sun 2025-10-26 02:00"
+    assert ws.commands("recorder/statistic_during_period")[1]["fixed_period"]["start_time"] == \
+        "2025-10-26T00:00:00+02:00"
+
+
+def test_invalid_timezone_falls_back_to_the_machine():
+    assert make_ha(timezone="Mars/Olympus").tz is None
+    assert make_ha(timezone="Europe/Berlin").tz == BERLIN
 
 
 # ---------------------------------------------------------------- single sensors
