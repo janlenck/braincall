@@ -87,7 +87,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - `access` (several possible, `"shopping, calendar"` or a list) decides which tools Claude gets in the call.
   The code enforces it, not the prompt: a caller cannot talk the assistant into more.
   - `admin`: everything, read and control Home Assistant, appointments.
-  - `read`: read everything (states, sensors, energy and long-term statistics, appointments with details),
+  - `read`: read everything (states, sensors, history, energy and long-term statistics, appointments with
+    details),
     change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
@@ -131,6 +132,20 @@ comes from the long-term statistics of Home Assistant, which only the WebSocket 
 
 Totals are exact for the range, up to a few minutes ago. A breakdown per hour, day, week or month comes from
 the hourly statistics, so the current hour is only in the totals there.
+
+Questions about the past ("When was the garage door last open?", "Was anyone at the front door today?",
+"How long was the light on?") are answered by `ha_history` (access `admin` and `read`), using the REST
+endpoint `/api/history/period` of the recorder. One entity, the last hours (default 24) or a date range of at
+most 31 days, condensed for the phone:
+
+- states such as `open`/`closed`, `on`/`off` or `home`: the changes (the most recent 30), the time in each
+  state and the last period in each state;
+- meters (`state_class: total_increasing` or `total`): the change over the range, with meter resets;
+- other numeric sensors: first and last value, minimum and maximum with their time, the readings if there are
+  at most 30.
+
+The recorder keeps about 10 days by default (`recorder: purge_keep_days`); older data of sensors come from
+`ha_statistics`.
 
 Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 

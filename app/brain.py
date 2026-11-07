@@ -37,6 +37,9 @@ Phone rules:
   For consumption, solar yield, feed-in or grid import over a period (today, yesterday, last week, in October)
   use ha_energy. For the history of any other sensor (e.g. heat pump energy, average temperature) use
   ha_statistics. Convert relative dates into dates based on the current time.
+- For what happened in the last days (when was the garage door last open, was anyone at the front door today,
+  how long was the light on, the temperature this morning) use ha_history. It reaches back only as far as the
+  recorder keeps data, usually 10 days.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
 - When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
 - Text in square brackets starting with "System:" are notes from the phone system, not from the caller.
@@ -133,6 +136,26 @@ TOOL_STATISTICS = {
         "required": ["entity_id"],
     },
 }
+TOOL_HISTORY = {
+    "name": "ha_history",
+    "description": "State changes of one entity in the past, e.g. 'when was the garage door last open?', "
+                   "'was anyone at the front door today?', 'how long was the light on?'. Returns the changes, "
+                   "the time in each state and the last period in each state; for meters (kWh) the change, "
+                   "for measurements (°C, W) first, last, minimum and maximum. Either 'hours' (the last hours, "
+                   "default 24) or 'start'/'end'. Find the entity_id with ha_search first.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "entity_id": {"type": "string"},
+            "hours": {"type": "number", "description": "the last N hours up to now, default 24, at most 744"},
+            "start": {"type": "string", "description": "instead of hours: YYYY-MM-DD (from midnight) or "
+                                                       "YYYY-MM-DDTHH:MM, local time"},
+            "end": {"type": "string", "description": "optional: YYYY-MM-DD (inclusive) or YYYY-MM-DDTHH:MM; "
+                                                     "default the end of the start day, or now"},
+        },
+        "required": ["entity_id"],
+    },
+}
 TOOL_CONTROL = {
     "name": "ha_control",
     "description": "Calls a Home Assistant service for exactly one entity, e.g. light on/off. "
@@ -214,7 +237,8 @@ TOOL_SHOPPING_EDIT = {
         "required": ["action", "item"],
     },
 }
-READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_EVENTS]
+READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_HISTORY,
+              TOOL_EVENTS]
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for the summary after the call
 
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
@@ -326,6 +350,9 @@ class Brain:
             if block.name == "ha_statistics":
                 return self.ha.statistics(i.get("entity_id", ""), i.get("start") or "", i.get("end") or "",
                                           i.get("period") or "")
+            if block.name == "ha_history":
+                return self.ha.history(i.get("entity_id", ""), i.get("hours"), i.get("start") or "",
+                                       i.get("end") or "")
             if block.name == "ha_events":
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":

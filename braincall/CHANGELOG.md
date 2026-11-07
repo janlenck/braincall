@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.0
+
+- New tool `ha_history` (access `admin` and `read`): what one entity did in the last hours (default 24) or in
+  a date range of up to 31 days, from the recorder (`/api/history/period`), e.g. "When was the garage door last
+  open?". States come back as the most recent 30 changes plus the time in each state and the last period in
+  each state; meters (`total_increasing`, `total`) as the change over the range including meter resets; other
+  numeric sensors as first/last value and minimum/maximum with their time
+
 ## 1.3.0
 
 - New tools `ha_energy` and `ha_statistics` (access `admin` and `read`): consumption, solar yield, feed-in,
