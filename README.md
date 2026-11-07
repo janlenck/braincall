@@ -139,10 +139,15 @@ endpoint `/api/history/period` of the recorder. One entity, the last hours (defa
 most 31 days, condensed for the phone:
 
 - states such as `open`/`closed`, `on`/`off` or `home`: the changes (the most recent 30), the time in each
-  state and the last period in each state;
-- meters (`state_class: total_increasing` or `total`): the change over the range, with meter resets;
-- other numeric sensors: first and last value, minimum and maximum with their time, the readings if there are
-  at most 30.
+  state and the last period in each state (the 10 states with the most time);
+- meters (`state_class: total_increasing` or `total`): the change over the range, with meter resets, marked as
+  partial when there is no reading at the start or end. Meters with `last_reset` (new cycles) are left to
+  `ha_statistics`;
+- other numeric sensors: value at start and end, minimum and maximum with their time, the readings if there
+  are at most 30.
+
+A state that was first recorded inside the range is not taken as the state at its start (`unknown`), and a
+sensor that became `unavailable` is reported as such, not with its last value.
 
 The recorder keeps about 10 days by default (`recorder: purge_keep_days`); older data of sensors come from
 `ha_statistics`.

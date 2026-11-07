@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import ha as ha_mod
 from conftest import FakeHTTP, FakeResponse, make_cfg
 from ha import HA, history_range
 
@@ -17,6 +18,12 @@ CURRENT = {
     "sensor.pv_energy": {"entity_id": "sensor.pv_energy", "state": "2",
                          "attributes": {"friendly_name": "PV Energie", "unit_of_measurement": "kWh",
                                         "state_class": "total_increasing"}},
+    "sensor.net_meter": {"entity_id": "sensor.net_meter", "state": "5",
+                         "attributes": {"unit_of_measurement": "kWh", "state_class": "total"}},
+    "sensor.daily_energy": {"entity_id": "sensor.daily_energy", "state": "1",
+                            "attributes": {"unit_of_measurement": "kWh", "state_class": "total",
+                                           "last_reset": "2025-10-05T00:00:00+02:00"}},
+    "sensor.text": {"entity_id": "sensor.text", "state": "x", "attributes": {}},
     "sensor.outdoor_temp": {"entity_id": "sensor.outdoor_temp", "state": "3.1",
                             "attributes": {"friendly_name": "Außentemperatur", "unit_of_measurement": "°C",
                                            "state_class": "measurement"}},
@@ -167,24 +174,24 @@ def test_invalid_ranges(make_ha, kwargs):
 
 # ---------------------------------------------------------------- history_range
 def test_range_of_days_and_times():
-    b, s = history_range(start="2025-10-05", end="2025-10-06", tz=BERLIN)
+    b, s, _ = history_range(start="2025-10-05", end="2025-10-06", tz=BERLIN)
     assert (b.isoformat(), s.isoformat()) == ("2025-10-05T00:00:00+02:00", "2025-10-07T00:00:00+02:00")
-    b, s = history_range(start="2025-10-05T08:00", end="2025-10-05T09:30", tz=BERLIN)
+    b, s, _ = history_range(start="2025-10-05T08:00", end="2025-10-05T09:30", tz=BERLIN)
     assert (b.isoformat(), s.isoformat()) == ("2025-10-05T08:00:00+02:00", "2025-10-05T09:30:00+02:00")
-    b, s = history_range(start="2025-10-26", tz=BERLIN)  # end of summer time: the day has 25 hours
+    b, s, _ = history_range(start="2025-10-26", tz=BERLIN)  # end of summer time: the day has 25 hours
     assert s.timestamp() - b.timestamp() == 25 * 3600
 
 
 def test_range_ends_now():
     now = datetime.now(timezone.utc)
-    b, s = history_range(start=(now - timedelta(hours=2)).astimezone(BERLIN).strftime("%Y-%m-%dT%H:%M"),
+    b, s, _ = history_range(start=(now - timedelta(hours=2)).astimezone(BERLIN).strftime("%Y-%m-%dT%H:%M"),
                          tz=BERLIN)
     assert abs(s.timestamp() - now.timestamp()) < 5
-    b, s = history_range(tz=BERLIN)
+    b, s, _ = history_range(tz=BERLIN)
     assert round(s.timestamp() - b.timestamp()) == 24 * 3600
-    b, s = history_range(hours=100000, tz=BERLIN)  # clamped to the longest range, exact across DST changes
+    b, s, _ = history_range(hours=100000, tz=BERLIN)  # clamped to the longest range, exact across DST changes
     assert round(s.timestamp() - b.timestamp()) == 31 * 86400
-    b, s = history_range(hours="viel", tz=BERLIN)
+    b, s, _ = history_range(hours="viel", tz=BERLIN)
     assert round(s.timestamp() - b.timestamp()) == 24 * 3600
 
 
@@ -196,15 +203,99 @@ def test_configured_timezone_is_used(make_ha):
     assert "/history/period/2025-10-05T04:00:00+00:00?" in history_url(h)
 
 
-def test_last_hours_across_dst_change(monkeypatch):
-    import ha as ha_mod
+@pytest.fixture
+def freeze(monkeypatch):
+    """freeze(utc datetime): ha.py sees this as the current time."""
+    def set_now(now: datetime):
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz)
+        monkeypatch.setattr(ha_mod, "datetime", Frozen)
+    return set_now
 
-    class Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(2025, 10, 26, 11, 0, tzinfo=timezone.utc).astimezone(tz)  # 12:00 winter time
 
-    monkeypatch.setattr(ha_mod, "datetime", Frozen)
-    b, s = history_range(hours=24, tz=BERLIN)
+def test_last_hours_across_dst_change(freeze):
+    freeze(utc("2025-10-26T11:00:00"))  # 12:00 winter time
+    b, s, _ = history_range(hours=24, tz=BERLIN)
     assert b.isoformat() == "2025-10-25T13:00:00+02:00"  # 24 real hours, not 24 hours on the wall clock
     assert s.isoformat() == "2025-10-26T12:00:00+01:00"
+
+
+# ---------------------------------------------------------------- review: edges of the range
+def test_explicit_end_shortly_before_now_is_not_now(make_ha, freeze):
+    freeze(utc("2025-10-05T22:00:30"))  # 30 seconds after midnight in Berlin
+    out = json.loads(make_ha("cover.garage", GARAGE_DAY).history("cover.garage", start="2025-10-05",
+                                                                 end="2025-10-05"))
+    assert out["range"].endswith("to Mon 2025-10-06 00:00")
+    assert "state_at_end" in out and "state_now" not in out
+    assert not any("now" in v for v in out["last_time_in_state"].values())
+
+
+def test_today_is_cut_back_to_now(make_ha, freeze):
+    freeze(utc("2025-10-05T16:00:00"))
+    out = json.loads(make_ha("cover.garage", GARAGE_DAY).history("cover.garage", start="2025-10-05"))
+    assert out["range"].endswith("to now") and out["state_now"] == "closed"
+    assert out["last_time_in_state"]["closed"] == "from Sun 2025-10-05 17:52 to now (still)"
+
+
+def test_first_record_inside_the_range(make_ha):
+    rows = [row(utc("2025-10-05T10:00:00"), "open")]
+    out = json.loads(make_ha("cover.garage", rows).history("cover.garage", start="2025-10-05"))
+    assert out["state_at_start"] == "unknown (first record Sun 2025-10-05 12:00)"
+    assert out["changes"] == ["Sun 2025-10-05 12:00: open"]
+    assert out["time_in_state"] == {"open": "1 time, 12 h 00 min in total"}
+    assert out["last_time_in_state"]["open"] == "from Sun 2025-10-05 12:00 to Mon 2025-10-06 00:00"
+
+
+def test_measurement_unavailable_at_the_end(make_ha):
+    rows = [row(utc("2025-10-04T22:00:00"), "8"), row(utc("2025-10-05T10:00:00"), "unavailable")]
+    out = json.loads(make_ha("sensor.outdoor_temp", rows).history("sensor.outdoor_temp", start="2025-10-05"))
+    assert out["at_start"] == "8 °C"
+    assert out["at_end"] == "unavailable since Sun 2025-10-05 12:00"
+    assert out["readings"] == ["Sun 2025-10-05 00:00: 8 °C", "Sun 2025-10-05 12:00: unavailable"]
+
+
+def test_measurement_first_recorded_inside_the_range(make_ha):
+    rows = [row(utc("2025-10-05T10:00:00"), "8")]
+    out = json.loads(make_ha("sensor.outdoor_temp", rows).history("sensor.outdoor_temp", start="2025-10-05"))
+    assert out["at_start"] == "unknown (first record Sun 2025-10-05 12:00)"
+
+
+def test_meter_change_partial_at_the_edges(make_ha):
+    rows = [row(utc("2025-10-04T22:00:00"), "unknown"), row(utc("2025-10-05T06:00:00"), "100"),
+            row(utc("2025-10-05T12:00:00"), "104"), row(utc("2025-10-05T18:00:00"), "unavailable")]
+    out = json.loads(make_ha("sensor.pv_energy", rows).history("sensor.pv_energy", start="2025-10-05"))
+    assert out["change"] == ("4 kWh (partial: only from Sun 2025-10-05 08:00 to Sun 2025-10-05 14:00, "
+                             "no reading at the start and end of the range)")
+    assert out["reading_at_start"] == "unknown"
+    assert out["reading_at_end"] == "unavailable since Sun 2025-10-05 20:00"
+
+
+def test_meter_gap_in_between_counts_fully(make_ha):
+    rows = [row(utc("2025-10-04T22:00:00"), "100"), row(utc("2025-10-05T06:00:00"), "unavailable"),
+            row(utc("2025-10-05T12:00:00"), "104")]
+    out = json.loads(make_ha("sensor.pv_energy", rows).history("sensor.pv_energy", start="2025-10-05"))
+    assert out["change"] == "4 kWh"
+
+
+def test_total_meter_may_decrease(make_ha):
+    rows = [row(utc("2025-10-04T22:00:00"), "10"), row(utc("2025-10-05T12:00:00"), "7.5")]
+    out = json.loads(make_ha("sensor.net_meter", rows).history("sensor.net_meter", start="2025-10-05"))
+    assert out["change"] == "-2.5 kWh" and "meter_resets" not in out
+
+
+def test_total_meter_with_cycles_is_left_to_statistics(make_ha):
+    rows = [row(utc("2025-10-04T22:00:00"), "9"), row(utc("2025-10-05T12:00:00"), "1")]
+    out = json.loads(make_ha("sensor.daily_energy", rows).history("sensor.daily_energy", start="2025-10-05"))
+    assert out["change"].startswith("not computed") and "ha_statistics" in out["change"]
+    assert out["reading_at_start"] == "9 kWh" and out["reading_at_end"] == "1 kWh"
+
+
+def test_many_distinct_states_are_bounded(make_ha):
+    t0 = utc("2025-10-04T22:00:00")
+    rows = [row(t0 + timedelta(minutes=i), f"text {i}") for i in range(50)]
+    out = json.loads(make_ha("sensor.text", rows).history("sensor.text", start="2025-10-05"))
+    assert len(out["time_in_state"]) == 10 and len(out["last_time_in_state"]) == 10
+    assert out["other_states_not_listed"] == 40
+    assert "text 49" in out["time_in_state"]  # the last state lasts until midnight: the most time
