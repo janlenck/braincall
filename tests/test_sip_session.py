@@ -9,6 +9,7 @@ from pyVoIP import RTP, SIP
 import fritz_sip
 from config import parse_access
 from conftest import make_cfg
+import session as session_mod
 from session import CallSession
 
 
@@ -187,3 +188,31 @@ def test_rights_read_does_not_add_the_silence_rule(session):
     note = session("read, shopping")._rights("Walter")
     assert "may ask about everything" in note and "shopping list" in note
     assert "Give no information" not in note
+
+
+# ---------------------------------------------------------------- intro with caller memory
+@pytest.fixture
+def intro(session, monkeypatch):
+    """Runs CallSession.run up to the first assistant turn and returns the intro note."""
+    def run(access, **kw):
+        s = session(access)
+        seen = []
+        for name in ("_reader", "_tts_worker", "_play_worker", "hangup"):
+            monkeypatch.setattr(s, name, lambda: None)
+        monkeypatch.setattr(s, "listen", lambda timeout: session_mod.TIMEOUT)
+        monkeypatch.setattr(s, "alive", lambda: True)
+        monkeypatch.setattr(s, "_assistant_turn", lambda messages: seen.append(messages[0]["content"]) or True)
+        s.run(caller="0151111", access=parse_access(access), **kw)
+        return seen[0]
+    return run
+
+
+@pytest.mark.parametrize("access, kw", [
+    ("admin", {"outbound": False, "caller_name": "Jan Mobile"}),
+    ("calendar", {"outbound": True, "caller_name": "Maryna", "message": "Reminder"}),
+    ("guest", {"outbound": False}),
+])
+def test_intro_contains_previous_calls(intro, access, kw):
+    note = "Previous calls with this number (…): - 2026-11-01 14:05 (they called): Asked about Friday. "
+    assert note in intro(access, previous=note, **kw)
+    assert "Previous calls" not in intro(access, **kw)

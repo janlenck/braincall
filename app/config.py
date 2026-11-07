@@ -43,6 +43,7 @@ DEFAULTS = {
     "barge_in_min_ms": 1000,   # how long the caller must speak before the assistant lets itself be interrupted
     # logs and call notes
     "log_dir": "",             # empty = logs\ in the project folder
+    "caller_memory": "none",   # summaries of earlier calls per number as context: "none", days (e.g. 30), "forever"
     # HTTP trigger
     "http_port": 8099,
     "api_token": "",           # empty = only reachable from 127.0.0.1

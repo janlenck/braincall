@@ -31,6 +31,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/speech.py` | OpenAI speech-to-text and text-to-speech |
 | `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
+| `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
@@ -108,6 +109,13 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
   language) and sends it to everything in `notify_services`: notify entities like `notify.phone` or notify
   services like `notify.mobile_app_phone` or an SMTP notifier. Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
+- `caller_memory` (default `"none"`): remembers the summary of each call per number in `logs/calls.jsonl` and
+  gives the last three to Claude at the start of the next call with that number ("Previous calls from this
+  number: …"), e.g. so Maryna does not have to repeat last week's date. `30` keeps only the last 30 days (older
+  entries are deleted), `"forever"` has no age limit. Only calls with a summary count, withheld numbers never.
+  A caller only gets summaries of calls with at most their current access: after lowering a number from
+  `admin` to `guest`, the old `admin` calls are no longer used. With `"none"` the file is neither read nor
+  written; an existing one stays until you delete it.
 - Older settings `inbound_allowed`, `trusted_numbers` and `caller_languages` are converted on every start and
   used instead of `callers` as long as they are set: trusted numbers become `admin`, `"*"` becomes a `guest`
   entry, other numbers only allowed to call are dropped. The log shows the converted list to copy over.

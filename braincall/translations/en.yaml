@@ -56,6 +56,12 @@ configuration:
   ring_timeout:
     name: Ring time (s)
     description: After this an unanswered call is cancelled.
+  caller_memory:
+    name: Caller memory
+    description: >-
+      Remember the summary of each call per number and give the last three to the assistant in the next call
+      with that number. none: no memory (default). A number of days, e.g. 30: only calls of the last 30 days.
+      forever: no age limit. Stored in calls.jsonl in the add-on folder.
   anthropic_api_key:
     name: Anthropic API key
     description: For Claude.
