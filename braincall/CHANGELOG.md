@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- New option *Caller memory* (`caller_memory`, default `none`): the summary of each call is kept per number in
+  `calls.jsonl` in the log folder and the last three are given to the assistant at the start of the next call
+  with that number. `none` = off, a number of days (e.g. `30`) = only calls of that period (older entries are
+  deleted), `forever` = no age limit. A caller only gets summaries of calls with at most their current access
+
 ## 1.4.0
 
 - New tool `ha_history` (access `admin` and `read`): what one entity did in the last hours (default 24) or in

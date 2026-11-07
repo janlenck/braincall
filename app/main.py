@@ -33,6 +33,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 
 import config  # noqa: E402
 import fritz_sip  # noqa: E402
+import memory  # noqa: E402
 from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
 from session import CallSession  # noqa: E402
@@ -65,6 +66,7 @@ console.ASSISTANT = cfg.assistant_name or "Claude"
 ha = HA(cfg)
 speech = Speech(cfg)
 brain = Brain(cfg, ha)
+calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
@@ -123,6 +125,15 @@ def lang_for(caller: dict | None) -> str:
     return (caller or {}).get("language") or cfg.language or "de"
 
 
+def previous(number: str, access) -> str:
+    """Summaries of earlier calls with this number for the intro (empty while caller_memory is "none")."""
+    try:
+        return memory.note(calls.recent(number, access), OWNER_FIRST or "the owner", cfg.timezone)
+    except Exception:  # noqa: BLE001  the memory must never stop a call
+        log.exception("Reading the caller memory failed")
+        return ""
+
+
 def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary="",
            ended: float = 0.0):
     ha.fire_event("braincall_call", {
@@ -159,6 +170,10 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
                     ha.notify(str(service), title, text)
             if summary:
                 log.info("Summary: %s", summary)
+                try:
+                    calls.add(number, summary, access, inbound)
+                except Exception:  # noqa: BLE001  event and call note still follow
+                    log.exception("Saving the summary in %s failed", calls.path)
         report(answered, number, started, session, message, caller, summary, ended)
         if inbound and session and access == GUEST and session.transcript:
             notes = _LOGDIR / "call-notes.txt"
@@ -212,9 +227,10 @@ def outbound(number: str, message: str):
             return
         answered = True
         session = CallSession(call, brain, speech, cfg)
+        access = caller["access"] if caller else GUEST
         session.run(outbound=True, message=message, caller=number, language=lang_for(caller),
-                    access=caller["access"] if caller else GUEST, caller_name=caller_name(caller),
-                    instructions=caller["instructions"] if caller else "")
+                    access=access, caller_name=caller_name(caller),
+                    instructions=caller["instructions"] if caller else "", previous=previous(number, access))
         log.info("Call ended")
     except TimeoutError as e:
         log.warning("Outbound call failed: %s", e)
@@ -271,7 +287,8 @@ def on_incoming(call):
         call.answer()
         session = CallSession(call, brain, speech, cfg)
         session.run(outbound=False, caller=number, access=caller["access"], language=lang_for(caller),
-                    caller_name=name, instructions=caller["instructions"])
+                    caller_name=name, instructions=caller["instructions"],
+                    previous=previous(number, caller["access"]))
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
@@ -433,6 +450,7 @@ def main():
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
     for w in config.WARNINGS:
         log.warning(w)
+    log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
     log.info("Callers: %s", ", ".join(f"{c['name'] or c['number']} ({','.join(sorted(c['access']))})"
                                       for c in cfg.callers) or "none, incoming calls are rejected")
     server = None

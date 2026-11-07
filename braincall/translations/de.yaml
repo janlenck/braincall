@@ -56,6 +56,12 @@ configuration:
   ring_timeout:
     name: Klingeldauer (s)
     description: Danach wird ein unbeantworteter Anruf abgebrochen.
+  caller_memory:
+    name: Gedächtnis pro Anrufer
+    description: >-
+      Die Zusammenfassung jedes Anrufs pro Nummer merken und die letzten drei beim nächsten Anruf mit dieser
+      Nummer der Assistentin mitgeben. none: kein Gedächtnis (Standard). Eine Zahl an Tagen, z. B. 30: nur
+      Anrufe der letzten 30 Tage. forever: ohne Altersgrenze. Gespeichert in calls.jsonl im Add-on-Ordner.
   anthropic_api_key:
     name: Anthropic-API-Key
     description: Für Claude.

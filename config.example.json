@@ -97,6 +97,8 @@
 
   // --- Logs and call notes ---
   "log_dir": "",                      // empty = logs\ in the project folder; environment variables allowed
+  "caller_memory": "none",            // summaries of earlier calls per number as context in the next call:
+                                      // "none" (off), days like 30 (only that recent) or "forever"; in calls.jsonl
 
   // --- HTTP trigger for outbound calls ---
   "http_port": 8099,                  // if changed: adjust firewall.ps1 as well

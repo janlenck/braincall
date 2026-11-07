@@ -275,7 +275,8 @@ class CallSession:
         return "".join(parts) + ("" if "read" in self.access else quiet)
 
     def run(self, outbound: bool, message: str = "", caller: str = "", access=frozenset({"guest"}),
-            language: str = "", caller_name: str = "", instructions: str = ""):
+            language: str = "", caller_name: str = "", instructions: str = "", previous: str = ""):
+        """previous: system note with summaries of earlier calls with this number (memory.note), may be empty."""
         self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
         full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
@@ -284,6 +285,7 @@ class CallSession:
         rights = self._rights(name)
         if instructions:
             rights += f"Instructions from {owner} for this caller: {instructions} "
+        rights += previous
         if language:
             self.language = language
         threads = [threading.Thread(target=f, daemon=True)

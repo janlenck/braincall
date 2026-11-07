@@ -182,6 +182,48 @@ def test_after_call_summary_failure_falls_back_to_transcript(main, after, monkey
     assert sent["notify"][0][2] == "caller: Hallo\nClaudine: Hallo!"
 
 
+@pytest.fixture
+def remembered(main, monkeypatch, tmp_path):
+    import memory
+    calls = memory.CallMemory(tmp_path / "calls.jsonl", 30, main.cfg.country_code)
+    monkeypatch.setattr(main, "calls", calls)
+    return calls
+
+
+def test_memory_is_off_by_default(main, after):
+    assert not main.calls.enabled
+    after("0999")
+    assert not (Path(main._LOGDIR) / "calls.jsonl").exists()
+    assert main.previous("0999", main.GUEST) == ""
+
+
+def test_after_call_remembers_summary_for_next_call(main, after, remembered):
+    after("+49170222")
+    after("0999", inbound=False)
+    note = main.previous("0170222", frozenset({"calendar"}))
+    assert "(they called): Summary of Maryna (+49170222)" in note
+    assert "Previous calls with this number" in note
+    assert "(you called them): Summary of 0999" in main.previous("0999", main.GUEST)
+
+
+def test_after_call_without_summary_is_not_remembered(main, after, remembered, monkeypatch):
+    def fail(*a):
+        raise RuntimeError("API down")
+    monkeypatch.setattr(main.brain, "summarize", fail)
+    after("0999")
+    after("0160333", s=session())
+    assert not remembered.path.exists()
+
+
+def test_memory_failure_does_not_stop_the_event(main, after, remembered, monkeypatch):
+    def broken(*a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(remembered, "add", broken)
+    monkeypatch.setattr(remembered, "recent", broken)
+    assert after("0999")["events"][0][1]["summary"] == "Summary of 0999"
+    assert main.previous("0999", main.GUEST) == ""
+
+
 # ---------------------------------------------------------------- HTTP trigger
 @pytest.fixture
 def server(main, monkeypatch):

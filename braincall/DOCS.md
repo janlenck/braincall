@@ -43,12 +43,18 @@ After an incoming call a short summary (translated into the configured language)
 *Notify after calls*: notify entities (e.g. `notify.<phone>`) or notify services (e.g. `notify.mobile_app_<phone>`, an e-mail notifier). Default: for everyone except
 `admin`; *notify* per caller overrides it.
 
+*Caller memory* (default `none`): the summary of each call is kept per number in `calls.jsonl` and the last
+three are given to the assistant at the start of the next call with that number, so callers do not have to
+repeat themselves. A number of days (e.g. `30`) keeps only that recent calls, `forever` has no age limit.
+A caller only gets summaries of calls with at most their current access. With `none` the file is neither read
+nor written; delete it to forget earlier calls.
+
 After updating from 1.0.x *Allowed callers*, *Trusted numbers* and *Language per number* keep working: on
 every start they are converted (trusted numbers become `admin`, `*` becomes a `guest` entry, numbers only
 allowed to call are dropped) and used instead of *Callers*. The log shows the converted list. Enter it under
 *Callers* and empty the three old fields; from then on only *Callers* counts.
 
-Logs (`braincall.log`) and call notes of unknown callers (`call-notes.txt`) are in the add-on's own folder
+Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`) and the caller memory (`calls.jsonl`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
 
 ## Energy and statistics
