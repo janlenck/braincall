@@ -26,6 +26,14 @@ PHRASES = {
 ENDED = object()
 TIMEOUT = object()
 
+# Voice activity detection on 20 ms frames
+ECHO_FACTOR = 4.0       # while we speak the threshold is raised so the echo of our own voice does not count
+ONSET_IDLE = 3          # consecutive loud frames that start an utterance while we are silent
+ONSET_PLAYING = (8, 12)  # loud frames among the last frames that start a possible barge-in while we speak
+GAP_FRAMES = 8          # pauses up to 160 ms inside speech count as speech (barge-in time)
+AFTER_ANSWER = 10       # loud frames after our answer ended that keep an utterance begun while we spoke
+GRACE_S = 0.6           # no barge-in at the very start of an answer
+
 
 class CallSession:
     def __init__(self, call, brain, speech, cfg):
@@ -38,8 +46,10 @@ class CallSession:
         self.utterances: queue.Queue = queue.Queue()
         self.user_speaking = threading.Event()
         self.speech_started_at = 0.0
-        self.playing = threading.Event()
+        self.playing = threading.Event()  # set for the whole answer, from its first sentence until it is spoken
         self.interrupt = threading.Event()
+        self._answer_lock = threading.Lock()
+        self.answer_started_at = 0.0
 
         self.sentence_q: queue.Queue = queue.Queue()
         self.audio_q: queue.Queue = queue.Queue()
@@ -48,13 +58,27 @@ class CallSession:
         self.actions: list[str] = []  # changing tool calls, for the summary
         self.counters: dict[str, int] = {}  # per-call limits, e.g. bookings by callers without admin
         self.caller_turns = 0
-        self.seg_voiced = 0
         self.language = cfg.language or "de"
         self.caller_label = "caller"
         self.owner = (cfg.owner_name or "").strip()                 # "Jan Lenck"
         self.owner_first = self.owner.split()[0] if self.owner else "the owner"
         self.codec = rtpfix.setup(call)
-        self.play_started_at = 0.0
+
+        # VAD state (see _frame)
+        self.noise = 200.0
+        self._end_frames = max(10, int(cfg.end_silence_ms / 20))
+        self._run = 0                                     # consecutive loud frames before an utterance
+        self._recent: collections.deque = collections.deque(maxlen=ONSET_PLAYING[1])
+        self._pre: collections.deque = collections.deque(maxlen=15)  # 300 ms pre-roll
+        self._in_speech = False
+        self._buf: list[np.ndarray] = []
+        self._silent = 0
+        self._gap = 0
+        self._started_while_playing = False
+        self.seg_voiced = 0                               # speech frames of the current utterance
+        self._after_answer = 0
+        self._peak = 0.0
+        self._seg_thr = 0.0
 
     # ------------------------------------------------------------------ Status
     def alive(self) -> bool:
@@ -63,63 +87,13 @@ class CallSession:
     # ------------------------------------------------------------------ input
     def _reader(self):
         """Reads one frame every 20 ms (non-blocking; pyVoIP would otherwise block on digital silence)."""
-        end_frames = max(10, int(self.cfg.end_silence_ms / 20))
-        noise = 200.0
-        voiced = 0
-        silent = 0
-        in_speech = False
-        started_while_playing = False
-        self.seg_voiced = 0
-        buf: list[np.ndarray] = []
-        pre = collections.deque(maxlen=15)  # 300 ms pre-roll
         next_t = time.monotonic()
-
         while self.alive():
             try:
                 data = self.call.read_audio(FRAME, False)
             except Exception:  # noqa: BLE001  call ended
                 break
-            a = u8_to_s16(data)
-            e = rms(a)
-            thr = max(float(self.cfg.vad_min_energy), noise * 3.0)
-            if self.playing.is_set():
-                thr *= 4.0  # do not mistake the echo of our own voice for the caller
-
-            if not in_speech:
-                pre.append(a)
-                if e > thr:
-                    voiced += 1
-                else:
-                    voiced = 0
-                    noise = max(50.0, 0.95 * noise + 0.05 * e)
-                need = 20 if self.playing.is_set() else 3  # while speaking, 400 ms of real speech are needed
-                if voiced >= need:
-                    self.seg_voiced = voiced
-                    in_speech = True
-                    started_while_playing = self.playing.is_set()
-                    buf = list(pre)
-                    silent = 0
-                    self.speech_started_at = time.monotonic()
-                    self.user_speaking.set()
-            else:
-                buf.append(a)
-                silent = 0 if e > thr * 0.7 else silent + 1
-                if silent == 0:
-                    self.seg_voiced += 1
-                if silent >= end_frames or len(buf) >= 1500:
-                    in_speech = False
-                    voiced = 0
-                    self.user_speaking.clear()
-                    speech_frames = len(buf) - silent
-                    keep = speech_frames >= 10
-                    if started_while_playing and not self.cfg.barge_in:
-                        keep = False
-                    min_frames = int(float(self.cfg.barge_in_min_ms or 1000) / 20)
-                    if started_while_playing and self.seg_voiced < min_frames:
-                        keep = False  # noise/throat-clearing while we speak -> ignore
-                    if keep:
-                        self.utterances.put(np.concatenate(buf))
-                    pre.clear()
+            self._frame(u8_to_s16(data), time.monotonic())
 
             next_t += FRAME / RATE
             delay = next_t - time.monotonic()
@@ -130,6 +104,79 @@ class CallSession:
 
         self.active = False
         self.utterances.put(None)
+
+    def _min_frames(self) -> int:
+        return int(float(self.cfg.barge_in_min_ms or 1000) / 20)
+
+    def _frame(self, a: np.ndarray, now: float):
+        """One 20 ms frame: finds utterances and interrupts the answer when the caller really speaks."""
+        e = rms(a)
+        playing = self.playing.is_set()
+        thr = max(float(self.cfg.vad_min_energy), self.noise * 3.0)
+        if playing:
+            thr *= ECHO_FACTOR  # do not mistake the echo of our own voice for the caller
+        loud = e > thr
+
+        if not self._in_speech:
+            self._pre.append(a)
+            self._recent.append(loud)
+            if loud:
+                self._run += 1
+            else:
+                self._run = 0
+                if not playing:  # frozen while we speak, our echo must not raise the noise floor
+                    self.noise = max(50.0, 0.95 * self.noise + 0.05 * e)
+            # while we speak, loud frames with short dips start a possible barge-in
+            onset = sum(self._recent) if playing else self._run
+            if onset >= (ONSET_PLAYING[0] if playing else ONSET_IDLE):
+                self._in_speech = True
+                self._started_while_playing = playing
+                self._buf = list(self._pre)
+                self._silent = self._gap = self._after_answer = 0
+                self.seg_voiced = onset
+                self._peak, self._seg_thr = e, thr
+                self._recent.clear()
+                self.speech_started_at = now
+                self.user_speaking.set()
+            return
+
+        self._buf.append(a)
+        self._peak = max(self._peak, e)
+        self._silent = 0 if e > thr * 0.7 else self._silent + 1
+        if loud:
+            # short pauses between syllables and words count as speech
+            self.seg_voiced += 1 + (self._gap if self._gap <= GAP_FRAMES else 0)
+            self._gap = 0
+            if not playing:
+                self._after_answer += 1
+        else:
+            self._gap += 1
+
+        if self._barge(now):
+            log.info("%s interrupts (%d ms speech)", self.caller_label, self.seg_voiced * 20)
+            with self._answer_lock:
+                self.interrupt.set()
+                self.playing.clear()  # the rest of the answer is dropped, listen with the normal threshold
+
+        if self._silent >= self._end_frames or len(self._buf) >= 1500:
+            self._end_segment()
+
+    def _end_segment(self):
+        self._in_speech = False
+        self._run = 0
+        self.user_speaking.clear()
+        keep = len(self._buf) - self._silent >= 10
+        if self._started_while_playing:
+            barged = self.cfg.barge_in and self.seg_voiced >= self._min_frames()
+            # also keep it when the caller went on speaking after our answer had ended
+            if not (barged or self._after_answer >= AFTER_ANSWER):
+                keep = False
+                log.debug("ignored while speaking: %d ms speech (needs %d ms%s), loudest %.0f, threshold %.0f",
+                          self.seg_voiced * 20, self._min_frames() * 20,
+                          "" if self.cfg.barge_in else ", barge-in off", self._peak, self._seg_thr)
+        if keep:
+            self.utterances.put(np.concatenate(self._buf))
+        self._pre.clear()
 
     # ------------------------------------------------------------------ output
     def say(self, text: str):
@@ -166,45 +213,41 @@ class CallSession:
             finally:
                 self.audio_q.task_done()
 
-    def _barge(self) -> bool:
-        now = time.monotonic()
-        # counts only actually voiced 20 ms frames; pauses and fading noise do not count
-        need_frames = float(self.cfg.barge_in_min_ms or 1000) / 20
-        return (self.cfg.barge_in and self.user_speaking.is_set()
-                and now - self.play_started_at > 0.6        # ignore the very start of our own sentence
-                and self.seg_voiced >= need_frames)
+    def _barge(self, now: float) -> bool:
+        """Speech that began during the answer has lasted barge_in_min_ms (pauses inside speech included)."""
+        return (bool(self.cfg.barge_in) and self._started_while_playing and self.playing.is_set()
+                and not self.interrupt.is_set()
+                and now - self.answer_started_at > GRACE_S   # only the start of the answer, not of every sentence
+                and self.seg_voiced >= self._min_frames())
 
     def _play(self, pcm: np.ndarray):
         data = encode_g711(pcm, self.codec)
-        self.play_started_at = time.monotonic()
-        self.playing.set()
+        with self._answer_lock:
+            if self.interrupt.is_set():
+                return
+            if not self.playing.is_set():  # first sentence of the answer
+                self.answer_started_at = time.monotonic()
+                self.playing.set()
         t0 = time.monotonic()
         sent = 0
-        try:
-            for i in range(0, len(data), FRAME):
-                if not self.alive() or self.interrupt.is_set():
-                    return
-                if self._barge():
-                    log.info("%s interrupts", self.caller_label)
-                    self.interrupt.set()
-                    return
-                while sent / RATE - (time.monotonic() - t0) > 0.08:
-                    time.sleep(0.005)
-                chunk = data[i:i + FRAME]
-                self.call.write_audio(chunk)
-                sent += len(chunk)
-            # wait until the buffer has really been sent
-            while sent / RATE - (time.monotonic() - t0) > 0 and self.alive():
-                if self._barge():
-                    self.interrupt.set()
-                    return
-                time.sleep(0.01)
-        finally:
-            self.playing.clear()
+        for i in range(0, len(data), FRAME):
+            if not self.alive() or self.interrupt.is_set():
+                return
+            while sent / RATE - (time.monotonic() - t0) > 0.08:
+                time.sleep(0.005)
+            chunk = data[i:i + FRAME]
+            self.call.write_audio(chunk)
+            sent += len(chunk)
+        # wait until the buffer has really been sent
+        while sent / RATE - (time.monotonic() - t0) > 0 and self.alive() and not self.interrupt.is_set():
+            time.sleep(0.01)
 
     def wait_spoken(self):
+        """Waits until the answer is spoken (or dropped after an interruption); then the answer is over."""
         self.sentence_q.join()
         self.audio_q.join()
+        with self._answer_lock:
+            self.playing.clear()
 
     # ------------------------------------------------------------------ listening
     def listen(self, timeout: float):
