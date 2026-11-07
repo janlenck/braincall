@@ -9,7 +9,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -171,7 +171,7 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
             if summary:
                 log.info("Summary: %s", summary)
                 try:
-                    calls.add(number, summary, access, inbound)
+                    calls.add(number, summary, access, inbound, datetime.fromtimestamp(ended, timezone.utc))
                 except Exception:  # noqa: BLE001  event and call note still follow
                     log.exception("Saving the summary in %s failed", calls.path)
         report(answered, number, started, session, message, caller, summary, ended)

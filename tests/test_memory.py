@@ -46,7 +46,7 @@ def lines(path):
 
 def test_off_neither_writes_nor_reads(path):
     m = mem(path, 0)
-    m.add("0151111", "Summary", ADMIN, True, NOW)
+    m.add("0151111", "Summary", ADMIN, True, when=NOW, now=NOW)
     assert not path.exists() and not m.enabled and m.describe() == "off"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"time": NOW.isoformat(), "number": "0151111", "access": "admin",
@@ -56,9 +56,9 @@ def test_off_neither_writes_nor_reads(path):
 
 def test_add_and_recent_per_normalized_number(path):
     m = mem(path)
-    m.add("+49 151 111", "First", CAL, True, NOW - timedelta(days=2))
-    m.add("0049151111", "Second", CAL, False, NOW - timedelta(days=1))
-    m.add("0160333", "Other number", CAL, True, NOW)
+    m.add("+49 151 111", "First", CAL, True, when=NOW - timedelta(days=2), now=NOW)
+    m.add("0049151111", "Second", CAL, False, when=NOW - timedelta(days=1), now=NOW)
+    m.add("0160333", "Other number", CAL, True, when=NOW, now=NOW)
     got = m.recent("0151111", CAL, NOW)
     assert [e["summary"] for e in got] == ["First", "Second"]
     assert [e["direction"] for e in got] == ["in", "out"]
@@ -69,31 +69,31 @@ def test_add_and_recent_per_normalized_number(path):
 def test_only_the_last_three(path):
     m = mem(path)
     for i in range(5):
-        m.add("0151111", f"Call {i}", GUEST, True, NOW - timedelta(hours=5 - i))
+        m.add("0151111", f"Call {i}", GUEST, True, when=NOW - timedelta(hours=5 - i), now=NOW)
     assert [e["summary"] for e in m.recent("0151111", GUEST, NOW)] == ["Call 2", "Call 3", "Call 4"]
 
 
 def test_days_limit_on_read_and_prune_on_write(path):
     m = mem(path, 30)
-    m.add("0151111", "Old", GUEST, True, NOW - timedelta(days=40))
-    m.add("0151111", "Recent", GUEST, True, NOW - timedelta(days=10))
+    m.add("0151111", "Old", GUEST, True, when=NOW - timedelta(days=40), now=NOW)
+    m.add("0151111", "Recent", GUEST, True, when=NOW - timedelta(days=10), now=NOW)
     assert [e["summary"] for e in m.recent("0151111", GUEST, NOW)] == ["Recent"]
-    m.add("0160333", "New", GUEST, True, NOW)
+    m.add("0160333", "New", GUEST, True, when=NOW, now=NOW)
     assert [e["summary"] for e in lines(path)] == ["Recent", "New"]
 
 
 def test_forever_keeps_everything(path):
     m = mem(path, math.inf)
-    m.add("0151111", "Ancient", GUEST, True, NOW - timedelta(days=4000))
-    m.add("0151111", "New", GUEST, True, NOW)
+    m.add("0151111", "Ancient", GUEST, True, when=NOW - timedelta(days=4000), now=NOW)
+    m.add("0151111", "New", GUEST, True, when=NOW, now=NOW)
     assert [e["summary"] for e in m.recent("0151111", GUEST, NOW)] == ["Ancient", "New"]
     assert m.describe() == "forever" and mem(path, 30).describe() == "30 days"
 
 
 def test_withheld_number_and_empty_summary_are_not_stored(path):
     m = mem(path)
-    m.add("", "Summary", GUEST, True, NOW)
-    m.add("0151111", "   ", GUEST, True, NOW)
+    m.add("", "Summary", GUEST, True, when=NOW, now=NOW)
+    m.add("0151111", "   ", GUEST, True, when=NOW, now=NOW)
     assert not path.exists()
     assert m.recent("", GUEST, NOW) == []
 
@@ -105,27 +105,50 @@ def test_withheld_number_and_empty_summary_are_not_stored(path):
 ])
 def test_summaries_from_calls_with_more_access_are_not_used(path, recorded, current, used):
     m = mem(path)
-    m.add("0151111", "Summary", recorded, True, NOW)
+    m.add("0151111", "Summary", recorded, True, when=NOW, now=NOW)
     assert bool(m.recent("0151111", current, NOW)) is used
 
 
 def test_broken_lines_are_skipped_and_long_summaries_cut(path):
     m = mem(path)
-    m.add("0151111", "x" * 2000, GUEST, True, NOW)
+    m.add("0151111", "x" * 2000, GUEST, True, when=NOW, now=NOW)
     with open(path, "a", encoding="utf-8") as f:
         f.write('{"time": "2026-11-08T12:00:00+00:00", "numb\n[1, 2]\n{"number": "0151111"}\n')
     got = m.recent("0151111", GUEST, NOW)
     assert len(got) == 1 and len(got[0]["summary"]) == memory.MAX_CHARS
-    m.add("0151111", "After", GUEST, True, NOW)
+    m.add("0151111", "After", GUEST, True, when=NOW, now=NOW)
     assert len(m.recent("0151111", GUEST, NOW)) == 2
 
 
-def test_entry_without_valid_time_is_dropped_with_a_limit(path):
+@pytest.mark.parametrize("bad_time", ["yesterday", "2026-11-01T14:05:00", None])
+def test_entry_without_valid_time_is_dropped_with_a_limit(path, bad_time):
+    """Also a time without timezone: it cannot be compared with now and must not block later saves."""
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"time": "yesterday", "number": "0151111", "access": "guest",
+    path.write_text(json.dumps({"time": bad_time, "number": "0151111", "access": "guest",
                                 "summary": "?"}) + "\n", encoding="utf-8")
     assert mem(path, 30).recent("0151111", GUEST, NOW) == []
     assert len(mem(path, math.inf).recent("0151111", GUEST, NOW)) == 1
+    mem(path, 30).add("0151111", "New", GUEST, True, when=NOW, now=NOW)
+    assert [e["summary"] for e in lines(path)] == ["New"]
+
+
+def test_unterminated_last_line_does_not_swallow_the_next_save(path):
+    m = mem(path)
+    m.add("0151111", "First", GUEST, True, when=NOW, now=NOW)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"time": "2026-11-08T12:00:00+00:00", "number": "015')  # crash in the middle of a line
+    m.add("0151111", "Second", GUEST, True, when=NOW, now=NOW)
+    assert [e["summary"] for e in lines(path)] == ["First", "Second"]
+    m.add("0151111", "Third", GUEST, True, when=NOW, now=NOW)
+    assert [e["summary"] for e in m.recent("0151111", GUEST, NOW)] == ["First", "Second", "Third"]
+
+
+def test_ordered_by_call_time_not_by_save_order(path):
+    m = mem(path)
+    m.add("0151111", "Later call", GUEST, True, when=NOW - timedelta(minutes=5), now=NOW)
+    m.add("0151111", "Earlier call", GUEST, True, when=NOW - timedelta(hours=2), now=NOW)
+    assert [e["summary"] for e in m.recent("0151111", GUEST, NOW)] == ["Earlier call", "Later call"]
+    assert lines(path)[1]["time"] == "2026-11-08T10:00:00+00:00"
 
 
 def test_note_in_local_time_marked_as_background():

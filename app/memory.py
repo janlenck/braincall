@@ -31,6 +31,15 @@ def parse_days(value) -> float:
     return 0
 
 
+def _time(entry: dict) -> datetime | None:
+    """Time of an entry; None if missing, invalid or without timezone (cannot be compared with now)."""
+    try:
+        when = datetime.fromisoformat(entry["time"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return when if when.tzinfo is not None else None
+
+
 def _covers(current: frozenset, recorded: frozenset) -> bool:
     """A summary may only be used if the caller now has at least the access of that earlier call:
     details from a call with more rights never reach a caller who has fewer today."""
@@ -59,43 +68,48 @@ class CallMemory:
     def _key(self, number: str) -> str:
         return config.norm_number(number, self.country_code)
 
-    def _fresh(self, entry: dict, now: datetime) -> bool:
-        if math.isinf(self.days):
-            return True
-        try:
-            when = datetime.fromisoformat(entry["time"])
-        except (KeyError, TypeError, ValueError):
-            return False
-        return now - when <= timedelta(days=self.days)
+    def _fresh(self, when: datetime | None, now: datetime) -> bool:
+        if when is None:
+            return math.isinf(self.days)  # unusable time: only kept without an age limit
+        return math.isinf(self.days) or now - when <= timedelta(days=self.days)
 
-    def _load(self) -> list[dict]:
+    def _load(self) -> tuple[list[dict], bool]:
+        """Valid entries and whether the file is clean (every line valid, ends with a newline).
+        A line cut off by a crash must not break the memory; the next save rewrites the file without it."""
         if not self.path.exists():
-            return []
-        out = []
+            return [], True
         with open(self.path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # a line cut off by a crash must not break the memory
-                if isinstance(entry, dict) and entry.get("number") and entry.get("summary"):
-                    out.append(entry)
-        return out
+            text = f.read()
+        out, clean = [], not text or text.endswith("\n")
+        for line in text.splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                clean = False
+                continue
+            if isinstance(entry, dict) and entry.get("number") and entry.get("summary"):
+                out.append(entry)
+            else:
+                clean = False
+        return out, clean
 
-    def add(self, number: str, summary: str, access, inbound: bool, now: datetime | None = None):
-        """Remembers the summary of a finished call; drops entries older than the configured days."""
+    def add(self, number: str, summary: str, access, inbound: bool, when: datetime | None = None,
+            now: datetime | None = None):
+        """Remembers the summary of a finished call (when = end of the call, the summary is saved later);
+        drops entries older than the configured days."""
         key = self._key(number)
         if not (self.enabled and key and summary.strip()):
             return
         now = now or datetime.now(timezone.utc)
-        entry = {"time": now.isoformat(timespec="seconds"), "number": key,
+        when = when or now
+        entry = {"time": when.isoformat(timespec="seconds"), "number": key,
                  "direction": "in" if inbound else "out",
                  "access": ",".join(sorted(access or {"guest"})), "summary": summary.strip()}
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            old = self._load()
-            kept = [e for e in old if self._fresh(e, now)]
-            if len(kept) == len(old):
+            old, clean = self._load()
+            kept = [e for e in old if self._fresh(_time(e), now)]
+            if clean and len(kept) == len(old):
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 return
@@ -114,13 +128,16 @@ class CallMemory:
         current = frozenset(access or {"guest"})
         try:
             with self.lock:
-                entries = self._load()
+                entries, _ = self._load()
         except OSError as e:
             log.warning("Reading %s failed: %s", self.path, e)
             return []
         found = [e for e in entries
-                 if e["number"] == key and self._fresh(e, now)
+                 if e["number"] == key and self._fresh(_time(e), now)
                  and _covers(current, config.parse_access(e.get("access")))]
+        # by call time: the summaries are saved in the background and may finish in a different order
+        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        found.sort(key=lambda e: _time(e) or oldest)
         return [{**e, "summary": e["summary"][:MAX_CHARS]} for e in found[-KEEP:]]
 
 
@@ -134,10 +151,8 @@ def note(entries: list[dict], owner: str, tz_name: str = "") -> str:
         tz = None
     lines = []
     for e in entries:
-        try:
-            when = datetime.fromisoformat(e["time"]).astimezone(tz).strftime("%Y-%m-%d %H:%M")
-        except (KeyError, TypeError, ValueError):
-            when = "?"
+        t = _time(e)
+        when = t.astimezone(tz).strftime("%Y-%m-%d %H:%M") if t else "?"
         way = "they called" if e.get("direction") != "out" else "you called them"
         lines.append(f"- {when} ({way}): {e['summary']}")
     return (f"Previous calls with this number (summaries written for {owner}, oldest first): "
