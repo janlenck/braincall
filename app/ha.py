@@ -4,9 +4,11 @@ import contextlib
 import itertools
 import json
 import logging
+import math
 import ssl
 import time
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -97,6 +99,16 @@ WS_TIMEOUT = 20
 STAT_UNITS = {"energy": "kWh", "volume": "m³"}
 # Energy dashboard: order and names of the totals
 ENERGY_KEYS = ("grid_import", "grid_export", "solar", "battery_charge", "battery_discharge", "gas", "water")
+
+# State history (recorder via REST): default and longest range, the most changes read out
+HISTORY_HOURS = 24
+HISTORY_MAX_DAYS = 31
+HISTORY_LINES = 30
+HISTORY_STATES = 10  # states listed in time_in_state / last_time_in_state, those with the most time first
+# States without a value: not counted as readings of numeric sensors
+NO_VALUE = ("unavailable", "unknown", "")
+# Meters whose difference over the range is the answer, not the single readings
+METER_CLASSES = ("total_increasing", "total")
 
 
 class HAError(Exception):
@@ -215,6 +227,92 @@ def buckets(begin: datetime, stop: datetime, period: str, tz=None) -> list:
         out.append((t, n))
         t = n
     return out
+
+
+def _is_day(text: str) -> bool:
+    """A date without a time of day."""
+    t = (text or "").strip()
+    return "T" not in t and " " not in t
+
+
+def _point(text: str, tz=None, end: bool = False) -> datetime:
+    """'2026-11-07' -> midnight of that day (end=True: the next midnight), '2026-11-07T08:00' -> that time.
+    Without offset the time is local time in tz."""
+    t = (text or "").strip()
+    if _is_day(t):
+        d = date.fromisoformat(t)
+        return _midnight(d + timedelta(days=1) if end else d, tz)
+    p = datetime.fromisoformat(t)
+    return p if p.tzinfo else (p.replace(tzinfo=tz) if tz else p.astimezone())
+
+
+def history_range(hours=None, start: str = "", end: str = "", tz=None):
+    """(begin, stop, live) of a history query, stop at most now; live = the range reaches up to now (no end,
+    or an end in the future that was cut back). Without start: the last `hours` hours.
+    start/end as date (end inclusive) or date and time; without end: the end of the day given as start,
+    or now for a start with a time."""
+    now_utc = datetime.now(timezone.utc)
+    now = now_utc.astimezone(tz)
+    if start:
+        begin = _point(start, tz)
+        if end:
+            stop = _point(end, tz, end=True)
+        else:
+            stop = _point(start, tz, end=True) if _is_day(start) else now
+    else:
+        try:
+            h = float(hours) if hours not in (None, "") else HISTORY_HOURS
+        except (TypeError, ValueError):
+            h = HISTORY_HOURS
+        h = max(0.25, min(h, HISTORY_MAX_DAYS * 24))
+        begin, stop = (now_utc - timedelta(hours=h)).astimezone(tz), now  # in UTC: exact across DST changes
+    live = stop.timestamp() >= now.timestamp()
+    stop = now if live else stop
+    if stop.timestamp() <= begin.timestamp():
+        raise ValueError("The range has to start before its end and in the past.")
+    if stop.timestamp() - begin.timestamp() > HISTORY_MAX_DAYS * 86400:
+        raise ValueError(f"Range too long, at most {HISTORY_MAX_DAYS} days.")
+    return begin, stop, live
+
+
+def _utc_param(t: datetime) -> str:
+    """Timestamp for the history URL: UTC, '+' encoded."""
+    return quote(t.astimezone(timezone.utc).isoformat(), safe="")
+
+
+def _when(t: datetime, ref: datetime | None = None) -> str:
+    """'Sat 2026-11-07 08:12'; only '08:12' if ref is on the same day."""
+    if ref is not None and ref.date() == t.date():
+        return t.strftime("%H:%M")
+    return f"{_wd(t)} " + t.strftime("%Y-%m-%d %H:%M")
+
+
+def _duration(seconds: float) -> str:
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s} s"
+    m = s // 60
+    if m < 60:
+        return f"{m} min"
+    h, m = divmod(m, 60)
+    if h < 48:
+        return f"{h} h {m:02d} min"
+    d, h = divmod(h, 24)
+    return f"{d} d {h} h"
+
+
+def _val(v: float, unit: str = "") -> str:
+    """Rounded like _num, without a trailing '.0': '9 °C', '101.5 kWh'."""
+    n = _num(v)
+    return f"{int(n) if float(n).is_integer() else n} {unit}".rstrip()
+
+
+def _float(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _has_mean(meta: dict) -> bool:
@@ -468,6 +566,155 @@ class HA:
                            else f"{len(spans)} rows, too many to read out: choose a longer period.")
         log.info("Statistics %s %s, %s", entity_id, out["range"], period or "total")
         return json.dumps(out, ensure_ascii=False)
+
+    # ------------------------------------------------------------------ history
+    def history(self, entity_id: str, hours=None, start: str = "", end: str = "") -> str:
+        """State changes of one entity from the recorder (/api/history/period), condensed for the phone:
+        for meters the change over the range, for measurements first/last/min/max, otherwise the changes,
+        the time spent in each state and the last time in each state."""
+        entity_id = (entity_id or "").strip()
+        if "." not in entity_id:
+            return "Error: entity_id missing or invalid."
+        try:
+            begin, stop, live = history_range(hours, start, end, self.tz)
+        except ValueError as e:
+            return f"Error: {e} Dates as YYYY-MM-DD or YYYY-MM-DDTHH:MM (local time)."
+        try:
+            attrs = self._get(f"/states/{quote(entity_id)}").get("attributes", {})
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return f"Unknown entity {entity_id}: check the entity_id with ha_search."
+            raise
+        data = self._get(f"/history/period/{_utc_param(begin)}?filter_entity_id={quote(entity_id)}"
+                         f"&end_time={_utc_param(stop)}&minimal_response&no_attributes") or []
+        points, known = self._points(data[0] if data and isinstance(data[0], list) else [], begin, stop)
+        out = {"entity_id": entity_id, "name": attrs.get("friendly_name") or entity_id}
+        unit = attrs.get("unit_of_measurement") or ""
+        if unit:
+            out["unit"] = unit
+        out["range"] = f"{_when(begin)} to " + ("now" if live else _when(stop, begin))
+        if not points:
+            out["result"] = ("No recorded states in this range. The recorder keeps about 10 days by default; "
+                             "for older data of sensors use ha_statistics.")
+            return json.dumps(out, ensure_ascii=False)
+        values = [(t, _float(s)) for t, s in points if s not in NO_VALUE]
+        if values and all(v is not None for _, v in values):
+            state_class = attrs.get("state_class")
+            if state_class in METER_CLASSES:
+                cycles = state_class == "total" and bool(attrs.get("last_reset"))
+                out.update(self._meter_change(points, values, unit, state_class, known, cycles))
+            else:
+                out.update(self._measurement(points, values, unit, known))
+            gaps = sum(1 for _, s in points if s in NO_VALUE)
+            if gaps:
+                out["unavailable"] = f"{gaps} {'time' if gaps == 1 else 'times'} without a value"
+        else:
+            out.update(self._changes(points, known, stop, live))
+        log.info("History %s %s: %d states", entity_id, out["range"], len(points))
+        return json.dumps(out, ensure_ascii=False)
+
+    def _points(self, rows: list, begin: datetime, stop: datetime):
+        """[(time, state)] without repeated states; plus whether the first one is the state at the start of the
+        range (HA sends it first, at or before the start), not a record made later inside the range."""
+        points, known = [], False
+        for r in rows:
+            try:
+                t = datetime.fromisoformat(str(r.get("last_changed") or r.get("last_updated"))
+                                           .replace("Z", "+00:00")).astimezone(self.tz)
+            except ValueError:
+                continue
+            if t.timestamp() > stop.timestamp():
+                continue
+            if t.timestamp() <= begin.timestamp():
+                known, t = True, begin
+            state = str(r.get("state", ""))
+            if points and points[-1][1] == state:
+                continue
+            points.append((t, state))
+        return points, known
+
+    @staticmethod
+    def _edge(points: list, known: bool, unit: str, at_start: bool) -> str:
+        """Value at the start or end of the range, or why there is none."""
+        t, s = points[0] if at_start else points[-1]
+        if at_start and not known:
+            return f"unknown (first record {_when(t)})"
+        if s in NO_VALUE:
+            return (s or "unknown") if at_start else f"{s or 'unknown'} since {_when(t)}"
+        return _val(float(s), unit)
+
+    @classmethod
+    def _meter_change(cls, points: list, values: list, unit: str, state_class: str, known: bool,
+                      cycles: bool) -> dict:
+        """Difference of a meter over the range; for total_increasing a drop is a meter reset. Readings
+        without a value in between do not matter (the meter keeps counting), missing ones at the edges do."""
+        out = {"reading_at_start": cls._edge(points, known, unit, True),
+               "reading_at_end": cls._edge(points, known, unit, False)}
+        if cycles:  # resets are only visible in last_reset; a drop can also be a real decrease
+            out["change"] = ("not computed: this meter starts new cycles (last_reset). "
+                             "Use ha_statistics for the change.")
+            return out
+        total, resets = 0.0, 0
+        for (_, prev), (_, v) in itertools.pairwise(values):
+            if v < prev and state_class == "total_increasing":
+                total += v  # counts again from zero
+                resets += 1
+            else:
+                total += v - prev
+        out["change"] = _val(total, unit)
+        missing = [edge for edge, ok in (("start", known and points[0][1] not in NO_VALUE),
+                                         ("end", points[-1][1] not in NO_VALUE)) if not ok]
+        if missing:
+            out["change"] += (f" (partial: only from {_when(values[0][0])} to {_when(values[-1][0])}, "
+                              f"no reading at the {' and '.join(missing)} of the range)")
+        if resets:
+            out["meter_resets"] = resets
+        return out
+
+    @classmethod
+    def _measurement(cls, points: list, values: list, unit: str, known: bool) -> dict:
+        """Value at start and end, minimum and maximum (with time) of a numeric sensor; the readings when they
+        are few."""
+        lo = min(values, key=lambda p: p[1])
+        hi = max(values, key=lambda p: p[1])
+        out = {"at_start": cls._edge(points, known, unit, True), "at_end": cls._edge(points, known, unit, False),
+               "min": f"{_val(lo[1], unit)} at {_when(lo[0])}", "max": f"{_val(hi[1], unit)} at {_when(hi[0])}"}
+        if len(points) <= HISTORY_LINES:
+            out["readings"] = [f"{_when(t)}: {s if s in NO_VALUE else _val(float(s), unit)}" for t, s in points]
+        else:
+            out["readings"] = (f"{len(points)} readings, too many to read out: ask for a shorter range, "
+                               "or use ha_statistics for mean values per hour or day.")
+        return out
+
+    @staticmethod
+    def _changes(points: list, known: bool, stop: datetime, live: bool) -> dict:
+        """Changes (the most recent HISTORY_LINES), time per state and the last period in each state
+        (the HISTORY_STATES states with the most time)."""
+        out = {"state_at_start": points[0][1] if known else f"unknown (first record {_when(points[0][0])})",
+               ("state_now" if live else "state_at_end"): points[-1][1]}
+        changes = [f"{_when(t)}: {s}" for t, s in (points[1:] if known else points)]
+        if not changes:
+            out["changes"] = "No change in this range."
+        else:
+            if len(changes) > HISTORY_LINES:
+                out["earlier_changes_not_listed"] = len(changes) - HISTORY_LINES
+            out["changes"] = changes[-HISTORY_LINES:]
+        spans = [(t, points[i + 1][0] if i + 1 < len(points) else stop, s) for i, (t, s) in enumerate(points)]
+        per_state, last = {}, {}
+        for i, (b, e, s) in enumerate(spans):
+            n, secs = per_state.get(s, (0, 0.0))
+            per_state[s] = (n + 1, secs + e.timestamp() - b.timestamp())
+            before = i == 0 and known  # began at or before the start of the range
+            frm = f"before {_when(b)}" if before else _when(b)
+            to = "now (still)" if live and i == len(spans) - 1 else _when(e, None if before else b)
+            last[s] = f"from {frm} to {to}"
+        top = sorted(per_state, key=lambda s: -per_state[s][1])[:HISTORY_STATES]
+        out["time_in_state"] = {s: f"{per_state[s][0]} {'time' if per_state[s][0] == 1 else 'times'}, "
+                                   f"{_duration(per_state[s][1])} in total" for s in top}
+        out["last_time_in_state"] = {s: last[s] for s in top}
+        if len(per_state) > len(top):
+            out["other_states_not_listed"] = len(per_state) - len(top)
+        return out
 
     # ------------------------------------------------------------------ states
     @staticmethod

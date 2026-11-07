@@ -26,7 +26,7 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | access | may |
 |---|---|
 | `admin` | everything: read and control Home Assistant, appointments |
-| `read` | read everything (also energy statistics and appointments with details), change nothing |
+| `read` | read everything (also history, energy statistics and appointments with details), change nothing |
 | `calendar` | only free/busy times, no details; books an appointment in a free slot without asking you |
 | `shopping` | only the lists in *Shopping lists* |
 | `guest` | nothing, takes a message |
@@ -58,6 +58,10 @@ yesterday?" or "What did the PV produce in October?". The answer comes from the 
 (*Settings > Dashboards > Energy*): grid import, feed-in, solar, battery, gas, water, home consumption,
 self-sufficiency and the individual devices. Other sensors with a `state_class` work too, e.g. the energy of
 the heat pump or the average outdoor temperature. Totals reach up to a few minutes ago.
+
+They can also ask what happened recently, e.g. "When was the garage door last open?", "Was anyone at the front
+door today?" or "How long was the light on?". The answer comes from the recorder, which keeps about 10 days
+by default (`recorder: purge_keep_days`); at most 31 days per question.
 
 ## On/off switch
 
