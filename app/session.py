@@ -75,6 +75,8 @@ class CallSession:
         self._silent = 0
         self._gap = 0
         self._started_while_playing = False
+        self._overlaps_answer = False                     # the answer went on during this utterance
+        self._barged = False                              # this utterance interrupted the answer
         self.seg_voiced = 0                               # speech frames of the current utterance
         self._after_answer = 0
         self._peak = 0.0
@@ -130,9 +132,10 @@ class CallSession:
             onset = sum(self._recent) if playing else self._run
             if onset >= (ONSET_PLAYING[0] if playing else ONSET_IDLE):
                 self._in_speech = True
-                self._started_while_playing = playing
+                self._started_while_playing = self._overlaps_answer = playing
                 self._buf = list(self._pre)
                 self._silent = self._gap = self._after_answer = 0
+                self._barged = False
                 self.seg_voiced = onset
                 self._peak, self._seg_thr = e, thr
                 self._recent.clear()
@@ -142,6 +145,8 @@ class CallSession:
 
         self._buf.append(a)
         self._peak = max(self._peak, e)
+        if playing:  # also speech begun while the model was thinking may interrupt once we speak
+            self._overlaps_answer = True
         self._silent = 0 if e > thr * 0.7 else self._silent + 1
         if loud:
             # short pauses between syllables and words count as speech
@@ -154,6 +159,7 @@ class CallSession:
 
         if self._barge(now):
             log.info("%s interrupts (%d ms speech)", self.caller_label, self.seg_voiced * 20)
+            self._barged = True
             with self._answer_lock:
                 self.interrupt.set()
                 self.playing.clear()  # the rest of the answer is dropped, listen with the normal threshold
@@ -167,13 +173,13 @@ class CallSession:
         self.user_speaking.clear()
         keep = len(self._buf) - self._silent >= 10
         if self._started_while_playing:
-            barged = self.cfg.barge_in and self.seg_voiced >= self._min_frames()
-            # also keep it when the caller went on speaking after our answer had ended
-            if not (barged or self._after_answer >= AFTER_ANSWER):
+            # keep it if it interrupted us, or the caller went on speaking after our answer had ended
+            if not (self._barged or self._after_answer >= AFTER_ANSWER):
                 keep = False
-                log.debug("ignored while speaking: %d ms speech (needs %d ms%s), loudest %.0f, threshold %.0f",
-                          self.seg_voiced * 20, self._min_frames() * 20,
-                          "" if self.cfg.barge_in else ", barge-in off", self._peak, self._seg_thr)
+                why = ("barge-in off" if not self.cfg.barge_in
+                       else "over before it could interrupt" if self.seg_voiced >= self._min_frames() else "too short")
+                log.debug("ignored while speaking: %d ms speech (needs %d ms, %s), loudest %.0f, threshold %.0f",
+                          self.seg_voiced * 20, self._min_frames() * 20, why, self._peak, self._seg_thr)
         if keep:
             self.utterances.put(np.concatenate(self._buf))
         self._pre.clear()
@@ -214,9 +220,10 @@ class CallSession:
                 self.audio_q.task_done()
 
     def _barge(self, now: float) -> bool:
-        """Speech that began during the answer has lasted barge_in_min_ms (pauses inside speech included)."""
-        return (bool(self.cfg.barge_in) and self._started_while_playing and self.playing.is_set()
+        """Speech during the answer has lasted barge_in_min_ms (pauses inside speech included) and goes on."""
+        return (bool(self.cfg.barge_in) and self._overlaps_answer and self.playing.is_set()
                 and not self.interrupt.is_set()
+                and self._gap <= GAP_FRAMES                  # the caller is still speaking, not a stale count
                 and now - self.answer_started_at > GRACE_S   # only the start of the answer, not of every sentence
                 and self.seg_voiced >= self._min_frames())
 

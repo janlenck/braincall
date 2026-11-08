@@ -118,6 +118,36 @@ def test_no_barge_in_in_the_first_moment_of_the_answer():
     assert line.interrupted_at - line.s.answer_started_at > session_mod.GRACE_S
 
 
+def test_no_delayed_barge_in_from_a_burst_in_the_grace_period():
+    """The burst is long enough, but over when the grace period ends: no interruption afterwards."""
+    line = Line(barge_in_min_ms=200)
+    line.start_answer()
+    line.feed([VOICE] * 15 + [NOISE] * 60, echo=True)
+    assert not line.s.interrupt.is_set()
+    assert line.utterances() == []
+
+
+def test_speech_begun_before_the_answer_interrupts_it():
+    """The caller goes on talking while the model thinks: once we speak, they can still interrupt."""
+    line = Line()
+    line.feed(speech(600))  # while the model is thinking
+    line.start_answer()
+    line.feed(speech(1000), echo=True)
+    assert line.s.interrupt.is_set()
+    assert line.interrupted_at - line.s.answer_started_at > session_mod.GRACE_S
+    line.feed([NOISE] * 40)
+    assert len(line.utterances()) == 1
+
+
+def test_echo_below_the_threshold_does_not_count_as_speech():
+    """After a short noise the segment stays open on our echo (above 0.7× threshold), but must not interrupt."""
+    line = Line()
+    line.start_answer()
+    line.feed([NOISE] * 100, echo=True)
+    line.feed([VOICE] * 15 + [1700] * 150)  # echo at 85 % of the threshold for 3 s
+    assert not line.s.interrupt.is_set()
+
+
 def test_barge_in_min_ms_is_configurable():
     line = Line(barge_in_min_ms=2000)
     line.start_answer()
