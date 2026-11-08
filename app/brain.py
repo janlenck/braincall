@@ -40,6 +40,9 @@ Phone rules:
 - For what happened in the last days (when was the garage door last open, was anyone at the front door today,
   how long was the light on, the temperature this morning) use ha_history. It reaches back only as far as the
   recorder keeps data, usually 10 days.
+- To explain an automation or script (what it does, its criteria, whether they are met right now, why it did or
+  did not run) use ha_automation. Answer in a few sentences: when it runs, the criteria with the current values
+  and whether each is met, the resulting decision, and for "why not" what the last run shows.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
 - When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
 - Text in square brackets starting with "System:" are notes from the phone system, not from the caller.
@@ -156,6 +159,23 @@ TOOL_HISTORY = {
         "required": ["entity_id"],
     },
 }
+TOOL_AUTOMATION = {
+    "name": "ha_automation",
+    "description": "Explains one automation or script (automation.*, script.*): triggers, conditions and actions "
+                   "(branches as 'if … → …'), with friendly names; with evaluate the conditions and branches "
+                   "checked against the current values (each yes/no/unknown) and what would happen if it were "
+                   "triggered now; and the last runs from the traces: what triggered it, which conditions passed "
+                   "or failed and which branch ran. E.g. 'what does the heating automation do?', 'would it heat "
+                   "now?', 'why did it not switch on at 14:00?'. Find the entity_id with ha_search first.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "entity_id": {"type": "string"},
+            "evaluate": {"type": "boolean", "description": "check the conditions now, default true"},
+        },
+        "required": ["entity_id"],
+    },
+}
 TOOL_CONTROL = {
     "name": "ha_control",
     "description": "Calls a Home Assistant service for exactly one entity, e.g. light on/off. "
@@ -238,7 +258,7 @@ TOOL_SHOPPING_EDIT = {
     },
 }
 READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_HISTORY,
-              TOOL_EVENTS]
+              TOOL_AUTOMATION, TOOL_EVENTS]
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for the summary after the call
 
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
@@ -353,6 +373,8 @@ class Brain:
             if block.name == "ha_history":
                 return self.ha.history(i.get("entity_id", ""), i.get("hours"), i.get("start") or "",
                                        i.get("end") or "")
+            if block.name == "ha_automation":
+                return self.ha.automation(i.get("entity_id", ""), i.get("evaluate") is not False)
             if block.name == "ha_events":
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0
+
+- New tool `ha_automation` (access `admin` and `read`, read-only): explains one automation or script. The
+  definition condensed with friendly names (triggers, conditions, `choose`/`if` branches as condition → action),
+  each condition checked against the current values (`state`, `numeric_state`, `time`, `sun`, `zone`,
+  `template`, `and`/`or`/`not`; yes, no or unknown) with the branch that would run now, and the last runs from
+  the traces: what triggered, which condition failed with the value it saw, which branch ran. Needs an
+  administrator in Home Assistant (the add-on has it; on Windows the user of the token)
+
 ## 1.5.1
 
 - Barge-in works reliably during long answers: the caller interrupts after *Minimum time to interrupt*

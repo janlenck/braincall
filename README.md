@@ -28,6 +28,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/session.py` | one call: listening, barge-in, turn taking |
 | `app/brain.py` | Claude prompt, tools, sentence streaming |
 | `app/ha.py` | Home Assistant: search, state, control, lists, calendars, energy and long-term statistics |
+| `app/automation.py` | explains automations and scripts: definition, current evaluation, last runs (`ha_automation`) |
 | `app/speech.py` | OpenAI speech-to-text and text-to-speech |
 | `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
@@ -88,8 +89,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - `access` (several possible, `"shopping, calendar"` or a list) decides which tools Claude gets in the call.
   The code enforces it, not the prompt: a caller cannot talk the assistant into more.
   - `admin`: everything, read and control Home Assistant, appointments.
-  - `read`: read everything (states, sensors, history, energy and long-term statistics, appointments with
-    details),
+  - `read`: read everything (states, sensors, history, energy and long-term statistics, automations,
+    appointments with details),
     change nothing.
   - `calendar`: only free/busy times of the default calendars, no titles or places. Books an appointment in a
     free slot of the default calendar after repeating day and time to the caller, without asking you.
@@ -159,6 +160,24 @@ sensor that became `unavailable` is reported as such, not with its last value.
 
 The recorder keeps about 10 days by default (`recorder: purge_keep_days`); older data of sensors come from
 `ha_statistics`.
+
+Questions about automations and scripts ("What does the heating automation do?", "Would it heat right now?",
+"Why did it not switch on at 14:00?") are answered by `ha_automation` (access `admin` and `read`, read-only):
+
+- the definition, condensed to a few lines with friendly names: triggers (time pattern, state, numeric state,
+  sun, …), conditions, and `choose`/`if` branches as *condition → action*. It comes from the WebSocket command
+  `automation/config` (`script/config`), which also works for YAML automations without `id`, otherwise from
+  `/api/config/automation/config/<id>`;
+- each condition checked against the current states: `state`, `numeric_state` (`above`/`below`, `attribute`,
+  limits from other entities), `time`, `sun`, `zone`, `template` (rendered via `/api/template`) and
+  `and`/`or`/`not`, each *yes*, *no* or *unknown* (e.g. `trigger` conditions, which depend on the trigger), and
+  which branch would run if it were triggered now;
+- the last runs from the traces (`trace/list`, `trace/get`): what triggered, which condition passed or failed
+  with the value it saw, which branch ran, or why it did not start. Home Assistant keeps the last 5 runs per
+  automation, and only for automations with an `id`.
+
+The config and trace commands need administrator rights in Home Assistant. The add-on has them (the Supervisor
+talks to Home Assistant as an administrator); on Windows the user of `ha_token` must be an administrator.
 
 Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 

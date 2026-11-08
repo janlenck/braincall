@@ -30,7 +30,7 @@ def names(tools):
 
 
 READ = {"ha_search", "ha_list", "ha_state", "ha_forecast", "ha_energy", "ha_statistics", "ha_history",
-        "ha_events"}
+        "ha_automation", "ha_events"}
 SHOP = {"shopping_list", "shopping_edit"}
 
 
@@ -161,6 +161,23 @@ def test_run_tool_history(brain, ha):
     assert ha.calls == [("history", ("cover.garage", None, "", ""), {}),
                         ("history", ("cover.garage", 48, "", ""), {}),
                         ("history", ("lock.door", None, "2026-11-07", "2026-11-07"), {})]
+
+
+def test_run_tool_automation(brain, ha):
+    a = parse_access("read")
+    tools = brain.tools_for(a)
+    assert brain._run_tool(block("ha_automation", entity_id="automation.heating"), tools, a) == "automation ok"
+    assert brain._run_tool(block("ha_automation", entity_id="script.x", evaluate=False), tools, a) \
+        == "automation ok"
+    assert ha.calls == [("automation", ("automation.heating", True), {}), ("automation", ("script.x", False), {})]
+
+
+@pytest.mark.parametrize("access", ["guest", "calendar", "shopping"])
+def test_automation_not_for_callers_without_read(brain, ha, access):
+    a = parse_access(access)
+    assert brain._run_tool(block("ha_automation", entity_id="automation.heating"), brain.tools_for(a), a) \
+        == "Not allowed in this call."
+    assert ha.calls == []
 
 
 @pytest.mark.parametrize("access", ["guest", "calendar", "shopping"])
