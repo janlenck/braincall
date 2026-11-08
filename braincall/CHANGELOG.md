@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.1
+
+- Barge-in works reliably during long answers: the caller interrupts after *Minimum time to interrupt*
+  (`barge_in_min_ms`, default 1000 ms) of speech, short pauses between words included, instead of the 1.4–2 s
+  (or never) before. The answer counts as one block from its first sentence until it is spoken, so speech
+  that starts while the next sentence is being synthesized, or while the model is still thinking, interrupts
+  too, and the 0.6 s grace period is only at the start of the answer. The noise floor no longer adapts to the
+  echo of our own voice. Coughs, doors and short "mhm" still do not interrupt and are not answered; speech
+  that began over the end of the answer and goes on after it is answered. Ignored barge-ins are logged at debug level with speech time and threshold
+
 ## 1.5.0
 
 - New option *Caller memory* (`caller_memory`, default `none`): the summary of each call is kept per number in
