@@ -26,7 +26,7 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | access | may |
 |---|---|
 | `admin` | everything: read and control Home Assistant, appointments |
-| `read` | read everything (also history, energy statistics and appointments with details), change nothing |
+| `read` | read everything (also history, energy statistics, automations and appointments with details), change nothing |
 | `calendar` | only free/busy times, no details; books an appointment in a free slot without asking you |
 | `shopping` | only the lists in *Shopping lists* |
 | `guest` | nothing, takes a message |
@@ -68,6 +68,14 @@ the heat pump or the average outdoor temperature. Totals reach up to a few minut
 They can also ask what happened recently, e.g. "When was the garage door last open?", "Was anyone at the front
 door today?" or "How long was the light on?". The answer comes from the recorder, which keeps about 10 days
 by default (`recorder: purge_keep_days`); at most 31 days per question.
+
+## Automations
+
+Callers with access `admin` or `read` can ask what an automation or script does and why, e.g. "What does the
+heating automation do?", "Would it heat right now?" or "Why did it not switch on at 14:00?". The assistant reads
+the definition (triggers, conditions, branches), checks each condition against the current values and looks at
+the last runs Home Assistant keeps (the traces, the last 5 per automation, only for automations with an id).
+Nothing is changed. The add-on has the administrator rights this needs without an extra token.
 
 ## On/off switch
 

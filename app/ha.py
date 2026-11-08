@@ -716,6 +716,108 @@ class HA:
             out["other_states_not_listed"] = len(per_state) - len(top)
         return out
 
+    # ------------------------------------------------------------------ automations
+    def _render(self, template: str) -> str:
+        """Renders a template now (POST /api/template); raises on errors."""
+        r = self.http.post(f"{self.base}/template", json={"template": template}, timeout=10, verify=self.verify)
+        if r.status_code >= 400:
+            raise HAError(f"{r.status_code} {r.text[:120]}")
+        return r.text
+
+    @staticmethod
+    def _access_note(what: str, e) -> str:
+        code = getattr(e, "code", "") or ""
+        status = getattr(getattr(e, "response", None), "status_code", 0)
+        if code == "unauthorized" or status in (401, 403):
+            return f"{what} not readable: the Home Assistant token needs a user with administrator rights."
+        return f"{what} not readable: {e}"
+
+    def automation(self, entity_id: str, evaluate: bool = True) -> str:
+        """What an automation or script does (triggers, conditions, branches with friendly names), whether its
+        conditions are met right now and which branch would run, and its last runs from the traces."""
+        from automation import RUNS, Explainer  # here: automation.py uses the helpers of this module
+
+        entity_id = (entity_id or "").strip()
+        domain, _, object_id = entity_id.partition(".")
+        if domain not in ("automation", "script") or not object_id:
+            return "Error: entity_id must be an automation.* or script.* entity; find it with ha_search."
+        try:
+            st = self._get(f"/states/{quote(entity_id)}")
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return f"Unknown entity {entity_id}: check the entity_id with ha_search."
+            raise
+        attrs = st.get("attributes", {})
+        # traces and the config API use the id from automations.yaml; scripts use their object id
+        item_id = str(attrs.get("id") or "") if domain == "automation" else object_id
+        config, runs, trace, notes, config_error = None, [], None, [], None
+        try:
+            with self._ws() as call:
+                try:
+                    config = (call(f"{domain}/config", entity_id=entity_id) or {}).get("config")
+                except HAError as e:
+                    log.info("%s/config %s: %s", domain, entity_id, e)
+                    config_error = e
+                if item_id:
+                    try:
+                        runs = call("trace/list", domain=domain, item_id=item_id) or []
+                        runs = sorted(runs, key=lambda r: str((r.get("timestamp") or {}).get("start") or ""),
+                                      reverse=True)[:RUNS]
+                        if runs:
+                            trace = call("trace/get", domain=domain, item_id=item_id, run_id=runs[0].get("run_id"))
+                    except HAError as e:
+                        notes.append(self._access_note("Runs (traces)", e))
+        except (HAError, OSError, websocket.WebSocketException) as e:
+            log.warning("Automation %s: WebSocket failed: %s", entity_id, e)
+            notes.append(f"Runs (traces) not readable: WebSocket failed ({e}).")
+        if config is None and item_id:
+            try:
+                config = self._get(f"/config/{domain}/config/{quote(item_id)}")
+            except requests.HTTPError as e:
+                if e.response is None or e.response.status_code != 404:
+                    config_error = e
+        if config is None and trace:
+            config = trace.get("config")
+        if config is None and config_error is not None:
+            notes.append(self._access_note("Definition", config_error))
+        if evaluate:  # "now" means now: not the states cached by an ha_search a moment ago
+            self._cache = (0.0, [])
+        states = {s["entity_id"]: s for s in self._states()}
+        states[entity_id] = st
+        ex = Explainer(states, self.tz, self._render)
+        on = st.get("state") == "on"
+        out = {"entity_id": entity_id, "name": attrs.get("friendly_name") or entity_id}
+        if domain == "automation":
+            out["enabled"] = on
+        else:
+            out["running"] = on
+        if attrs.get("mode"):
+            out["mode"] = attrs["mode"]
+        try:  # in the configured timezone, like the runs
+            lt = datetime.fromisoformat(str(attrs.get("last_triggered")).replace("Z", "+00:00")).astimezone(self.tz)
+            out["last_triggered"] = _when(lt, datetime.now(timezone.utc).astimezone(self.tz))
+        except ValueError:
+            out["last_triggered"] = "never"
+        if isinstance(config, dict) and config:
+            out.update(ex.definition(config, automation=domain == "automation"))
+            if evaluate and "blueprint" not in out:
+                out["now"] = ex.evaluate(config, enabled=on or domain == "script", mode=attrs.get("mode") or "",
+                                         current=attrs.get("current"), max_runs=attrs.get("max"))
+        else:
+            out["definition"] = "not available."
+        if runs:
+            out["last_run"] = ex.run(runs[0], trace, (trace or {}).get("config") or config)
+            if len(runs) > 1:
+                out["earlier_runs"] = [ex.run_line(r) for r in runs[1:]]
+        elif item_id and not notes:
+            out["last_run"] = "No runs recorded (Home Assistant keeps the last 5 runs)."
+        elif not item_id:
+            notes.append("No id (automation from YAML without id): Home Assistant keeps no runs (traces) for it.")
+        if notes:
+            out["notes"] = notes
+        log.info("Automation %s: definition %s, %d runs", entity_id, "yes" if config else "no", len(runs))
+        return json.dumps(out, ensure_ascii=False)
+
     # ------------------------------------------------------------------ states
     @staticmethod
     def _attrs(s: dict, table: dict) -> dict:
