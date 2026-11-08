@@ -1,6 +1,7 @@
 """Automations and scripts explained for the phone (tool ha_automation): the definition condensed into a few lines
 with friendly names, the conditions checked against the current states (which branch would run now), and the
 last runs from the traces (what triggered, which condition failed, which branch ran)."""
+import math
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
 
@@ -10,11 +11,11 @@ WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # The most lines per part of the definition, of the evaluation and of the steps of a run; runs listed in total
 DEF_LINES = {"triggers": 5, "conditions": 6, "actions": 8}
 NOW_LINES = 14
-RUN_LINES = 8
+RUN_LINES = 12
 RUNS = 5
 TEXT_MAX = 200
 TEMPLATE_MAX = 90
-TRUE_WORDS = ("true", "yes", "on", "enable")
+SUN_MARGIN = 15 * 60  # seconds: closer than this to an estimated sunrise/sunset is reported as unknown
 ANSWER = {True: "yes", False: "no", None: "unknown"}
 
 # script_execution of a trace -> what it means
@@ -27,8 +28,14 @@ EXECUTION = {
     "error": "stopped with an error",
     "cancelled": "cancelled (restarted by a new trigger, or turned off)",
 }
+# Trace paths: global conditions, steps of any sequence, conditions of choose options and of if
 _COND_PATH = re.compile(r"^conditions?/(\d+)$")
-_STEP_PATH = re.compile(r"^(?:actions?|sequence)/(\d+)$")
+_STEP_PATH = re.compile(r"(?:^|/)(?:actions?|sequence|then|else|default|parallel)/\d+$")
+_BRANCH_COND = re.compile(r"(?:^|/)(?:choose/\d+/conditions?|if/conditions?)/\d+$")
+# Keys of the definition a trace path names, and those that hold lists
+_ALIASES = {"conditions": ("conditions", "condition"), "condition": ("condition", "conditions"),
+            "action": ("actions", "action"), "actions": ("actions", "action")}
+_LIST_KEYS = ("choose", "sequence", "then", "else", "default", "parallel", "conditions", "if")
 
 
 def as_list(v) -> list:
@@ -91,11 +98,9 @@ def _span(v) -> str:
     return ("-" if s < 0 else "") + _duration(abs(s))
 
 
-def _truthy(text) -> bool:
-    """Result of a template condition like Home Assistant reads it."""
-    t = str(text).strip().lower()
-    f = _float(t)
-    return (f != 0) if f is not None else t in TRUE_WORDS
+def _is_true(text) -> bool:
+    """Result of a template condition like Home Assistant reads it: only 'true' (any case) counts."""
+    return str(text).strip().lower() == "true"
 
 
 def _parse_time(text):
@@ -572,25 +577,33 @@ class Explainer:
         return ok, detail
 
     def _sun_today(self, attr: str):
-        """Today's sunrise or sunset (local) from sun.sun: next_rising/next_setting, a day earlier if already past."""
+        """(today's sunrise or sunset, exact) from sun.sun. It only has the next ones: one already past today is
+        estimated as the next one 24 hours earlier (in UTC, so a DST change does not shift it), a few minutes off."""
         t = _parse_time((self.states.get("sun.sun") or {}).get("attributes", {}).get(attr))
         if t is None:
-            return None
-        t = t.astimezone(self.tz)
-        return t if t.date() == self.now.date() else t - timedelta(days=1)
+            return None, False
+        if t.astimezone(self.tz).date() == self.now.date():
+            return t.astimezone(self.tz), True
+        t = (t.astimezone(timezone.utc) - timedelta(days=1)).astimezone(self.tz)
+        return (t, False) if t.date() == self.now.date() else (None, False)
 
     def _check_sun(self, c: dict):
         events = {"sunrise": self._sun_today("next_rising"), "sunset": self._sun_today("next_setting")}
-        wanted = {}
+        wanted, estimated = {}, []
         for edge in ("after", "before"):
             if c.get(edge):
-                ev = events.get(str(c[edge]))
+                ev, exact = events.get(str(c[edge]), (None, False))
                 off = seconds_of(c.get(f"{edge}_offset") or 0)
                 if ev is None or off is None:
                     return None, "sun times not available (sun.sun)"
                 wanted[edge] = ev + timedelta(seconds=off)
+                if not exact:
+                    estimated.append(wanted[edge])
         now = self.now
-        detail = f"now {now:%H:%M}, " + ", ".join(f"{k} {v:%H:%M}" for k, v in events.items() if v)
+        detail = f"now {now:%H:%M}, " + ", ".join(f"{k} {'about ' * (not ok)}{v:%H:%M}"
+                                                  for k, (v, ok) in events.items() if v)
+        if any(abs(now.timestamp() - t.timestamp()) < SUN_MARGIN for t in estimated):
+            return None, detail + ", too close to the estimated time"
         if c.get("before") == "sunrise" and c.get("after") == "sunset":  # Home Assistant: the night, across midnight
             return now <= wanted["before"] or now >= wanted["after"], detail
         ok = (("before" not in wanted or now <= wanted["before"])
@@ -598,14 +611,27 @@ class Explainer:
         return ok, detail
 
     def _check_zone(self, c: dict):
-        zones = {}
-        for z in as_list(c.get("zone")):
-            zones[str(z)] = "home" if z == "zone.home" else self.name(z)
+        """Like Home Assistant: the position (latitude/longitude) within the radius of one of the zones, the GPS
+        accuracy counted in its favour. Without a position an entity is in no zone, whatever its state says."""
+        zones = [self.states.get(str(z)) for z in as_list(c.get("zone"))]
         results, details = [], []
         for e in as_list(c.get("entity_id")):
-            v, _ = self._value(e)
-            results.append(v in zones.values())
-            details.append(f"{self.name(e)} now {v}")
+            s = self.states.get(str(e))
+            a = (s or {}).get("attributes", {})
+            lat, lon = _float(a.get("latitude")), _float(a.get("longitude"))
+            if s is None or lat is None or lon is None:
+                results.append(False)
+                details.append(f"{self.name(e)} has no position" + (f" (state {s.get('state')})" if s else ""))
+                continue
+            accuracy = _float(a.get("gps_accuracy")) or 0.0
+            inside = False
+            for z in zones:
+                za = (z or {}).get("attributes", {})
+                zlat, zlon, radius = _float(za.get("latitude")), _float(za.get("longitude")), _float(za.get("radius"))
+                if z and z.get("state") != "unavailable" and None not in (zlat, zlon, radius):
+                    inside = inside or _distance(lat, lon, zlat, zlon) - accuracy < radius
+            results.append(inside)
+            details.append(f"{self.name(e)} now {s.get('state')}")
         return bool(results) and all(results), ", ".join(details)
 
     def _check_template(self, c: dict):
@@ -618,7 +644,7 @@ class Explainer:
             out = self.render(tpl)
         except Exception as e:  # noqa: BLE001  e.g. variables of the automation, which only exist in a run
             return None, f"cannot be evaluated now ({_short(e, 80)})"
-        return _truthy(out), f"now {_short(out, 40)}"
+        return _is_true(out), f"now {_short(out, 40)}"
 
     @staticmethod
     def _check_trigger(c: dict):
@@ -628,9 +654,27 @@ class Explainer:
     def _check_other(c: dict):
         return None, "not evaluated"
 
-    def evaluate(self, config: dict, enabled: bool = True) -> dict:
-        """The conditions with their current values, the choose/if branches and what would happen if it were
-        triggered now."""
+    @staticmethod
+    def _gate(mode: str, current, max_runs) -> str:
+        """What a new trigger does while runs are going on (mode single, restart, queued, parallel)."""
+        running = int(_float(current) or 0)
+        if not running:
+            return ""
+        mode = mode or "single"
+        if mode == "single":
+            return "It is running right now (mode single): a new trigger is ignored until that run ends."
+        if mode == "restart":
+            return "It is running right now (mode restart): a new trigger stops that run and starts again."
+        limit = int(_float(max_runs) or 10)
+        if running >= limit:
+            return f"{running} runs are going on (mode {mode}, at most {limit}): a new trigger is ignored."
+        if mode == "queued":
+            return "It is running right now (mode queued): a new run waits until the current one ends."
+        return ""
+
+    def evaluate(self, config: dict, enabled: bool = True, mode: str = "", current=0, max_runs=None) -> dict:
+        """The conditions with their current values, the choose/if branches and what would happen, in order, if
+        it were triggered now."""
         _, conditions, actions = parts(config)
         out = {}
         res = True
@@ -638,42 +682,76 @@ class Explainer:
             res, lines = self.check_all(conditions)
             out["conditions"] = _cap(lines, NOW_LINES)
             out["conditions_met"] = ANSWER[res]
-        branch_lines, decision = [], []
+        branch_lines = []
         if res is False:
-            decision.append("No: the conditions are not met, no action would run.")
+            decision = ["No: the conditions are not met, no action would run."]
         else:
-            for a in as_list(actions):
-                if not isinstance(a, dict) or a.get("enabled") is False:
-                    continue
-                if "choose" in a:
-                    decision.append(self._choose_now(a, branch_lines))
-                elif "if" in a:
-                    r, lines = self.check_all(a["if"], "  ")
-                    branch_lines += [f"if → {ANSWER[r]}"] + lines
-                    then = self.steps(a.get("then"))
-                    other = self.steps(a.get("else")) if a.get("else") is not None else "nothing"
-                    decision.append({True: f"if: yes → {then}", False: f"if: no → {other}",
-                                     None: f"if: unknown → {then}, or else {other}"}[r])
-                elif "condition" in a or any(k in a for k in ("and", "or", "not")):
-                    r, lines = self.check(a, "  ")
-                    branch_lines += ["condition step:"] + lines
-                    if r is False:
-                        decision.append(f"Stops at the step '{self.condition(a)}': not met.")
-                        break
-                    if r is None:
-                        decision.append(f"Step '{self.condition(a)}' unknown: it stops there if not met.")
-            if not decision:
-                decision.append("Would run its actions: " + _short(self.steps(actions)))
+            done, _ = self._simulate(actions, branch_lines)
+            decision = ["; ".join(done) or "Nothing: it has no actions."]
             if res is None:
                 decision.insert(0, "Only if the conditions marked unknown are met:")
         if branch_lines:
             out["branches"] = _cap(branch_lines, NOW_LINES)
+        gate = self._gate(mode, current, max_runs)
+        if gate:
+            decision.insert(0, gate)
         if not enabled:
             decision.insert(0, "The automation is turned off: it does not run at all.")
-        out["if_triggered_now"] = " ".join(decision)
+        out["if_triggered_now"] = _short(" ".join(decision), 2 * TEXT_MAX)
         return out
 
-    def _choose_now(self, a: dict, lines: list) -> str:
+    def _simulate(self, seq, branch_lines: list, depth: int = 0):
+        """([what each step would do, in order], stopped) of a sequence now; follows the chosen choose/if branch
+        and ends at a stop or an unmet condition step."""
+        done = []
+        for a in as_list(seq):
+            if not isinstance(a, dict) or a.get("enabled") is False:
+                continue
+            if depth > 5:
+                done.append(_short(self.action(a), 100))
+            elif "choose" in a:
+                text, picked = self._choose_now(a, branch_lines)
+                if picked is None:
+                    done.append(text)
+                    continue
+                sub, stopped = self._simulate(picked, branch_lines, depth + 1)
+                done.append(f"{text} → {', '.join(sub) or 'nothing'}")
+                if stopped:
+                    return done, True
+            elif "if" in a:
+                r, lines = self.check_all(a["if"], "  ")
+                branch_lines += [f"if → {ANSWER[r]}"] + lines
+                other = a.get("else")
+                if r is None:
+                    done.append(f"if unknown now: either {self.steps(a.get('then'))}, or "
+                                f"{self.steps(other) if other is not None else 'nothing'}")
+                    continue
+                sub, stopped = self._simulate(a.get("then") if r else other, branch_lines, depth + 1)
+                done.append(f"if {ANSWER[r]} → {', '.join(sub) or 'nothing'}")
+                if stopped:
+                    return done, True
+            elif "condition" in a or any(k in a for k in ("and", "or", "not")):
+                r, lines = self.check(a, "  ")
+                branch_lines += ["condition step:"] + lines
+                if r is False:
+                    done.append(f"stops at '{self.condition(a)}': not met")
+                    return done, True
+                if r is None:
+                    done.append(f"continues only if {self.condition(a)} (unknown now)")
+            elif "stop" in a:
+                done.append(self.action(a))
+                return done, True
+            elif "sequence" in a and "repeat" not in a:
+                sub, stopped = self._simulate(a["sequence"], branch_lines, depth + 1)
+                done += sub
+                if stopped:
+                    return done, True
+            else:
+                done.append(self.action(a))
+        return done, False
+
+    def _choose_now(self, a: dict, lines: list):
+        """(text, sequence of the option that would run, or None) of a choose step now."""
         unknown = []
         for k, o in enumerate(as_list(a["choose"]), 1):
             if not isinstance(o, dict):
@@ -682,13 +760,14 @@ class Explainer:
             r, sub = self.check_all(o.get("conditions"), "  ")
             lines += [f"{label} → {ANSWER[r]}"] + sub
             if r:
-                text = f"{label} → {self.steps(o.get('sequence'))}"
-                return text + (f" (unless {', '.join(unknown)} applies: unknown now)" if unknown else "")
+                unless = f" (unless {', '.join(unknown)} applies: unknown now)" if unknown else ""
+                return label + unless, o.get("sequence")
             if r is None:
                 unknown.append(label)
-        text = ("no option matches → " + (self.steps(a["default"]) if a.get("default") is not None
-                                          else "nothing from this step"))
-        return text + (f" (unless {', '.join(unknown)} applies: unknown now)" if unknown else "")
+        unless = f" (unless {', '.join(unknown)} applies: unknown now)" if unknown else ""
+        if a.get("default") is not None:
+            return "no option matches, otherwise" + unless, a["default"]
+        return "no option matches → nothing from this step" + unless, None
 
     # ------------------------------------------------------------------ traces
     def _start(self, summary: dict):
@@ -709,7 +788,8 @@ class Explainer:
         return f"{when}: {trig}{self._outcome(summary)}"
 
     def run(self, summary: dict, trace: dict | None, config: dict | None) -> dict:
-        """The most recent run: when, what triggered, the result, and from the trace each condition and branch."""
+        """The most recent run: when, what triggered, the result, and from the trace the global conditions, then in
+        order the steps that were reached, the branch conditions with the values they saw and the branch taken."""
         t = self._start(summary)
         out = {"time": _when(t, self.now) if t else "?"}
         if summary.get("trigger"):
@@ -720,28 +800,24 @@ class Explainer:
         steps = (trace or {}).get("trace") or {}
         if not isinstance(steps, dict) or not steps:
             return out
-        _, conditions, actions = parts(config or {})
-        conditions, actions = as_list(conditions), as_list(actions)
+        config = config or {}
         lines = []
-        for path in sorted((p for p in steps if _COND_PATH.match(p)), key=lambda p: int(_COND_PATH.match(p)[1])):
-            i = int(_COND_PATH.match(path)[1])
-            desc = self.condition(conditions[i]) if i < len(conditions) else path
-            el = (steps[path] or [{}])[-1]
-            ok = (el.get("result") or {}).get("result")
-            text = f"{desc}: " + ("error " + _short(el["error"], 80) if el.get("error")
-                                  else "passed" if ok else "failed")
-            seen = self._seen(steps, path)
-            lines.append(text + (f" (then: {seen})" if seen else ""))
+        for path in sorted((p for p in steps if _COND_PATH.match(p)), key=_path_key):
+            lines.append(self._condition_result(path, steps, config))
         if lines:
             out["conditions"] = _cap(lines, RUN_LINES)
-        lines = []
-        for path in sorted((p for p in steps if _STEP_PATH.match(p)), key=lambda p: int(_STEP_PATH.match(p)[1])):
-            i = int(_STEP_PATH.match(path)[1])
-            step = actions[i] if i < len(actions) and isinstance(actions[i], dict) else {}
-            el = (steps[path] or [{}])[-1]
-            lines.append(self._step_result(step, el.get("result") or {}, el.get("error")))
-        if lines:
-            out["steps"] = _cap(lines, RUN_LINES)
+        reached = []
+        for path, els in steps.items():
+            if _BRANCH_COND.search(path):
+                line = self._condition_result(path, steps, config)
+            elif _STEP_PATH.search(path):
+                line = self._step_result(_node(config, path), (els or [{}])[-1])
+            else:
+                continue
+            if line:
+                reached.append((str((els or [{}])[0].get("timestamp") or ""), _path_key(path), line))
+        if reached:
+            out["steps"] = _cap([line for *_, line in sorted(reached)], RUN_LINES)
         return out
 
     @staticmethod
@@ -755,25 +831,80 @@ class Explainer:
                     seen.append(str(r["state"]))
         return ", ".join(seen[:3])
 
-    def _step_result(self, step: dict, result: dict, error) -> str:
+    def _condition_result(self, path: str, steps: dict, config: dict) -> str:
+        """'<option>: <condition>: passed/failed (then: <value>)' of one condition in a trace."""
+        node = _node(config, path)
+        desc = self.condition(node) if node is not None else path
+        found = re.search(r"choose/(\d+)/conditions?/\d+$", path)
+        if found:
+            option = _node(config, path[:found.start()] + f"choose/{found[1]}")
+            desc = f"{self.option(int(found[1]) + 1, option)}: {desc}"
+        elif re.search(r"(?:^|/)if/", path) and _BRANCH_COND.search(path):
+            desc = f"if: {desc}"
+        el = (steps[path] or [{}])[-1]
+        ok = (el.get("result") or {}).get("result")
+        text = f"{desc}: " + ("error " + _short(el["error"], 80) if el.get("error") else "passed" if ok else "failed")
+        seen = self._seen(steps, path)
+        return _short(text + (f" (then: {seen})" if seen else ""))
+
+    def _step_result(self, step, el: dict) -> str:
+        """One step that was reached in a run; empty for a plain sequence, whose steps follow on their own."""
+        step = step if isinstance(step, dict) else {}
+        result, error = el.get("result") or {}, el.get("error")
         if error:
             return f"{_short(self.action(step), 100)}: error {_short(error, 80)}"
         if "choose" in step:
-            choice = result.get("choice")
-            opts = as_list(step["choose"])
+            choice, opts = result.get("choice"), as_list(step["choose"])
             if choice == "default":
-                return f"no option matched → otherwise: {self.steps(step.get('default'))}"
-            if isinstance(choice, int) and 0 <= choice < len(opts) and isinstance(opts[choice], dict):
-                return _short(f"{self.option(choice + 1, opts[choice])} ran → "
-                              f"{self.steps(opts[choice].get('sequence'))}")
-            return "no option matched → nothing from this step"
+                return "choose: no option matched → otherwise"
+            if isinstance(choice, int) and 0 <= choice < len(opts):
+                return f"choose: {self.option(choice + 1, opts[choice])}"
+            return "choose: no option matched → nothing"
         if "if" in step:
-            choice = result.get("choice")
-            if choice == "then":
-                return _short(f"if: yes → {self.steps(step.get('then'))}")
-            if choice == "else":
-                return _short(f"if: no → {self.steps(step.get('else'))}")
-            return "if: no → nothing"
+            return {"then": "if: yes", "else": "if: no"}.get(result.get("choice"), "if: no → nothing")
         if "condition" in step or any(k in step for k in ("and", "or", "not")):
             return f"{self.condition(step)}: " + ("passed" if result.get("result") else "not met, stopped here")
-        return "ran: " + _short(self.action(step), 120) if step else "ran"
+        if not step or "parallel" in step or ("sequence" in step and "repeat" not in step):
+            return ""
+        return _short(self.action(step), 120)
+
+
+def _path_key(path: str) -> tuple:
+    """Trace paths in natural order: 'action/2' before 'action/10'."""
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in path.split("/"))
+
+
+def _node(config: dict, path: str):
+    """The part of the definition a trace path points to, e.g. 'action/0/choose/1/conditions/0'; None if the
+    definition does not have it."""
+    segs = path.split("/")
+    _, conditions, actions = parts(config or {})
+    if segs[0] in ("action", "actions", "sequence"):
+        obj = as_list(actions)
+    elif segs[0] in ("condition", "conditions"):
+        obj = as_list(conditions)
+    else:
+        return None
+    for seg in segs[1:]:
+        if seg.isdigit():
+            if not isinstance(obj, list) or int(seg) >= len(obj):
+                return None
+            obj = obj[int(seg)]
+        elif isinstance(obj, list):
+            continue  # 'if/condition/0': the conditions of 'if' are the list itself
+        elif isinstance(obj, dict):
+            key = next((k for k in _ALIASES.get(seg, (seg,)) if k in obj), None)
+            if key is None:
+                return None
+            obj = as_list(obj[key]) if seg in _LIST_KEYS else obj[key]
+        else:
+            return None
+    return obj
+
+
+def _distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance in metres (haversine)."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * 6371008.8 * math.asin(math.sqrt(min(1.0, a)))

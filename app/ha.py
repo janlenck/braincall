@@ -780,6 +780,8 @@ class HA:
             config = trace.get("config")
         if config is None and config_error is not None:
             notes.append(self._access_note("Definition", config_error))
+        if evaluate:  # "now" means now: not the states cached by an ha_search a moment ago
+            self._cache = (0.0, [])
         states = {s["entity_id"]: s for s in self._states()}
         states[entity_id] = st
         ex = Explainer(states, self.tz, self._render)
@@ -799,7 +801,8 @@ class HA:
         if isinstance(config, dict) and config:
             out.update(ex.definition(config, automation=domain == "automation"))
             if evaluate and "blueprint" not in out:
-                out["now"] = ex.evaluate(config, enabled=on or domain == "script")
+                out["now"] = ex.evaluate(config, enabled=on or domain == "script", mode=attrs.get("mode") or "",
+                                         current=attrs.get("current"), max_runs=attrs.get("max"))
         else:
             out["definition"] = "not available."
         if runs:

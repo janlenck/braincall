@@ -66,6 +66,10 @@ TRACE_R14 = {
         "condition/0/entity_id/0": [{"path": "condition/0/entity_id/0",
                                      "result": {"result": True, "state": 12.0, "wanted_state_below": 15.0}}],
         "action/0": [{"path": "action/0", "result": {"choice": 1}}],
+        "action/0/choose/0/conditions/0": [{"path": "action/0/choose/0/conditions/0", "result": {"result": False}}],
+        "action/0/choose/0/conditions/0/entity_id/0": [{"result": {"result": False, "state": 0.8}}],
+        "action/0/choose/1/conditions/0": [{"path": "action/0/choose/1/conditions/0", "result": {"result": True}}],
+        "action/0/choose/1/conditions/0/entity_id/0": [{"result": {"result": True, "state": 0.8}}],
         "action/0/choose/1/sequence/0": [{"path": "action/0/choose/1/sequence/0", "result": {"stop": "no surplus"}}],
     },
 }
@@ -174,7 +178,10 @@ def test_last_run_and_earlier_runs(make_ha):
     assert run["time"] == "Sun 2025-10-05 14:00"
     assert run["triggered_by"] == "time pattern" and run["result"] == "ran completely"
     assert run["conditions"] == ["Außentemperatur below 15 °C: passed (then: 12.0)"]
-    assert run["steps"] == ["'kein Überschuss' ran → stop (no surplus)"]
+    assert run["steps"] == ["choose: 'kein Überschuss'",
+                            "'Überschuss': PV-Überschuss above 2 kW: failed (then: 0.8)",
+                            "'kein Überschuss': PV-Überschuss below 2 kW: passed (then: 0.8)",
+                            "stop (no surplus)"]
     assert out["earlier_runs"] == ["Sun 2025-10-05 13:00: time pattern: triggered, but the conditions were not met: "
                                    "no action ran"]
     assert out["last_triggered"] == "Sun 2025-10-05 14:00"
@@ -203,7 +210,7 @@ def test_no_choice_and_errors_in_run(make_ha):
     trace = {"config": HEATING, "trace": {"action/0": [{"path": "action/0", "result": {}}]}}
     runs = [dict(RUNS[1], script_execution="error", error="Climate unavailable")]
     run = explain(make_ha({"trace/list": runs, "trace/get": trace}))["last_run"]
-    assert run["steps"] == ["no option matched → nothing from this step"]
+    assert run["steps"] == ["choose: no option matched → nothing"]
     assert run["result"] == "stopped with an error" and run["error"] == "Climate unavailable"
 
 
@@ -276,7 +283,7 @@ def test_script(make_ha):
     assert out["running"] is False
     assert "triggers" not in out
     assert out["actions"] == ["light.turn_on Heizung (brightness_pct=50)", "wait 10 min"]
-    assert out["now"]["if_triggered_now"].startswith("Would run its actions")
+    assert out["now"]["if_triggered_now"] == "light.turn_on Heizung (brightness_pct=50); wait 10 min"
     assert h.ws.commands("trace/list")[0] == {"id": 2, "type": "trace/list", "domain": "script",
                                               "item_id": "morning"}
 
@@ -421,8 +428,8 @@ def test_choose_with_unknown_option_before():
                          {"conditions": [], "sequence": [{"action": "climate.turn_on",
                                                           "target": {"entity_id": "climate.heating"}}]}]}
     out = e.evaluate({"actions": [choose]})
-    assert out["if_triggered_now"] == ("option 2 → climate.turn_on Heizung "
-                                       "(unless option 1 applies: unknown now)")
+    assert out["if_triggered_now"] == ("option 2 (unless option 1 applies: unknown now) → "
+                                       "climate.turn_on Heizung")
 
 
 def test_numeric_state_unavailable_and_limit_entity():
@@ -437,3 +444,111 @@ def test_run_today_shows_only_the_time():
     e = ex("2025-10-05T16:00")
     assert e.run_line({"timestamp": {"start": "2025-10-05T12:00:00+00:00"}, "state": "running"}) \
         == "14:00: still running"
+
+
+# ---------------------------------------------------------------- review findings
+@pytest.mark.parametrize("rendered, ok", [("True", True), ("true", True), (" TRUE ", True), ("1", False),
+                                          ("yes", False), ("on", False), ("False", False)])
+def test_template_counts_only_true(rendered, ok):
+    e = Explainer({}, BERLIN, render=lambda t: rendered)
+    assert e.check("{{ x }}")[0] is ok
+
+
+def test_sun_estimate_close_to_the_event_is_unknown():
+    # sunset already past today: sun.sun only has tomorrow's (16:48 UTC), today's is estimated at 18:48 local
+    sun = {"next_rising": "2025-10-06T05:20:00+00:00", "next_setting": "2025-10-06T16:48:00+00:00"}
+    after_sunset = {"condition": "sun", "after": "sunset"}
+    assert ex("2025-10-05T18:55", sun=sun).check(after_sunset)[0] is None
+    r, lines = ex("2025-10-05T20:00", sun=sun).check(after_sunset)
+    assert r is True and "sunset about 18:48" in lines[0]
+
+
+def test_sun_estimate_across_dst_change():
+    # summer time ends in the night to Sunday 2025-10-26: tomorrow 07:02 CET = 06:02 UTC, today about 08:00 CEST
+    sun = {"next_rising": "2025-10-26T06:02:00+00:00", "next_setting": "2025-10-25T16:20:00+00:00"}
+    r, lines = ex("2025-10-25T07:30", sun=sun).check({"condition": "sun", "before": "sunrise"})
+    assert r is True and "sunrise about 08:02" in lines[0]  # not 07:02, which would make it "after sunrise"
+
+
+def test_zone_by_position():
+    home = state("zone.home", "1", friendly_name="Zuhause", latitude=52.52, longitude=13.405, radius=100)
+    work = state("zone.work", "0", friendly_name="Büro", latitude=52.0, longitude=13.0, radius=200, passive=True)
+    near = state("person.jan", "not_home", friendly_name="Jan", latitude=52.0012, longitude=13.0,
+                 gps_accuracy=20)  # 133 m from the passive zone's centre
+    named = state("person.anna", "Büro", friendly_name="Anna")  # no position: in no zone for Home Assistant
+    e = ex("2025-10-05T12:00", home, work, near, named)
+    assert e.check({"condition": "zone", "entity_id": "person.jan", "zone": "zone.work"})[0] is True
+    assert e.check({"condition": "zone", "entity_id": "person.jan", "zone": "zone.home"})[0] is False
+    r, lines = e.check({"condition": "zone", "entity_id": "person.anna", "zone": "zone.work"})
+    assert r is False and lines == ["Anna in Büro: Anna has no position (state Büro) → no"]
+
+
+def test_actions_in_order_and_stop_in_a_branch():
+    e = ex("2025-10-05T12:00")
+    on = {"action": "climate.turn_on", "target": {"entity_id": "climate.heating"}}
+    config = {"actions": [
+        {"action": "notify.phone", "data": {"message": "check"}},
+        {"choose": [{"conditions": [{"condition": "state", "entity_id": "climate.heating", "state": "off"}],
+                     "sequence": [{"delay": 5}, {"stop": "already off"}]}]},
+        {"if": [{"condition": "state", "entity_id": "climate.heating", "state": "off"}], "then": [on]},
+    ]}
+    assert e.evaluate(config)["if_triggered_now"] == ("notify.phone (message=check); "
+                                                      "option 1 → wait 5 s, stop (already off)")
+    config["actions"][1]["choose"][0]["sequence"] = [{"delay": 5}]
+    assert e.evaluate(config)["if_triggered_now"] == ("notify.phone (message=check); option 1 → wait 5 s; "
+                                                      "if yes → climate.turn_on Heizung")
+
+
+def test_condition_step_inside_a_branch_stops_the_rest():
+    e = ex("2025-10-05T12:00")
+    config = {"actions": [
+        {"if": [{"condition": "state", "entity_id": "climate.heating", "state": "off"}],
+         "then": [{"condition": "numeric_state", "entity_id": "sensor.pv_surplus", "above": 2},
+                  {"action": "climate.turn_on", "target": {"entity_id": "climate.heating"}}]},
+        {"action": "notify.phone"}]}
+    assert e.evaluate(config)["if_triggered_now"] == "if yes → stops at 'PV-Überschuss above 2 kW': not met"
+
+
+def test_run_lists_only_the_steps_reached():
+    config = {"actions": [
+        {"if": [{"condition": "state", "entity_id": "climate.heating", "state": "off"}],
+         "then": [{"condition": "numeric_state", "entity_id": "sensor.pv_surplus", "above": 2},
+                  {"action": "climate.turn_on", "target": {"entity_id": "climate.heating"}}]}]}
+    trace = {"trace": {
+        "action/0": [{"timestamp": "2025-10-05T12:00:00.10+00:00", "result": {"choice": "then"}}],
+        "action/0/if/condition/0": [{"timestamp": "2025-10-05T12:00:00.11+00:00", "result": {"result": True}}],
+        "action/0/then/0": [{"timestamp": "2025-10-05T12:00:00.12+00:00", "result": {"result": False}}],
+        "action/0/then/0/entity_id/0": [{"result": {"result": False, "state": 0.8}}],
+    }}
+    run = ex("2025-10-05T16:00").run({"script_execution": "aborted"}, trace, config)
+    assert run["steps"] == ["if: yes", "if: Heizung is off: passed",
+                            "PV-Überschuss above 2 kW: not met, stopped here"]
+    assert run["result"] == "stopped by a condition or stop step in the actions"
+
+
+@pytest.mark.parametrize("mode, current, maximum, expected", [
+    ("single", 1, None, "It is running right now (mode single): a new trigger is ignored until that run ends."),
+    ("restart", 1, None, "It is running right now (mode restart)"),
+    ("queued", 1, 10, "It is running right now (mode queued)"),
+    ("parallel", 3, 3, "3 runs are going on (mode parallel, at most 3): a new trigger is ignored."),
+    ("parallel", 1, 3, ""),
+    ("single", 0, None, ""),
+])
+def test_runs_going_on(mode, current, maximum, expected):
+    out = ex("2025-10-05T12:00").evaluate({"actions": [{"delay": 1}]}, mode=mode, current=current,
+                                          max_runs=maximum)
+    assert out["if_triggered_now"].startswith(expected)
+    assert out["if_triggered_now"].endswith("wait 1 s")
+
+
+def test_running_single_automation(make_ha):
+    current = states()
+    current[0]["attributes"]["current"] = 1
+    assert explain(make_ha(current=current))["now"]["if_triggered_now"].startswith("It is running right now")
+
+
+def test_evaluation_reads_fresh_states(make_ha):
+    h = make_ha()
+    h._states()  # e.g. ha_search a moment ago
+    h.http.routes[("GET", "/states")] = FakeResponse(states(surplus=3))
+    assert explain(h)["now"]["if_triggered_now"] == "'Überschuss' → climate.turn_on Heizung"
