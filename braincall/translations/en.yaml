@@ -172,8 +172,9 @@ configuration:
   outbound_allowed_regex:
     name: Only dial numbers matching
     description: >-
-      Regular expression for the whole number in national form, e.g. 0[1-9][0-9]{5,12} for numbers of the own
-      country only. Empty = no limit.
+      Regular expression for the whole number in national form (+49 4542 1234 = 045421234), also for /call.
+      Default: German mobile and landline numbers only, no short codes, service numbers (0137, 0180, 0800, 0900),
+      other countries or internal numbers (**611). Empty = no limit.
   web_access:
     name: Web search
     description: >-

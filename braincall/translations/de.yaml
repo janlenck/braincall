@@ -172,8 +172,9 @@ configuration:
   outbound_allowed_regex:
     name: Nur Nummern wählen, die passen
     description: >-
-      Regulärer Ausdruck für die ganze Nummer in nationaler Schreibweise, z. B. 0[1-9][0-9]{5,12} für Nummern nur
-      aus dem eigenen Land. Leer = keine Einschränkung.
+      Regulärer Ausdruck für die ganze Nummer in nationaler Schreibweise (+49 4542 1234 = 045421234), gilt auch
+      für /call. Standard: nur deutsche Handy- und Festnetznummern, keine Kurzwahlen, Sonderrufnummern (0137, 0180,
+      0800, 0900), Auslandsnummern oder internen Nummern (**611). Leer = keine Einschränkung.
   web_access:
     name: Websuche
     description: >-

@@ -34,6 +34,7 @@ def main(tmp_path_factory):
         "sip_user": "620", "sip_password": "x", "anthropic_api_key": "test", "openai_api_key": "test",
         "owner_name": "Jan Lenck", "log_dir": str(tmp / "logs"), "callers": CALLERS,
         "notify_services": ["notify.phone"], "api_token": "secret",
+        "outbound_allowed_regex": "",  # the tests use short made-up numbers
     }), encoding="utf-8")
     saved = {k: os.environ.pop(k, None) for k in CONFIG_ENV}  # e.g. BRAINCALL_API_TOKEN would beat "secret"
     os.environ["BRAINCALL_CONFIG"] = str(cfg_file)

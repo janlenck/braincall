@@ -95,7 +95,7 @@ options:
     - "0137"
     - "019"
     - "0900"
-  outbound_allowed_regex: ""
+  outbound_allowed_regex: '0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})'
   web_access: false
   web_max_searches: 3
   web_max_fetches: 2

@@ -133,7 +133,10 @@
   "outbound_hours": "09:00-20:00",    // planned calls only in this time of day; "" = any time
   "outbound_max_calls_per_day": 20,   // planned calls (attempts) per day; 0 = no limit
   "outbound_blocked": ["110", "112", "118", "0137", "019", "0900"],  // never dialed, also not via /call
-  "outbound_allowed_regex": "",       // only numbers matching it (national form), e.g. "0[1-9][0-9]{5,12}"
+  // only numbers matching this are dialed, also via /call; written in national form (+49 4542 1234 = 045421234).
+  // Default: German mobile and landline numbers only (no short codes, service numbers, other countries, **611);
+  // "" = no limit
+  "outbound_allowed_regex": "0(?:1[5-7]\\d{8,9}|(?![789]00)[2-9]\\d{5,11})",
 
   // --- Web search (Anthropic's web_search / web_fetch: $10 per 1,000 searches plus tokens) ---
   "web_access": false,                // on: callers with access admin/read (or "web": true) may look things up

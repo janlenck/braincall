@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from anthropic.types import ToolUseBlock
 
+import config
 import tasks
 from brain import Brain
 from config import parse_access
@@ -21,7 +22,11 @@ CALLERS = [{"number": "0151111", "name": "Jan Mobile", "access": "admin"},
            {"number": "0170222", "name": "Mark", "access": "guest"}]
 
 
+GERMAN = config.DEFAULTS["outbound_allowed_regex"]
+
+
 def cfg(**kw):
+    kw.setdefault("outbound_allowed_regex", "")  # the tests use short made-up numbers
     return make_cfg(anthropic_api_key="test", owner_name="Jan Lenck", callers=CALLERS, **kw)
 
 
@@ -53,6 +58,21 @@ def test_allowed_regex_limits_numbers():
     assert "outbound_allowed_regex" in tasks.number_refusal(c, "0033 1 234567")
     assert "outbound_allowed_regex" in tasks.number_refusal(c, "**611")
     assert "invalid" in tasks.number_refusal(cfg(outbound_allowed_regex="("), "04542 1234")
+
+
+@pytest.mark.parametrize("number", [
+    "0151 12345678", "+49 171 1234567", "0049 160 12345678", "030 123456", "04542 1234", "+49 89 12345678",
+    "07903 12345", "032 221234567"])
+def test_default_regex_lets_german_mobile_and_landline_through(number):
+    assert tasks.number_refusal(cfg(outbound_allowed_regex=GERMAN), number) == ""
+
+
+@pytest.mark.parametrize("number", [
+    "110", "112", "115", "116117", "11833", "+49 112", "0900 1234567", "0800 1234567", "0700 1234567",
+    "0137 1234567", "0180 5123456", "0190 123456", "0193 1234", "0033 1 23456789", "+1 212 5551234",
+    "+43 1 234567", "**611", "1234567", "0151 123", "010 33 030 123456"])
+def test_default_regex_keeps_everything_else_out(number):
+    assert tasks.number_refusal(cfg(outbound_allowed_regex=GERMAN), number)
 
 
 @pytest.mark.parametrize("hours, at, ok", [
