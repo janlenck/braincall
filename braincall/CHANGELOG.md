@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.8.0
+
+- Web search (#52): with *Web search* (`web_access`, off by default) the assistant looks things up on the web like
+  Claude in the Claude chat ("Wann hat der Baumarkt in Mölln heute auf?", "Such mir ein Rezept für Grünkohl"), using
+  Anthropic's server tools `web_search` and `web_fetch`. Callers with access `admin` or `read` get it, `web` per
+  caller overrides that; guests and unknown callers never
+  - Limits per answer (`web_max_searches` 3, `web_max_fetches` 2) and per day for all calls (`web_max_searches_per_day`,
+    `web_max_fetches_per_day`, 50 each, kept in `web-usage.json`), `web_max_content_tokens` (8000) for long pages,
+    `web_allowed_domains` / `web_blocked_domains`, `web_city` / `web_country` for local results
+  - "Ich suche das kurz raus." before the first search, also after a thinking sound; URLs and citation marks are never
+    read out. Long research paused by the API (`pause_turn`) is continued
+  - Web pages are data, never instructions: after web content entered the call, switching, bookings and list changes
+    only run after the caller said something in reply to the question. Web use is logged per caller with domains,
+    the summary mentions it briefly
+- Packages: `anthropic` 0.80 or newer; `start.bat` now also updates packages that are too old, not only missing ones
+
 ## 1.7.1
 
 - Fillers are thinking sounds now ("Hmm…", "Ähm…", "Öhm…"), the same in every language (#53). "Okay", "Ja" or

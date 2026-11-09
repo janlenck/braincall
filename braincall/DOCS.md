@@ -19,8 +19,8 @@ Home Assistant during the call. The add-on is the same program as the Windows ve
 
 ## Callers
 
-One entry per number: number (or `*` for everyone else), name, access, optional instructions, language
-and notify. Without a `*` entry unknown numbers are rejected; withheld numbers always. After a fresh
+One entry per number: number (or `*` for everyone else), name, access, optional instructions, language,
+notify and web. Without a `*` entry unknown numbers are rejected; withheld numbers always. After a fresh
 installation the list is empty: add `*` with access `guest` so unknown callers can leave a message.
 
 | access | may |
@@ -54,8 +54,24 @@ every start they are converted (trusted numbers become `admin`, `*` becomes a `g
 allowed to call are dropped) and used instead of *Callers*. The log shows the converted list. Enter it under
 *Callers* and empty the three old fields; from then on only *Callers* counts.
 
-Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`) and the caller memory (`calls.jsonl`) are in the add-on's own folder
+Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`) and the web
+usage of the day (`web-usage.json`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
+
+## Web search
+
+*Web search* (`web_access`, off by default) lets the assistant look things up on the web and read pages, like Claude
+in the Claude chat: opening hours, recipes, train times, weather warnings. It decides itself when to search. Search
+and page reading run at Anthropic (`web_search`, `web_fetch`); a search costs about one cent plus tokens.
+
+- Callers with access `admin` or `read` get it; *web* per caller switches it on or off. Unknown callers (`*`) and
+  guests never.
+- Limits per answer (*Searches per answer* 3, *Pages read per answer* 2) and per day for all calls together
+  (*Searches per day*, *Pages read per day*, 50 each, counted in `web-usage.json`); 0 = no limit.
+- *Only these sites* / *Never these sites* restrict the sites; *Location* and *Country* give local results.
+- On the phone the assistant says "Ich suche das kurz raus." before the first search and reads out no URLs.
+- Web pages are only data: after a search, switching, bookings and list changes wait until the caller has said
+  yes. The log shows every answer with web use (searches, pages, domains), the summary mentions it briefly.
 
 ## Energy and statistics
 

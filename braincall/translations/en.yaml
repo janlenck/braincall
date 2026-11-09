@@ -35,6 +35,7 @@ configuration:
       calendar (free/busy only, book appointments without asking you), shopping (shopping list only),
       guest (take a message only). instructions: extra instructions for the assistant for this caller.
       language: fixed language. notify: send the summary (default: everyone except admin).
+      web: may search the web (default: admin and read, if Web search is on; never for *).
   notify_services:
     name: Notify after calls
     description: 'Notify entities or services that get a summary after each incoming call, e.g. notify.phone, notify.mobile_app_phone or an e-mail notifier.'
@@ -149,3 +150,35 @@ configuration:
   confirm_domains:
     name: Ask first
     description: The assistant asks explicitly before controlling these domains.
+  web_access:
+    name: Web search
+    description: >-
+      The assistant may search the web and read pages (opening hours, recipes, train times …), for callers with
+      access admin or read, or with web on. Never for unknown callers. Costs about $10 per 1,000 searches plus tokens.
+  web_max_searches:
+    name: Searches per answer
+    description: 0 = no limit.
+  web_max_fetches:
+    name: Pages read per answer
+    description: 0 = no limit.
+  web_max_searches_per_day:
+    name: Searches per day
+    description: All calls together. 0 = no limit.
+  web_max_fetches_per_day:
+    name: Pages read per day
+    description: All calls together. 0 = no limit.
+  web_max_content_tokens:
+    name: Longest page (tokens)
+    description: Longer pages are cut off. 0 = no limit.
+  web_allowed_domains:
+    name: Only these sites
+    description: e.g. bahn.de, chefkoch.de; empty = all. If set, Never these sites is ignored.
+  web_blocked_domains:
+    name: Never these sites
+    description: Sites that are never searched or read.
+  web_city:
+    name: Location for web search
+    description: City for local results, e.g. Mölln. The timezone is always passed.
+  web_country:
+    name: Country for web search
+    description: Two letters, e.g. DE; empty = none.

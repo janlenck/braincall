@@ -69,6 +69,17 @@ DEFAULTS = {
     "calendar_max_days_ahead": 90,   # how far ahead
     "calendar_max_bookings": 2,      # appointments per call
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
+    # web search and web fetch (Anthropic server tools), for access admin and read unless "web" per caller says else
+    "web_access": False,
+    "web_max_searches": 3,           # per turn (one answer); 0 = no limit
+    "web_max_fetches": 2,            # per turn; 0 = no limit
+    "web_max_searches_per_day": 50,  # all calls together; 0 = no limit
+    "web_max_fetches_per_day": 50,
+    "web_max_content_tokens": 8000,  # longest page text taken in, in tokens; 0 = no limit
+    "web_allowed_domains": [],       # only these sites (e.g. ["bahn.de"]); or:
+    "web_blocked_domains": [],       # never these sites
+    "web_city": "",                  # for local results, e.g. "Mölln" (the timezone is always passed)
+    "web_country": "",               # two letters, e.g. "DE"
 }
 
 ACCESS = ("admin", "read", "calendar", "shopping", "guest")
@@ -117,7 +128,8 @@ def _callers(items) -> list:
                     "access": parse_access(x.get("access")),
                     "instructions": str(x.get("instructions") or "").strip(),
                     "language": str(x.get("language") or "").strip(),
-                    "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None})
+                    "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None,
+                    "web": x.get("web") if isinstance(x.get("web"), bool) else None})
     return out
 
 
@@ -264,6 +276,8 @@ def load() -> Config:
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
     cfg["callers"] = _callers(cfg.callers)
+    if cfg.web_allowed_domains and cfg.web_blocked_domains:
+        WARNINGS.append("web_allowed_domains and web_blocked_domains are both set: only web_allowed_domains is used")
     # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ
     if not data.get("timezone") and _valid_timezone(os.environ.get("TZ", "")):
         cfg["timezone"] = os.environ["TZ"]
