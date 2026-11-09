@@ -483,3 +483,74 @@ def test_turn_is_timed_from_the_end_of_speech():
     (t,) = s.timing.turns
     assert {"detected", "stt", "sentence", "tts", "playback", "audio"} <= set(t.marks)
     assert t.marks["stt"] >= 0 and t.marks["playback"] >= t.marks["sentence"]
+
+
+# ---------------------------------------------------------------- review fixes
+def test_outbound_timeout_without_greeting_audio_does_not_crash(monkeypatch):
+    s = make(workers=False, phrases=SimpleNamespace(get=lambda text, synthesize=False: None))
+    seen = []
+    for name in ("_reader", "_tts_worker", "_play_worker", "hangup"):
+        monkeypatch.setattr(s, name, lambda: None)
+    monkeypatch.setattr(s, "listen", lambda timeout: session_mod.TIMEOUT)
+    monkeypatch.setattr(s, "_assistant_turn", lambda messages, *a: seen.append(messages[0]["content"]) or True)
+    s.run(outbound=True, caller="0151111")
+    assert "greet briefly" in seen[0]  # the model greets, the call goes on
+
+
+def test_auto_language_phrases_only_for_known_languages():
+    assert ph.lang_of("auto", "") == "de"  # German at the start, like the prompt
+    assert ph.lang_of("auto", "Ist das Licht an?") == "de"
+    assert ph.lang_of("auto", "Is the light on in the kitchen?") == ""
+    s = make(workers=False, language="auto")
+    s.last_text = "Could you check the weather?"
+    assert s._phrase_texts() == {}
+
+
+def test_wanted_phrases_for_auto_callers_and_callers_without_name():
+    cfg = make_cfg(owner_name="Jan Lenck", callers=[
+        {"number": "0170", "name": "Maryna", "access": "calendar", "language": "auto"},
+        {"number": "0151", "name": "", "access": "admin"}])
+    texts = ph.wanted(cfg)
+    assert "Ага." in texts and "Mhm." in texts
+    assert "Hallo Jan, hier ist Claudine." in texts  # main.caller_name falls back to the owner name
+
+
+def test_read_only_tool_is_not_run_after_the_speculation_was_cancelled():
+    s = make(workers=False)
+    spec = Utterance(np.zeros(10, np.int16), 0, 0, tentative=True)
+    s._spec_turn = spec
+    assert s._before_tool(block("ha_search", query="x"))
+    spec.cancelled.set()
+    assert not s._before_tool(block("ha_search", query="x"))
+
+
+def test_restart_signal_comes_after_the_utterance_is_queued(monkeypatch):
+    s = make(workers=False)
+    s._thinking = True
+    queued = []
+    monkeypatch.setattr(s.restart, "set", lambda: queued.append(s.utterances.qsize()))
+    utt(s, "Und noch etwas.")
+    assert queued == [1]
+
+
+def test_answer_waits_while_the_caller_adds_something():
+    """Speech that began while the model thought: the answer does not start over it, the turn restarts."""
+    s = make(workers=False)
+    s._thinking = True
+    s._in_speech = s._seg_thinking = True
+    played = []
+    t = threading.Thread(target=lambda: played.append(s._play(np.zeros(40, np.int16), session_mod.ANSWER, "A.")))
+    t.start()
+    time.sleep(0.2)
+    assert played == [] and s.transcript == []
+    s._in_speech = False
+    utt(s, "ach, und außerdem")  # the utterance ends while we still think: restart
+    t.join(2)
+    assert played == [False] and s.restart.is_set()
+
+
+def test_hold_for_the_caller_is_limited(monkeypatch):
+    monkeypatch.setattr(session_mod, "HOLD_MAX_S", 0.1)
+    s = make(workers=False)
+    s._thinking = s._in_speech = s._seg_thinking = True  # constant noise
+    assert s._play(np.zeros(40, np.int16), session_mod.ANSWER, "A.")

@@ -40,6 +40,7 @@ GRACE_S = 0.6           # no barge-in at the very start of an answer
 # What is played: the answer, or a phrase from the cache (greeting, filler, status phrase)
 ANSWER, GREETING, FILLER = "answer", "greeting", "filler"
 MAILBOX_S = 2.0         # outbound: a first utterance with more speech than this may be a mailbox announcement
+HOLD_MAX_S = 4.0        # longest the first sentence waits for a caller who started speaking while we thought
 STILL_MAX = 3           # "I'm still on it" at most this often per turn
 
 
@@ -138,6 +139,7 @@ class CallSession:
         self._after_answer = 0
         self._peak = 0.0
         self._seg_thr = 0.0
+        self._seg_thinking = False                        # the current utterance began while the model thought
 
     # ------------------------------------------------------------------ Status
     def alive(self) -> bool:
@@ -197,6 +199,7 @@ class CallSession:
                 self._peak, self._seg_thr = e, thr
                 self._recent.clear()
                 self.speech_started_at = now
+                self._seg_thinking = self._thinking
                 self.user_speaking.set()
             return
 
@@ -275,10 +278,10 @@ class CallSession:
                 # said while the model prepares an answer: answer everything together, unless a changing
                 # tool already ran - then it is the next turn
                 u.while_thinking = True
-                if not self._side_effects:
-                    self.restart.set()
+            self.utterances.put(u)  # queued before the restart signal, so the restarted turn finds it
+            if u.while_thinking and not self._side_effects:
+                self.restart.set()
         self._transcribe_async(u)
-        self.utterances.put(u)
 
     def _transcribe_async(self, u: Utterance):
         """Transcribes right away in the background, not only when the conversation asks for it."""
@@ -343,8 +346,22 @@ class CallSession:
                 and now - self.answer_started_at > GRACE_S   # only the start of the answer, not of every sentence
                 and self.seg_voiced >= self._min_frames())
 
+    def _caller_goes_on(self) -> bool:
+        """The caller began speaking while the model was thinking and has not finished yet."""
+        return self._in_speech and self._seg_thinking and self._thinking
+
+    def _hold_for_caller(self):
+        """Neither start the answer nor change anything while the caller is still adding to what they said:
+        once they are done the turn restarts with everything (see _finished). At most HOLD_MAX_S, so constant
+        noise cannot keep us silent; barge-in handles the rest."""
+        deadline = time.monotonic() + HOLD_MAX_S
+        while self._caller_goes_on() and time.monotonic() < deadline and self.alive():
+            time.sleep(0.02)
+
     def _play(self, pcm: np.ndarray, kind: str = ANSWER, text: str = "") -> bool:
         """Plays one sentence of the answer or a cached phrase. False = dropped."""
+        if kind == ANSWER and self._thinking:
+            self._hold_for_caller()
         now = time.monotonic()
         own = False
         with self._answer_lock:
@@ -487,8 +504,10 @@ class CallSession:
         changing = block.name in MUTATING or block.name == "hang_up"
         if changing and spec is not None and not self._await_confirm(spec):
             return False
+        if changing:
+            self._hold_for_caller()
         with self._answer_lock:
-            if self.interrupt.is_set() or self.restart.is_set() or not self.alive():
+            if self._abort():
                 return False
             if block.name in MUTATING:
                 self._side_effects = True
@@ -781,7 +800,7 @@ class CallSession:
                 person = first is TIMEOUT or first.voiced_s <= MAILBOX_S  # long speech may be a mailbox
                 if greet and person and self._play_greeting(greet):
                     greeted = greet  # right away, while the first words are transcribed and Claude prepares
-                elif greet:
+                elif greet and not person:
                     log.info("Long first utterance (%.1f s): no cached greeting, maybe a mailbox", first.voiced_s)
                 if isinstance(first, Utterance):
                     heard = self._text_of(first)

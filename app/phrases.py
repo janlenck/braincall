@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import threading
 import unicodedata
 from pathlib import Path
@@ -55,15 +56,28 @@ TEXTS = {
 }
 
 
+# German words or letters: in "auto" mode Latin script alone could also be English
+_GERMAN = re.compile(r"[äöüß]|\b(ich|und|nicht|das|ist|der|ja|nein|bitte|danke|hallo|wie|mir|mal|kannst|du|sie|"
+                     r"habe|hast|wir|noch|auch|schon|heute|morgen|gibt|bei|mit|von|zu|ein|eine|kein)\b", re.I)
+
+
 def lang_of(language: str, last_text: str = "") -> str:
-    """Phrase language for the conversation language; "auto" follows the script of the caller's last words."""
+    """Phrase language for the conversation language. "auto" (German at the start, see brain.LANG_RULES)
+    follows the caller's last words: Cyrillic = Ukrainian, German words = German, otherwise unknown ("")."""
     if language in TEXTS:
         return language
     if language in ("auto", ""):
         letters = [c for c in last_text if c.isalpha()]
         cyr = sum(unicodedata.name(c, "").startswith("CYRILLIC") for c in letters)
-        return "uk" if letters and cyr > len(letters) / 2 else "de"
+        if letters and cyr > len(letters) / 2:
+            return "uk"
+        return "de" if not letters or _GERMAN.search(last_text) else ""
     return ""  # a language without phrases: the model greets, no fillers
+
+
+def langs_of(language: str) -> set:
+    """Languages whose phrases a conversation in this language may need."""
+    return {"de", "uk"} if language in ("auto", "") else {lang_of(language)} - {""}
 
 
 def first_name(name: str) -> str:
@@ -125,18 +139,16 @@ def wanted(cfg) -> list:
     assistant = cfg.assistant_name or "Claude"
     owner = (cfg.owner_name or "").strip()
     out = []
-    base = lang_of(cfg.language or "de")
-    langs = {base} | ({"uk"} if cfg.language == "auto" else set())
+    langs = langs_of(cfg.language or "de")
     for c in cfg.callers or []:
-        langs.add(lang_of(c.get("language") or cfg.language or "de"))
-    langs.discard("")
+        langs |= langs_of(c.get("language") or cfg.language or "de")
     for lang in sorted(langs):
         t = TEXTS[lang]
         out += [greeting(lang, assistant, owner), greeting(lang, assistant, owner, outbound=True)]
         if cfg.fillers:
             out += t["fillers"] + t["still"] + list(t["tools"].values())
     for c in cfg.callers or []:
-        name = first_name(c.get("name") or "")
+        name = first_name(c.get("name") or owner or c["number"])  # like main.caller_name
         lang = lang_of(c.get("language") or cfg.language or "de")
         if c["number"] == "*" or not name or not lang:
             continue
