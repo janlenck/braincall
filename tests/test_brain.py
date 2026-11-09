@@ -397,3 +397,41 @@ def test_turn_aborted_by_barge_in(brain):
     assert hang is False
     assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"].endswith("[interrupted by the caller]")
+
+
+def test_turn_hooks_time_tools_and_tokens(brain, ha):
+    fake = FakeMessages(message(tool("ha_state", entity_id="sensor.temp"), stop="tool_use"),
+                        message("Es sind 21 Grad."))
+    brain.client = SimpleNamespace(messages=fake)
+    seen, timed, tokens = [], [], []
+    brain.turn([{"role": "user", "content": "x"}], lambda s: None, lambda: False, access=parse_access("admin"),
+               before_tool=lambda b: seen.append(b.name) or True, after_tool=lambda n, s: timed.append(n),
+               on_token=lambda: tokens.append(1))
+    assert seen == ["ha_state"] and timed == ["ha_state"] and tokens
+
+
+def test_turn_before_tool_can_stop_a_tool(brain, ha):
+    fake = FakeMessages(message(tool("ha_control", entity_id="light.x", service="turn_on"), stop="tool_use"))
+    brain.client = SimpleNamespace(messages=fake)
+    messages = [{"role": "user", "content": "x"}]
+    actions = []
+    hang = brain.turn(messages, lambda s: None, lambda: False, access=parse_access("admin"), actions=actions,
+                      before_tool=lambda b: False)
+    assert hang is False and ha.calls == [] and actions == []
+    assert messages[2]["content"][0]["content"] == "Not executed (aborted)."
+    assert messages[-1]["role"] == "assistant" and "[interrupted by the caller]" in messages[-1]["content"]
+    assert len(fake.requests) == 1
+
+
+def test_turn_aborted_before_the_request(brain):
+    fake = FakeMessages()
+    brain.client = SimpleNamespace(messages=fake)
+    messages = [{"role": "user", "content": "x"}]
+    assert brain.turn(messages, lambda s: None, lambda: True) is False
+    assert fake.requests == [] and messages[-1]["role"] == "assistant"
+
+
+def test_system_prompt_mentions_waiting_phrases_only_with_fillers(brain):
+    assert "waiting phrase" in brain.system()
+    brain.cfg["fillers"] = False
+    assert "waiting phrase" not in brain.system()

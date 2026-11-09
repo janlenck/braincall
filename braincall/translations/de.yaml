@@ -98,6 +98,9 @@ configuration:
   end_silence_ms:
     name: Pause bis Satzende (ms)
     description: Stille, nach der eine Äußerung als beendet gilt.
+  speculative_ms:
+    name: Früher Start (ms)
+    description: Nach dieser Pause starten Transkription und Antwort schon; gesprochen erst nach der Pause bis Satzende. 0 = aus.
   silence_timeout:
     name: Stille bis Nachfrage (s)
     description: Zweimal hintereinander = auflegen.
@@ -107,6 +110,15 @@ configuration:
   barge_in_min_ms:
     name: Mindestdauer zum Unterbrechen (ms)
     description: So lange muss der Anrufer sprechen, um zu unterbrechen.
+  fillers:
+    name: Füllwörter
+    description: Kurzes „Hm“, „Moment, ich schau kurz nach“ … während die Antwort vorbereitet wird.
+  filler_delay_ms:
+    name: Füllwort nach (ms)
+    description: Ein Füllwort nur, wenn die Antwort so lange nach dem Ende der Äußerung noch nicht zu hören ist.
+  still_working_s:
+    name: „Ich bin noch dran“ nach (s)
+    description: Nach so vielen Sekunden ohne Ausgabe. 0 = aus.
   http_port:
     name: Port des Anruf-Triggers
     description: HTTP-Port für ausgehende Anrufe (/call).
