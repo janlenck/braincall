@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.9.0
+
+- Planned calls with a task (#51, first part): Claudine calls on her own, holds the conversation and works through
+  the result. "Ruf im Restaurant Seeblick an und reservier einen Tisch für heute Abend, am liebsten 19 Uhr. Trag es
+  in den Kalender ein und ruf mich danach zurück."
+  - Callers with access `admin` plan a call on the phone (tool `plan_call`): Claudine reads the plan back (number,
+    time window, what she may tell and agree to, follow-up steps) and stores it only after a yes. Also via
+    `POST /tasks`; `GET /tasks` lists them, `DELETE /tasks/<id>` cancels. Tasks are kept in `tasks.json` in the log
+    folder and survive a restart
+  - The call starts when the line is free and the time has come. Not reached (no answer, busy, mailbox): further
+    attempts every *Pause between attempts* (`task_retry_minutes`) inside the time window; a callee who calls back
+    continues the task in that call
+  - During the call the callee only has their own access plus what the plan grants: free/busy times of certain days
+    and, if planned, one appointment with a fixed title there. Claudine says that she is an AI assistant calling on
+    behalf of the requester and that only a written summary is kept
+  - Afterwards, without the callee, the follow-up steps of the plan run with the tools the plan names (calendar,
+    shopping list, web search): nothing else, and nothing the call did not settle clearly. The result (status,
+    answers, steps, open points) goes to the notify services, as event `braincall_task_finished` and, if asked for,
+    as a call back to the requester
+  - Safety: *Never dial* (`outbound_blocked`: emergency and premium numbers, also for `/call`), *Only dial numbers
+    matching* (`outbound_allowed_regex`; by default German mobile and landline numbers and internal numbers like `**611`
+    only, also for `/call`: no short codes, service numbers or other countries; empty = no limit), *Hours for planned calls* (`outbound_hours`, 09:00-20:00), *Planned calls
+    per day* (`outbound_max_calls_per_day`, 20). A callee who asks not to be called again is remembered
+  - Not yet: Brain Assist front end (#50), phone menus (DTMF) and hold queues, opening hours
+
 ## 1.8.0
 
 - Web search (#52): with *Web search* (`web_access`, off by default) the assistant looks things up on the web like

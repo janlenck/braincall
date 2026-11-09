@@ -1,5 +1,5 @@
 name: BrainCall
-version: "1.8.0"
+version: "1.9.0"
 slug: braincall
 description: Voice agent on the FRITZ!Box that can read and control Home Assistant
 url: https://github.com/janlenck/braincall
@@ -83,6 +83,19 @@ options:
     - cover
     - lock
     - alarm_control_panel
+  tasks: true
+  task_max_retries: 3
+  task_retry_minutes: 15
+  outbound_hours: "09:00-20:00"
+  outbound_max_calls_per_day: 20
+  outbound_blocked:
+    - "110"
+    - "112"
+    - "118"
+    - "0137"
+    - "019"
+    - "0900"
+  outbound_allowed_regex: '\*\*\d{1,4}|0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})'
   web_access: false
   web_max_searches: 3
   web_max_fetches: 2
@@ -160,6 +173,14 @@ schema:
     - str
   confirm_domains:
     - str
+  tasks: bool
+  task_max_retries: int(0,10)
+  task_retry_minutes: int(1,1440)
+  outbound_hours: match(^([0-2]?[0-9]:[0-5][0-9]-[0-2]?[0-9]:[0-5][0-9])?$)
+  outbound_max_calls_per_day: int(0,1000)
+  outbound_blocked:
+    - str?
+  outbound_allowed_regex: str
   web_access: bool
   web_max_searches: int(0,20)
   web_max_fetches: int(0,20)

@@ -1143,10 +1143,14 @@ class HA:
                 merged.append([s, e, all_day])
         return [tuple(m) for m in merged if m[1] > begin and m[0] < end], errors
 
-    def busy_times(self, days: int = 7, start: str = "") -> str:
-        """Only when the owner is busy (default calendars), no titles, places or calendar names."""
+    def busy_times(self, days: int = 7, start: str = "", clip: bool = False) -> str:
+        """Only when the owner is busy (default calendars), no titles, places or calendar names.
+        clip: blocks are cut at the period, so nothing about the days before or after it shows (an appointment
+        that goes on beyond the period reads as busy until the end of its last day)."""
         begin, end = self._period(days, start)
         blocks, errors = self._busy(begin, end)
+        if clip:
+            blocks = [(max(s, begin), min(e, end), all_day) for s, e, all_day in blocks]
         if errors:  # names and diagnostics stay in the log: this tool is for callers without read access
             log.warning("Busy times: %s", "; ".join(errors))
             return "The calendar cannot be read right now, availability is unknown. Do not book anything."
@@ -1156,8 +1160,9 @@ class HA:
                 last = e - timedelta(days=1)
                 when = f"{_wd(s)} {s:%Y-%m-%d}" + (f" to {_wd(last)} {last:%Y-%m-%d}" if last.date() > s.date() else "")
                 lines.append(f"{when}: all day busy")
-            elif s.date() == e.date():
-                lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M}–{e:%H:%M}: busy")
+            elif s.date() == e.date() or (clip and e == end and e - s <= timedelta(days=1)):
+                until = "24:00" if e.date() != s.date() else f"{e:%H:%M}"  # clipped at the end of the period
+                lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M}–{until}: busy")
             else:
                 lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M} to {_wd(e)} {e:%Y-%m-%d %H:%M}: busy")
         log.info("Busy times %d days: %d blocks", (end - begin).days, len(lines))

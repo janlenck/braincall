@@ -155,6 +155,24 @@ Then e.g. `action: rest_command.braincall` with `data: {message: "The washing ma
 After each call the event `braincall_call` is fired (`number`, `answered`, `reason`, `duration_s`,
 `transcript`, `caller_name`, `access`, `summary`).
 
+## Planned calls with a task
+
+With *Planned calls* on, a caller with access `admin` can say e.g. "Ruf im Restaurant Seeblick an und reservier einen
+Tisch für vier für heute Abend, am liebsten 19 Uhr. Trag es in den Kalender ein und ruf mich danach zurück."
+The assistant reads the plan back (number, time, what it may tell and agree to, what it does afterwards) and stores it
+after a yes. After you hung up it calls, tries again if nobody is reached (a callee who calls back continues the task),
+then does the follow-up steps of the plan (calendar, shopping list, web search) and reports the result: as a
+notification (*Notify services*), as event `braincall_task_finished` and, if asked for, with a call back.
+
+- During the call the callee only gets what the plan grants (free/busy times of certain days, one appointment with a
+  fixed title), never details of your calendar and no control of the house.
+- *Never dial*, *Only dial numbers matching*, *Hours for planned calls* and *Planned calls per day* limit what is
+  dialed and when. The assistant says that it is an AI calling on your behalf; a callee who does not want to be
+  called again is remembered.
+- From Home Assistant: `POST http://127.0.0.1:8099/tasks` with `{"number": "…", "task": "…"}` plans a call,
+  `GET /tasks` lists the tasks with their status and result, `DELETE /tasks/<id>` cancels one. Tasks are kept in
+  `tasks.json` in the add-on's config folder and survive a restart.
+
 ## Updates
 
 A new add-on version appears as an update in Home Assistant. Installing it rebuilds the image from the

@@ -35,6 +35,7 @@ import config  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
 import phrases  # noqa: E402
+import tasks  # noqa: E402
 from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
 from session import CallSession  # noqa: E402
@@ -70,6 +71,8 @@ speech = Speech(cfg)
 brain = Brain(cfg, ha)
 phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
+task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks else None
+brain.tasks = task_store
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
@@ -78,6 +81,8 @@ OWNER = (cfg.owner_name or "").strip()
 OWNER_FIRST = OWNER.split()[0] if OWNER else ""
 MAX_BODY = 64 * 1024
 UNREGISTER_TIMEOUT = 10  # seconds; the add-on gets 20 s to stop (braincall/config.yaml)
+TASK_INTERVAL = 5  # seconds between looks at the planned calls
+CALLBACK_WAIT = 600  # seconds to wait for a free line before the call back with a task's result is given up
 WATCHDOG_INTERVAL = 30  # seconds between checks of the SIP registration
 RECONNECT_AFTER = 300  # seconds without SIP registration before the phone is set up again
 stopping = threading.Event()  # set on shutdown: no new phone is set up from then on
@@ -103,6 +108,10 @@ def same_number(a: str, b: str) -> bool:
 
 GUEST = frozenset({"guest"})
 SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзвінок від {who}"}
+TASK_TITLE = {"de": "Auftrag Anruf bei {who}: {status}", "en": "Task call to {who}: {status}",
+              "uk": "Завдання, дзвінок до {who}: {status}"}
+STATUS_WORDS = {"de": {"done": "erledigt", "partial": "teilweise erledigt", "failed": "nicht geklappt",
+                       "not_reached": "nicht erreicht", "cancelled": "abgebrochen"}}
 
 
 def find_caller(number: str, wildcard: bool = True) -> dict | None:
@@ -212,13 +221,19 @@ def _wait_ringing(call, seconds: float):
         time.sleep(0.2)
 
 
-def outbound(number: str, message: str):
+def outbound(number: str, message: str, task: dict | None = None):
+    """Calls a number and holds the conversation; the caller of this function holds `busy`, it is released here.
+    task: the planned call this is (tasks.build). Returns the session, or None if the call was not answered."""
     started = time.time()
     caller = find_caller(number, wildcard=False)  # not listed: like a guest, no "*" entry needed
     session = None
     answered = False
     call = None
     try:
+        refusal = tasks.number_refusal(cfg, number)
+        if refusal:
+            log.warning("Not calling %s: %s", number, refusal)
+            return None
         log.info("Calling %s (reason: %s)", number, message or "-")
         call = phone.call(number)
         _wait_ringing(call, float(cfg.ring_timeout))
@@ -231,17 +246,19 @@ def outbound(number: str, message: str):
                     break
             if _ringing(call):
                 log.warning("CANCEL not confirmed, the phone may keep ringing")
-            return
+            return None
         if call.state != CallState.ANSWERED:
             log.warning("Call rejected: SIP %s", sip_failed.get(call.call_id, call.state.value))
-            return
+            return None
         answered = True
         session = CallSession(call, brain, speech, cfg, phrase_cache)
         access = caller["access"] if caller else GUEST
-        session.run(outbound=True, message=message, caller=number, language=lang_for(caller),
+        session.run(outbound=True, message=message, caller=number,
+                    language=(task or {}).get("language") or lang_for(caller),
                     access=access, caller_name=caller_name(caller),
                     instructions=caller["instructions"] if caller else "", previous=previous(number, access),
-                    web=web_for(caller))
+                    web=web_for(caller), grants=(task or {}).get("grants"),
+                    leave_message=(task or {}).get("leave_message", True))
         log.info("Call ended")
     except TimeoutError as e:
         log.warning("Outbound call failed: %s", e)
@@ -262,6 +279,99 @@ def outbound(number: str, message: str):
                 phone.calls.pop(call.call_id, None)  # pyVoIP never drops unanswered calls -> RTP port stays taken
         finish(answered, number, started, session, message, caller, inbound=False)
         busy.release()
+    return session
+
+
+# ---------------------------------------------------------------------- planned calls with a task (#51)
+def report_task(task: dict):
+    """The result of a finished task: notification, Home Assistant event and, if asked for, a call back."""
+    try:
+        lang = cfg.language if cfg.language in TASK_TITLE else "de"
+        status = STATUS_WORDS.get(lang, {}).get(task["status"], task["status"])
+        title = TASK_TITLE[lang].format(who=task["name"] or task["number"], status=status)
+        text = tasks.report_text(task)
+        for service in cfg.notify_services or []:
+            ha.notify(str(service), title, text)
+        ha.fire_event("braincall_task_finished", {
+            "id": task["id"], "status": task["status"], "number": task["number"], "name": task["name"],
+            "task": task["task"], "requester": task["requester"]["name"], "attempts": len(task["attempts"]),
+            **{k: (task["result"] or {}).get(k) for k in ("summary", "answers", "steps", "open_points")}})
+        if task["call_back"] and task["status"] != "cancelled":
+            call_back(task, text)
+    except Exception:  # noqa: BLE001
+        log.exception("Reporting task %s failed", task.get("id"))
+
+
+def call_back(task: dict, text: str):
+    """Calls the requester with the result as soon as the line is free (the notification was sent already)."""
+    number = task["requester"]["number"]
+    deadline = time.monotonic() + CALLBACK_WAIT
+    while not busy.acquire(blocking=False):
+        if stopping.wait(1) or time.monotonic() > deadline:
+            log.warning("Task %s: no call back to %s, the line stayed busy", task["id"], number)
+            return
+    if sip_status() != PhoneStatus.REGISTERED:
+        busy.release()
+        log.warning("Task %s: no call back to %s, SIP not registered", task["id"], number)
+        return
+    outbound(number, f"You call back with the result of the task “{task['goal']}” (call to "
+                     f"{task['name'] or task['number']}). Report it briefly in your own words and answer questions "
+                     f"about it. Result ({task['status']}): {text}")
+
+
+def settle_task(task: dict, session):
+    """After the call of a task (line already free): retry if nobody was reached, otherwise follow-up and result."""
+    try:
+        now = datetime.now(timezone.utc)
+        if session is None or not session.caller_turns:
+            done = task_store.not_reached(task["id"], "no answer" if session is None else "nothing said", now)
+        else:
+            try:
+                result = brain.follow_up(task, session.transcript, list(session.actions))
+            except Exception as e:  # noqa: BLE001
+                log.exception("Follow-up of task %s failed", task["id"])
+                result = {"status": "partial", "summary": f"The call took place, but the follow-up failed ({e}).",
+                          "open_points": ["Check the call summary and do the follow-up steps by hand."]}
+            if result["status"] == "not_reached":
+                done = task_store.not_reached(task["id"], "mailbox", now)
+            else:
+                if result.get("do_not_call"):
+                    task_store.block(task["number"], task["id"])
+                done = task_store.finish(task["id"], result)
+        if done["status"] in tasks.FINAL:
+            report_task(done)
+    except Exception:  # noqa: BLE001
+        log.exception("Task %s failed", task.get("id"))
+
+
+def run_tasks():
+    """One look at the planned calls: ends those whose window is over and makes the next call that is due."""
+    for expired in task_store.expire(datetime.now(timezone.utc)):
+        report_task(expired)
+    now = datetime.now(timezone.utc)  # reporting may have taken minutes (call back to the requester)
+    if sip_status() != PhoneStatus.REGISTERED or not busy.acquire(blocking=False):
+        return
+    task = None
+    try:
+        task = task_store.claim(now)
+    finally:
+        if task is None:
+            busy.release()
+    if task is None:
+        return
+    log.info("Task %s: calling %s (%s), attempt %d", task["id"], task["name"] or "?", task["number"],
+             len(task["attempts"]))
+    settle_task(task, outbound(task["number"], tasks.brief(task, OWNER_FIRST), task))
+
+
+def task_loop():
+    for interrupted in task_store.interrupted():
+        report_task(interrupted)
+    while not stopping.wait(TASK_INTERVAL):
+        try:
+            run_tasks()
+        except Exception:  # noqa: BLE001
+            log.exception("Planned calls: error")
 
 
 def on_incoming(call):
@@ -270,10 +380,11 @@ def on_incoming(call):
     except Exception:  # noqa: BLE001
         number = ""
     caller = find_caller(number)
+    task = None
     reason = ""
     if not norm(number):
         reason = "withheld number"
-    elif caller is None:
+    elif caller is None and (task_store is None or not task_store.has_callback(number)):
         reason = "not in callers"
     if reason:
         log.warning("Incoming call from %s rejected (%s)", number or "unknown", reason)
@@ -291,20 +402,30 @@ def on_incoming(call):
         return
     started = time.time()
     session = None
+    if task_store is not None:  # someone we tried to reach for a task calls back: the task goes on in this call
+        task = task_store.claim_callback(number, datetime.now(timezone.utc))
+    rights = caller["access"] if caller else GUEST
     name = caller_name(caller)
-    access = ",".join(sorted(caller["access"]))
+    instructions = caller["instructions"] if caller else ""
+    if task:
+        instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST)).strip()
+    access = ",".join(sorted(rights))
     try:
-        log.info("Answering call from %s (%s, access %s)", number, name or "unknown", access)
+        log.info("Answering call from %s (%s, access %s%s)", number, name or "unknown", access,
+                 f", calling back for task {task['id']}" if task else "")
         call.answer()
         session = CallSession(call, brain, speech, cfg, phrase_cache)
-        session.run(outbound=False, caller=number, access=caller["access"], language=lang_for(caller),
-                    caller_name=name, instructions=caller["instructions"],
-                    previous=previous(number, caller["access"]), web=web_for(caller))
+        session.run(outbound=False, caller=number, access=rights,
+                    language=(task or {}).get("language") or lang_for(caller),
+                    caller_name=name, instructions=instructions,
+                    previous=previous(number, rights), web=web_for(caller), grants=(task or {}).get("grants"))
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
         finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True)
         busy.release()
+        if task:
+            threading.Thread(target=settle_task, args=(task, session), name="task", daemon=True).start()
 
 
 _orig_parse = None  # pyVoIP's own parse_message, set in main()
@@ -412,15 +533,65 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(self.headers.get("Authorization", "").encode(),
                                    f"Bearer {cfg.api_token}".encode())
 
+    def _task_id(self) -> str:
+        """The id in /tasks/<id>; "" for other paths."""
+        return self.path[len("/tasks/"):] if self.path.startswith("/tasks/") and task_store is not None else ""
+
     def do_GET(self):  # noqa: N802
         if self.path == "/health":
-            self._send(200, {"sip": sip_status().value, "busy": busy.locked(),
-                             "time": datetime.now().isoformat(timespec="seconds")})
-        else:
-            self._send(404, {"error": "not found"})
+            return self._send(200, {"sip": sip_status().value, "busy": busy.locked(),
+                                    "time": datetime.now().isoformat(timespec="seconds")})
+        if task_store is None or not (self.path == "/tasks" or self._task_id()):
+            return self._send(404, {"error": "not found"})
+        if not self._authorized():
+            return self._send(401, {"error": "unauthorized"})
+        if self.path == "/tasks":
+            return self._send(200, {"tasks": task_store.all()})
+        task = task_store.get(self._task_id())
+        self._send(200 if task else 404, task or {"error": "not found"})
+
+    def do_DELETE(self):  # noqa: N802
+        if not self._task_id():
+            return self._send(404, {"error": "not found"})
+        if not self._authorized():
+            return self._send(401, {"error": "unauthorized"})
+        task_id = self._task_id()
+        error = task_store.cancel(task_id)
+        if error:
+            return self._send(404 if error == "not found" else 409, {"error": error})
+        self._send(200, {"status": "cancelled"})
+        report_task(task_store.get(task_id))  # notification and event like every finished task, no call back
+
+    def _plan_task(self, body: dict):
+        """POST /tasks: plans a call with a task. Without a plan (goal) Claude makes one from the task text."""
+        number = str(body.get("number") or "").strip()
+        refusal = tasks.number_refusal(cfg, number)
+        if refusal:
+            return self._send(400, {"error": refusal})
+        if task_store.blocked(number) and not body.get("override_do_not_call"):
+            return self._send(409, {"error": "this number asked not to be called again (override_do_not_call)"})
+        if not str(body.get("task") or "").strip():
+            return self._send(400, {"error": "no task"})
+        caller = find_caller(number, wildcard=False)
+        fixed = {**body, "number": number, "name": str(body.get("name") or "") or caller_name(caller)}
+        if not body.get("goal"):
+            try:
+                fixed = {**brain.plan(fixed["task"], number, fixed["name"]), **fixed}  # what was given wins
+            except Exception as e:  # noqa: BLE001
+                log.warning("Planning the task failed: %s", e)
+                return self._send(502, {"error": f"planning failed: {e}"})
+        requester = find_caller(str(body.get("requester") or ""), wildcard=False)
+        task, error = tasks.build(cfg, fixed, {"number": requester["number"] if requester else "",
+                                               "name": caller_name(requester) or OWNER},
+                                  datetime.now().astimezone())
+        if task is None:
+            return self._send(400, {"error": error})
+        if body.get("override_do_not_call"):
+            task_store.unblock(number)
+        self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/call":
+        if self.path != "/call" and not (self.path == "/tasks" and task_store is not None):
             return self._send(404, {"error": "not found"})
         if not self._authorized():
             return self._send(401, {"error": "unauthorized"})
@@ -435,9 +606,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("not an object")
         except Exception:  # noqa: BLE001
             return self._send(400, {"error": "invalid json"})
+        if self.path == "/tasks":
+            return self._plan_task(body)
         number = str(body.get("number") or cfg.default_number).strip()
         if not number:
             return self._send(400, {"error": "no number"})
+        refusal = tasks.number_refusal(cfg, number)
+        if refusal:
+            return self._send(400, {"error": refusal})
         if sip_status() != PhoneStatus.REGISTERED:
             return self._send(503, {"error": f"SIP not registered ({sip_status().value})"})
         if not busy.acquire(blocking=False):
@@ -464,6 +640,16 @@ def main():
     log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
     log.info("Callers: %s", ", ".join(f"{c['name'] or c['number']} ({','.join(sorted(c['access']))})"
                                       for c in cfg.callers) or "none, incoming calls are rejected")
+    if task_store is not None:
+        span = tasks.hours(cfg)
+        log.info("Planned calls: on, %s, at most %s per day, %d open (%s)",
+                 f"{span[0]:%H:%M}-{span[1]:%H:%M}" if span else "at any time",
+                 cfg.outbound_max_calls_per_day or "any number",
+                 sum(t["status"] == tasks.PLANNED for t in task_store.all()), task_store.path)
+        if str(cfg.outbound_hours or "").strip() and span is None:
+            log.warning("outbound_hours %r not understood (e.g. 09:00-20:00): no time limit", cfg.outbound_hours)
+    else:
+        log.info("Planned calls: off (tasks)")
     if cfg.web_access:
         with_web = [c["name"] or c["number"] for c in cfg.callers if web.allowed(cfg, c["access"], web_for(c))]
         log.info("Web search: on for %s", ", ".join(with_web) or "nobody (access admin/read or \"web\": true)")
@@ -522,6 +708,8 @@ def main():
         threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
                          daemon=True).start()
         threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
+        if task_store is not None:
+            threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
 
         bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
         server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)

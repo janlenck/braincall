@@ -126,6 +126,19 @@
                       "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
   "confirm_domains": ["cover", "lock", "alarm_control_panel"],  // ask for an explicit "yes" first
 
+  // --- Planned calls with a task ("Ruf im Restaurant an und reservier einen Tisch"), see README ---
+  "tasks": true,                      // admins may plan calls on the phone (plan_call) and via POST /tasks
+  "task_max_retries": 3,              // most further attempts a task may ask for if nobody is reached
+  "task_retry_minutes": 15,           // pause between attempts
+  "outbound_hours": "09:00-20:00",    // planned calls only in this time of day; "" = any time
+  "outbound_max_calls_per_day": 20,   // planned calls (attempts) per day; 0 = no limit
+  "outbound_blocked": ["110", "112", "118", "0137", "019", "0900"],  // never dialed, also not via /call
+  // only numbers matching this are dialed, also via /call; written in national form (+49 4542 1234 = 045421234).
+  // Default: German mobile and landline numbers and internal FRITZ!Box numbers (**6, **611), no short codes,
+  // service numbers or other countries;
+  // "" = no limit
+  "outbound_allowed_regex": "\\*\\*\\d{1,4}|0(?:1[5-7]\\d{8,9}|(?![789]00)[2-9]\\d{5,11})",
+
   // --- Web search (Anthropic's web_search / web_fetch: $10 per 1,000 searches plus tokens) ---
   "web_access": false,                // on: callers with access admin/read (or "web": true) may look things up
   "web_max_searches": 3,              // searches per answer; 0 = no limit

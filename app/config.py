@@ -69,6 +69,19 @@ DEFAULTS = {
     "calendar_max_days_ahead": 90,   # how far ahead
     "calendar_max_bookings": 2,      # appointments per call
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
+    # planned calls with a task (plan_call for admins, POST /tasks): tasks.json in the log folder
+    "tasks": True,
+    "task_max_retries": 3,           # most further attempts a task may ask for if nobody is reached
+    "task_retry_minutes": 15,        # pause between attempts
+    "outbound_hours": "09:00-20:00",  # planned calls only in this time of day; "" = any time
+    "outbound_max_calls_per_day": 20,  # planned calls (attempts) per day; 0 = no limit
+    # never dialed, whoever asks (also POST /call): numbers starting with these
+    "outbound_blocked": ["110", "112", "118", "0137", "019", "0900"],
+    # only numbers that match it are dialed, written in national form (+49 4542 1234 -> 045421234); "" = no limit.
+    # Default: German mobile (015x-017x) and landline numbers plus internal FRITZ!Box numbers (**6, **611):
+    # no short codes (110, 112, 115, 116 117, 118 xx), no service numbers (0137, 0180, 019x, 0700, 0800, 0900),
+    # no other countries
+    "outbound_allowed_regex": r"\*\*\d{1,4}|0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})",
     # web search and web fetch (Anthropic server tools), for access admin and read unless "web" per caller says else
     "web_access": False,
     "web_max_searches": 3,           # per turn (one answer); 0 = no limit

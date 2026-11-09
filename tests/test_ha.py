@@ -369,6 +369,19 @@ def test_busy_times_without_details(make_ha):
         assert secret not in out
 
 
+def test_busy_times_clipped_show_nothing_outside_the_period(make_ha):
+    """For the grant of a planned call (#51): a holiday from the 5th to the 20th must not show beyond the days."""
+    h = make_ha(default_calendars=["calendar.family"], events={"calendar.family": [
+        ev("Urlaub", "2030-01-05", "2030-01-12"),
+        ev("Nachtschicht", "2030-01-09T22:00:00+01:00", "2030-01-10T06:00:00+01:00"),
+        ev("Reise", "2030-01-06T08:00:00+01:00", "2030-01-08T09:00:00+01:00"),
+    ]})
+    out = h.busy_times(days=2, start="2030-01-08", clip=True)
+    assert out.splitlines()[1:] == ["Tue 2030-01-08 to Wed 2030-01-09: all day busy",
+                                    "Tue 2030-01-08 00:00–09:00: busy", "Wed 2030-01-09 22:00–24:00: busy"]
+    assert "2030-01-05" in h.busy_times(days=2, start="2030-01-08")  # unchanged for callers with calendar access
+
+
 def test_busy_times_calendar_error_reveals_nothing(make_ha):
     h = make_ha(default_calendars=["calendar.family"], cal_error={"calendar.family"})
     out = h.busy_times(start="2030-01-07")

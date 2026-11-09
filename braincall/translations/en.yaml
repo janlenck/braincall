@@ -150,6 +150,31 @@ configuration:
   confirm_domains:
     name: Ask first
     description: The assistant asks explicitly before controlling these domains.
+  tasks:
+    name: Planned calls
+    description: >-
+      Callers with access admin can have the assistant make a call on its own with a task ("call the restaurant and
+      reserve a table"), also via POST /tasks. It calls, follows up and reports the result.
+  task_max_retries:
+    name: Retries per task (max)
+    description: Most further attempts a task may ask for if nobody is reached.
+  task_retry_minutes:
+    name: Pause between attempts (minutes)
+  outbound_hours:
+    name: Hours for planned calls
+    description: e.g. 09:00-20:00; planned calls are only made in this time of day. Empty = any time.
+  outbound_max_calls_per_day:
+    name: Planned calls per day
+    description: Attempts count. 0 = no limit.
+  outbound_blocked:
+    name: Never dial
+    description: Numbers starting with these are never dialed (emergency, premium rate), also not via /call.
+  outbound_allowed_regex:
+    name: Only dial numbers matching
+    description: >-
+      Regular expression for the whole number in national form (+49 4542 1234 = 045421234), also for /call.
+      Default: German mobile and landline numbers and internal numbers (**6, **611), no short codes, service
+      numbers (0137, 0180, 0800, 0900) or other countries. Empty = no limit.
   web_access:
     name: Web search
     description: >-
