@@ -112,6 +112,7 @@ class CallSession:
         self.web = False  # the caller's web setting (main.web_for): None = by access, False = never
         self.actions: list[str] = []  # changing tool calls, for the summary
         self.counters: dict[str, int] = {}  # per-call limits, e.g. bookings by callers without admin
+        self.call_info: dict = {}  # number and name of the caller, grants of a planned call (Brain.turn call=)
         self.caller_turns = 0
         self.language = cfg.language or "de"
         self.caller_label = "caller"
@@ -561,7 +562,8 @@ class CallSession:
                                    access=self.access, language=self.language, actions=self.actions,
                                    counters=self.counters, before_tool=self._before_tool,
                                    after_tool=self._after_tool, on_token=self._on_token, web=self.web,
-                                   who=f"{self.caller_label} (phone)", on_server_tool=self._server_tool)
+                                   who=f"{self.caller_label} (phone)", on_server_tool=self._server_tool,
+                                   call=self.call_info)
             if spec is not None:
                 self._await_confirm(spec)
             self.wait_spoken()
@@ -761,9 +763,19 @@ class CallSession:
                  + (", except what is allowed above. " if self.access - {"guest"} else ". "))
         if "admin" in self.access:
             return ""
+        grants = self.call_info.get("grants") or {}
+        granted = ""
+        if grants and not self.access & {"read", "calendar"}:
+            granted = (f"For this task {who} may hear when {owner} is free or busy from {grants['calendar_from']} to "
+                       f"{grants['calendar_to']} (ha_busy_times: you only see busy times, never guess or reveal what "
+                       "an appointment is). ")
+        if grants.get("book_title") and "calendar" not in self.access and self.cfg.calendar_write:
+            granted += (f"You may book one appointment titled “{grants['book_title']}” into a free time of these "
+                        "days: repeat day and time once, and after a yes call ha_create_event with confirmed=true. ")
         if self.access == {"guest"}:
-            return f"You have no access to the house in this call. {quiet}"
-        parts = []
+            return (f"You have no access to the house in this call{', except for the task' if granted else ''}. "
+                    + granted + quiet)
+        parts = [granted] if granted else []
         if "read" in self.access:
             parts.append(f"{who} may ask about everything in Home Assistant (states, sensors, appointments "
                          "with details), but must not switch or change anything. ")
@@ -787,11 +799,15 @@ class CallSession:
                            outbound=outbound, on_behalf="admin" not in self.access)
 
     def run(self, outbound: bool, message: str = "", caller: str = "", access=frozenset({"guest"}),
-            language: str = "", caller_name: str = "", instructions: str = "", previous: str = "", web=False):
+            language: str = "", caller_name: str = "", instructions: str = "", previous: str = "", web=False,
+            grants=None, leave_message: bool = True):
         """previous: system note with summaries of earlier calls with this number (memory.note), may be empty.
-        web: the caller's web setting (None = by access, see web.allowed; False = never)."""
+        web: the caller's web setting (None = by access, see web.allowed; False = never).
+        grants: what the task of a planned call allows the callee on top (tasks.build); leave_message: whether
+        an outbound call leaves a message on a mailbox."""
         self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
         self.web = web
+        self.call_info = {"number": caller, "name": caller_name, "grants": grants or {}}
         full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
         name = ph.first_name(full)                                  # to address the person: "Jan"
@@ -841,8 +857,10 @@ class CallSession:
                          + (f"When the call was answered you heard: “{heard}”. " if heard
                             else "Nothing was heard when the call was answered. ")
                          + said
-                         + "If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
-                         + "message of two or three sentences and hang up afterwards. "
+                         + ("If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
+                            "message of two or three sentences and hang up afterwards. " if leave_message else
+                            "If that sounds like a mailbox: leave no message, hang up right away without saying "
+                            "anything. ")
                          + ("Otherwise get straight to the point.]" if greeted
                             else "Otherwise greet briefly and get straight to the point.]"))
             elif self.access != {"guest"} and name:

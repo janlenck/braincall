@@ -37,6 +37,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/timing.py` | timing log per turn and per call |
 | `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
 | `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
+| `app/tasks.py` | planned calls with a task: task store (`tasks.json`), numbers and hours that may be dialed, plan and result |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
@@ -229,6 +230,77 @@ pages, billed to the Anthropic account.
   Pages that need JavaScript cannot be read; text, HTML and PDF work. The basic tool versions are used on every model
   (no dynamic filtering): no code execution in between, and the limits per answer hold.
 
+## Planned calls with a task
+
+Claudine can make a call on her own with a task, hold the conversation and work through the result:
+"Ruf im Restaurant Seeblick an und reservier einen Tisch für vier für heute Abend, am liebsten 19 Uhr, sonst zwischen
+18 und 21 Uhr. Trag es in den Kalender ein und ruf mich danach zurück." On by default (`tasks: true`).
+
+**Planning.** A caller with access `admin` gives the task on the phone. Claudine collects what is missing (the number:
+asked for, or looked up with the [web search](#web-search); never guessed), then calls the tool `plan_call`. The code
+checks the plan and Claudine reads it back: whom she calls at which number, when, what she may tell the callee, what
+she may agree to on her own, what she does afterwards and how the result comes back. The task is stored only after
+the caller said something in reply (a `confirmed=true` from the model alone is not enough), and a yes covers only
+the plan that was read back: another number, time window, grant or follow-up tool is read back again.
+One line: the planned call starts after the requester hung up.
+
+Without the phone, `POST /tasks` plans a call (same token as `/call`):
+
+```bash
+curl -X POST http://127.0.0.1:8099/tasks -H "Content-Type: application/json" -d '{
+  "number": "04542 1234", "name": "Restaurant Seeblick",
+  "task": "Tisch für 4 für heute Abend reservieren, am liebsten 19 Uhr, sonst 18 bis 21 Uhr. In den Kalender eintragen.",
+  "requester": "0151 1234567", "call_back": true, "not_after": "2026-11-10T19:00"}'
+```
+
+With only `number` and `task` Claude turns the text into a plan. Every field of the plan can also be given directly
+and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` / `calendar_to` / `book_title`,
+`follow_up` (`[{"step": "…", "tool": "ha_create_event"}]`), `not_before`, `not_after` (local time, default 24 hours),
+`retries` (default 2), `leave_message`, `call_back` (needs `requester`, a number from `callers`), `language`.
+`GET /tasks` lists all tasks, `GET /tasks/<id>` shows one, `DELETE /tasks/<id>` cancels a planned one.
+
+**The call.** Tasks are called when they are due, the line is free and it is inside `outbound_hours`.
+No answer, busy or a mailbox (with a short message unless `leave_message` is false): the next attempt follows after
+`task_retry_minutes`, at most `retries` times and only inside the time window; then the task ends as `not_reached`.
+If the callee calls back in between, the call is answered (also from a number that is not in `callers`) and the task
+continues there.
+
+**Rights in three phases.** The requester is not the person on the phone:
+
+- *Planning*: only `admin`.
+- *During the call*: the callee has their own access from `callers` (not listed = guest) plus the grants of the plan,
+  nothing else: `ha_busy_times` for the days `calendar_from` to `calendar_to` (busy times only, no details), and with
+  `book_title` one appointment with exactly this title in a free time of these days. "Lies mir Jans Termine vor" or
+  "Schalte die Heizung aus" find no tool. Claudine is told what she may share (`may_share`) and agree to
+  (`may_accept`); anything else stays open.
+- *Follow-up* (after hang-up, without the callee): Claude gets the plan, the transcript and only the tools that the
+  follow-up steps of the plan name, out of `ha_create_event`, `ha_events`, `shopping_edit`, `shopping_list` and `web`
+  (web search, if `web_access` is on). Never `ha_control`. The transcript and web pages are data: a step that the call
+  did not settle clearly is not done but reported as open. At most 40 changes per task.
+
+**Result.** Status `done`, `partial`, `failed`, `not_reached` or `cancelled`, a summary, the collected answers, each
+follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks
+for 30 days), sent to `notify_services`, fired as event `braincall_task_finished` (`id`, `status`, `number`, `name`,
+`task`, `requester`, `attempts`, `summary`, `answers`, `steps`, `open_points`) and, with `call_back`, reported in a
+call to the requester as soon as the line is free. The call itself is summarized like every call (`braincall_call`,
+[caller memory](#callers-and-permissions)). A task that was running when BrainCall stopped is not dialed again: it
+ends as `failed` and is reported.
+
+**Safety and etiquette.**
+
+- `outbound_blocked`: numbers starting with one of these are never dialed, also not via `/call` (default: 110, 112,
+  118…, 0137, 019…, 0900). `outbound_allowed_regex` allows only matching numbers, written in national form
+  (`+49 4542 1234` is `045421234`): `"0[1-9][0-9]{5,12}"` = own country only, no short codes, no other countries.
+- `outbound_hours` (default `09:00-20:00`) and `outbound_max_calls_per_day` (default 20, attempts count) apply to
+  planned calls; `/call` and the call back to the requester are not limited by them.
+- At the start Claudine says that she is an AI assistant calling on behalf of the requester, and before the goodbye
+  that a written summary is kept and no audio is recorded.
+- A callee who asks not to be called again is stored (`do_not_call` in `tasks.json`); a new task for that number is
+  refused unless the requester explicitly overrides it (`override_do_not_call`).
+
+Not part of this yet: the Brain Assist front end (service action, `todo` entity), phone menus (DTMF) and hold
+queues, opening hours, and a second call while the requester stays on the line.
+
 ## Conversation flow and timing
 
 - **Greeting without waiting:** greetings are synthesized at startup and kept in `cache/` in the log folder
@@ -276,7 +348,8 @@ pages, billed to the Anthropic account.
 The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: network access is replaced by fakes.
 They cover access rights and tools per caller, web search (tools by access, limits, server tool blocks, `pause_turn`,
 confirmation after web content), Home Assistant control limits, calendars and restricted bookings,
-configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes, and the
+planned calls (numbers and hours, plan and confirmation, grants for the callee, retries and call backs, follow-up,
+`/tasks`), configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes, and the
 conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers, timing).
 
 ```bash

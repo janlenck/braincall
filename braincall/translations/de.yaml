@@ -150,6 +150,30 @@ configuration:
   confirm_domains:
     name: Mit Rückfrage
     description: Vor dem Steuern dieser Domains fragt der Assistent ausdrücklich nach.
+  tasks:
+    name: Geplante Anrufe
+    description: >-
+      Anrufer mit Zugriff admin können den Assistenten selbst mit einem Auftrag anrufen lassen („Ruf im Restaurant an
+      und reservier einen Tisch“), auch per POST /tasks. Er ruft an, erledigt die Folgeschritte und meldet das Ergebnis.
+  task_max_retries:
+    name: Wiederholungen pro Auftrag (max.)
+    description: So viele weitere Versuche darf ein Auftrag höchstens verlangen, wenn niemand erreicht wird.
+  task_retry_minutes:
+    name: Pause zwischen Versuchen (Minuten)
+  outbound_hours:
+    name: Zeiten für geplante Anrufe
+    description: z. B. 09:00-20:00; geplante Anrufe gehen nur in dieser Tageszeit raus. Leer = jederzeit.
+  outbound_max_calls_per_day:
+    name: Geplante Anrufe pro Tag
+    description: Versuche zählen mit. 0 = keine Grenze.
+  outbound_blocked:
+    name: Nie wählen
+    description: Nummern, die so beginnen, werden nie gewählt (Notruf, Sonderrufnummern), auch nicht über /call.
+  outbound_allowed_regex:
+    name: Nur Nummern wählen, die passen
+    description: >-
+      Regulärer Ausdruck für die ganze Nummer in nationaler Schreibweise, z. B. 0[1-9][0-9]{5,12} für Nummern nur
+      aus dem eigenen Land. Leer = keine Einschränkung.
   web_access:
     name: Websuche
     description: >-

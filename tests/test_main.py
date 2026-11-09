@@ -341,3 +341,197 @@ def test_web_setting_per_caller(main):
     assert main.web_for(None) is False
     assert main.web_for(main.find_caller("0171444")) is None  # Walter: by access (read)
     assert main.web_for({"number": "0151", "web": False}) is False
+
+
+# ---------------------------------------------------------------- planned calls with a task (#51)
+@pytest.fixture
+def planned(main, events, monkeypatch, tmp_path):
+    """A fresh task store, a registered phone, and outbound() replaced: records calls, returns the next session."""
+    import tasks
+    store = tasks.TaskStore(tmp_path / "tasks.json", main.cfg)
+    monkeypatch.setattr(main, "task_store", store)
+    monkeypatch.setattr(main.brain, "tasks", store)
+    monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.REGISTERED)
+    monkeypatch.setitem(main.cfg, "outbound_hours", "")
+    ctx = SimpleNamespace(store=store, dialed=[], sessions=[], events=events, followed=[])
+
+    def outbound(number, message, task=None):
+        ctx.dialed.append((number, message, task))
+        main.busy.release()
+        return ctx.sessions.pop(0) if ctx.sessions else None
+
+    def follow_up(task, transcript, actions=None):
+        ctx.followed.append(task["id"])
+        return ctx.result
+
+    def add(**kw):
+        task, error = tasks.build(main.cfg, {"number": "04542 1234", "name": "Seeblick", "task": "Tisch reservieren",
+                                             **kw}, {"number": "0151111", "name": "Jan Mobile"},
+                                  main.datetime.now().astimezone())
+        assert error == "", error
+        return store.add(task)
+
+    ctx.add = add
+    ctx.result = {"status": "done", "summary": "Tisch um 19 Uhr reserviert.", "answers": {"Uhrzeit": "19:00"}}
+    monkeypatch.setattr(main, "outbound", outbound)
+    monkeypatch.setattr(main.brain, "follow_up", follow_up)
+    return ctx
+
+
+def talked(*lines):
+    return SimpleNamespace(transcript=list(lines or ("Seeblick: Ja, 19 Uhr geht.",)), caller_turns=1, actions=[])
+
+
+def test_due_task_is_called_followed_up_and_reported(main, planned):
+    task = planned.add()
+    planned.sessions.append(talked())
+    main.run_tasks()
+    (number, message, passed), = planned.dialed
+    assert number == "04542 1234" and "AI assistant" in message and passed["id"] == task["id"]
+    assert planned.followed == [task["id"]] and planned.store.get(task["id"])["status"] == "done"
+    assert planned.events["notify"] == [("notify.phone", "Auftrag Anruf bei Seeblick: erledigt",
+                                         "Tisch um 19 Uhr reserviert.\nAnswers: Uhrzeit: 19:00")]
+    name, data = planned.events["events"][-1]
+    assert name == "braincall_task_finished" and data["status"] == "done" and data["answers"] == {"Uhrzeit": "19:00"}
+    assert not main.busy.locked()
+
+
+def test_unanswered_task_call_is_retried_without_follow_up(main, planned):
+    task = planned.add(retries=1)
+    main.run_tasks()
+    again = planned.store.get(task["id"])
+    assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "no answer"
+    assert planned.followed == [] and planned.events["notify"] == []
+    main.run_tasks()
+    assert len(planned.dialed) == 1  # the next attempt is not due yet
+
+
+def test_mailbox_counts_as_not_reached(main, planned):
+    task = planned.add(retries=0)
+    planned.sessions.append(talked("Mailbox: Bitte sprechen Sie nach dem Ton."))
+    planned.result = {"status": "not_reached", "summary": "Mailbox."}
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "not_reached" and done["attempts"][0]["outcome"] == "mailbox"
+    assert planned.events["notify"][0][1] == "Auftrag Anruf bei Seeblick: nicht erreicht"
+
+
+def test_task_waits_while_the_line_is_busy_or_sip_is_down(main, planned, monkeypatch):
+    planned.add()
+    assert main.busy.acquire(blocking=False)
+    try:
+        main.run_tasks()
+    finally:
+        main.busy.release()
+    monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.FAILED)
+    main.run_tasks()
+    assert planned.dialed == []
+
+
+def test_no_task_call_outside_the_hours(main, planned, monkeypatch):
+    planned.add()
+    now = main.datetime.now().astimezone()
+    monkeypatch.setitem(main.cfg, "outbound_hours", f"{(now.hour + 2) % 24:02d}:00-{(now.hour + 3) % 24:02d}:00")
+    main.run_tasks()
+    assert planned.dialed == [] and not main.busy.locked()
+
+
+def test_result_is_called_back_to_the_requester(main, planned):
+    planned.add(call_back=True)
+    planned.sessions.append(talked())
+    main.run_tasks()
+    assert [d[0] for d in planned.dialed] == ["04542 1234", "0151111"]
+    assert "Tisch um 19 Uhr reserviert." in planned.dialed[1][1] and planned.dialed[1][2] is None
+
+
+def test_do_not_call_wish_is_stored(main, planned):
+    planned.add()
+    planned.sessions.append(talked("Seeblick: Bitte rufen Sie hier nicht mehr an."))
+    planned.result = {"status": "failed", "summary": "Möchte nicht angerufen werden.", "do_not_call": True}
+    main.run_tasks()
+    assert planned.store.blocked("045421234")
+
+
+def test_failed_follow_up_ends_as_partial(main, planned, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("API down")
+    task = planned.add()
+    planned.sessions.append(talked())
+    monkeypatch.setattr(main.brain, "follow_up", boom)
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "partial" and "API down" in done["result"]["summary"]
+
+
+def test_blocked_numbers_are_not_dialed_by_outbound(main, monkeypatch):
+    assert main.busy.acquire(blocking=False)
+    monkeypatch.setattr(main, "phone", None)  # dialing would fail on the missing phone
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    assert main.outbound("112", "test") is None
+    assert not main.busy.locked()
+
+
+def test_tasks_api(server, planned):
+    assert server("GET", "/tasks", token=None)[0] == 401
+    status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Tisch reservieren",
+                                             "goal": "Reserve a table", "requester": "0151111", "call_back": True})
+    assert status == 201 and task["status"] == "planned" and task["requester"]["name"] == "Jan Mobile"
+    assert server("GET", "/tasks")[1]["tasks"][0]["id"] == task["id"]
+    assert server("GET", f"/tasks/{task['id']}")[1]["goal"] == "Reserve a table"
+    assert server("GET", "/tasks/nope")[0] == 404
+    assert server("DELETE", f"/tasks/{task['id']}") == (200, {"status": "cancelled"})
+    assert server("DELETE", f"/tasks/{task['id']}")[0] == 409
+    assert server("DELETE", "/tasks/nope")[0] == 404
+    assert server("DELETE", "/call")[0] == 404
+
+
+def test_tasks_api_refuses(server, planned):
+    assert server("POST", "/tasks", {"number": "112", "task": "x", "goal": "x"})[0] == 400
+    assert server("POST", "/tasks", {"number": "04542 1234"}) == (400, {"error": "no task"})
+    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+                                     "not_after": "2020-01-01T10:00"})[0] == 400
+    planned.store.block("04542 1234")
+    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x"})[0] == 409
+    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+                                     "override_do_not_call": True})[0] == 201
+    assert server("POST", "/call", {"number": "0900 123"})[0] == 400
+    assert planned.store.all()[0]["status"] == "planned" and len(planned.store.all()) == 1
+
+
+def test_tasks_api_plans_free_text_with_claude(server, planned, main, monkeypatch):
+    monkeypatch.setattr(main.brain, "plan", lambda text, number, name: {
+        "number": "0999", "goal": "Reserve a table for 4", "may_share": ["Name Jan Lenck"], "retries": 1})
+    status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Reservier einen Tisch für 4"})
+    assert status == 201 and task["number"] == "04542 1234"  # the number given is never replaced
+    assert task["goal"] == "Reserve a table for 4" and task["may_share"] == ["Name Jan Lenck"] and task["retries"] == 1
+
+
+def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch):
+    task = planned.add(number="0888777", name="Mark")  # not in callers, and no "*" entry
+    monkeypatch.setitem(main.cfg, "callers", [c for c in main.cfg.callers if c["number"] != "*"])
+    main.run_tasks()  # not answered
+    ran = {}
+
+    class Session:
+        transcript, caller_turns, actions = ["0888777: Sie hatten angerufen?"], 1, []
+
+        def __init__(self, *a):
+            pass
+
+        def run(self, **kw):
+            ran.update(kw)
+
+    monkeypatch.setattr(main, "CallSession", Session)
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    call, denied = incoming("0888777")
+    call.answer = lambda: None
+    main.on_incoming(call)
+    assert denied == [] and ran["access"] == main.GUEST and "probably calling back" in ran["instructions"]
+    for _ in range(100):
+        if planned.store.get(task["id"])["status"] == "done":
+            break
+        time.sleep(0.02)
+    assert planned.store.get(task["id"])["status"] == "done" and planned.followed == [task["id"]]
+    call, denied = incoming("0888777")  # no open task any more: rejected like any unlisted number
+    main.on_incoming(call)
+    assert denied == [True]

@@ -109,7 +109,7 @@ def greeting(lang: str, assistant: str, owner: str, name: str = "", outbound: bo
 def tool_key(name: str, data: dict, cfg) -> str:
     """Which status phrase fits a tool call; "" = none (e.g. a change that still needs a yes from the caller)."""
     data = data or {}
-    if name == "hang_up":
+    if name in ("hang_up", "plan_call"):
         return ""
     if name in ("ha_events", "ha_busy_times"):
         return "calendar"

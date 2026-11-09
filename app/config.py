@@ -69,6 +69,15 @@ DEFAULTS = {
     "calendar_max_days_ahead": 90,   # how far ahead
     "calendar_max_bookings": 2,      # appointments per call
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
+    # planned calls with a task (plan_call for admins, POST /tasks): tasks.json in the log folder
+    "tasks": True,
+    "task_max_retries": 3,           # most further attempts a task may ask for if nobody is reached
+    "task_retry_minutes": 15,        # pause between attempts
+    "outbound_hours": "09:00-20:00",  # planned calls only in this time of day; "" = any time
+    "outbound_max_calls_per_day": 20,  # planned calls (attempts) per day; 0 = no limit
+    # never dialed, whoever asks (also POST /call): numbers starting with these
+    "outbound_blocked": ["110", "112", "118", "0137", "019", "0900"],
+    "outbound_allowed_regex": "",    # if set, only numbers that match it, e.g. "0[1-9][0-9]{5,12}" (own country)
     # web search and web fetch (Anthropic server tools), for access admin and read unless "web" per caller says else
     "web_access": False,
     "web_max_searches": 3,           # per turn (one answer); 0 = no limit
