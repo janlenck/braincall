@@ -442,7 +442,7 @@ def test_wanted_phrases_follow_the_configuration():
     assert "Привіт, Maryna, це Claudine." in texts
     assert "Ich schaue in den Kalender." in texts and "Дивлюся в календар." in texts
     assert len(texts) == len(set(texts))
-    assert not any("Mhm." == t for t in ph.wanted(make_cfg(fillers=False)))
+    assert not any("Hmm…" == t for t in ph.wanted(make_cfg(fillers=False)))
 
 
 # ---------------------------------------------------------------- phrase cache
@@ -511,7 +511,8 @@ def test_wanted_phrases_for_auto_callers_and_callers_without_name():
         {"number": "0170", "name": "Maryna", "access": "calendar", "language": "auto"},
         {"number": "0151", "name": "", "access": "admin"}])
     texts = ph.wanted(cfg)
-    assert "Ага." in texts and "Mhm." in texts
+    assert "Дивлюся в календар." in texts and "Ich schaue in den Kalender." in texts
+    assert texts.count("Hmm…") == 1  # thinking sounds are the same for every language
     assert "Hallo Jan, hier ist Claudine." in texts  # main.caller_name falls back to the owner name
 
 

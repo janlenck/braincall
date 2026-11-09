@@ -43,7 +43,7 @@ DEFAULTS = {
     "barge_in": True,
     "barge_in_min_ms": 1000,   # how long the caller must speak before the assistant lets itself be interrupted
     # fillers and status phrases (cached audio in <log_dir>/cache, like the greetings)
-    "fillers": True,           # "Hm", "Moment, ich schau kurz nach" … while the answer is being prepared
+    "fillers": True,           # "Hmm…", "Moment, ich schau kurz nach" … while the answer is being prepared
     "filler_delay_ms": 600,    # a filler only if the answer has no audio this long after the caller's speech
     "still_working_s": 5,      # "Ich bin noch dran" after this many seconds without anything said; 0 = off
     # logs and call notes

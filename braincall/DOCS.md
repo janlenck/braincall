@@ -79,7 +79,7 @@ Nothing is changed. The add-on has the administrator rights this needs without a
 
 ## Conversation flow
 
-Greetings, fillers ("Hm", "Ja") and status phrases ("Ich schaue in den Kalender.") are synthesized once and kept
+Greetings, fillers ("Hmm…", "Ähm…") and status phrases ("Ich schaue in den Kalender.") are synthesized once and kept
 in `cache/` in the add-on folder, so the caller hears them without waiting. Incoming calls are greeted right after
 answering, outgoing calls as soon as the callee said "Hallo?".
 
