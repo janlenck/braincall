@@ -34,6 +34,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 import config  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
+import phrases  # noqa: E402
 from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
 from session import CallSession  # noqa: E402
@@ -66,6 +67,7 @@ console.ASSISTANT = cfg.assistant_name or "Claude"
 ha = HA(cfg)
 speech = Speech(cfg)
 brain = Brain(cfg, ha)
+phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
 busy = threading.Lock()
 sip_failed: dict = {}
@@ -226,7 +228,7 @@ def outbound(number: str, message: str):
             log.warning("Call rejected: SIP %s", sip_failed.get(call.call_id, call.state.value))
             return
         answered = True
-        session = CallSession(call, brain, speech, cfg)
+        session = CallSession(call, brain, speech, cfg, phrase_cache)
         access = caller["access"] if caller else GUEST
         session.run(outbound=True, message=message, caller=number, language=lang_for(caller),
                     access=access, caller_name=caller_name(caller),
@@ -285,7 +287,7 @@ def on_incoming(call):
     try:
         log.info("Answering call from %s (%s, access %s)", number, name or "unknown", access)
         call.answer()
-        session = CallSession(call, brain, speech, cfg)
+        session = CallSession(call, brain, speech, cfg, phrase_cache)
         session.run(outbound=False, caller=number, access=caller["access"], language=lang_for(caller),
                     caller_name=name, instructions=caller["instructions"],
                     previous=previous(number, caller["access"]))
@@ -502,6 +504,9 @@ def main():
             return
         log.info("SIP status: %s", sip_status().value)
         log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
+        # greetings and fillers synthesized ahead, so the caller hears them without waiting for TTS
+        threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
+                         daemon=True).start()
         threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
 
         bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"

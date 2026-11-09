@@ -32,6 +32,8 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/speech.py` | OpenAI speech-to-text and text-to-speech |
 | `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
+| `app/phrases.py` | fixed phrases (greetings, fillers, status phrases) and their cached audio |
+| `app/timing.py` | timing log per turn and per call |
 | `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
@@ -195,6 +197,32 @@ rest_command:
 After each call the agent fires the HA event `braincall_call`
 (`number`, `answered`, `reason`, `duration_s`, `transcript`, `caller_name`, `access`, `summary`).
 
+## Conversation flow and timing
+
+- **Greeting without waiting:** greetings are synthesized at startup and kept in `cache/` in the log folder
+  (rebuilt when language, voice, TTS model, speaking style, assistant or owner name change). Incoming calls hear
+  "Hallo, hier ist Claudine, die Assistentin von Jan Lenck." (known callers "Hallo Jan, hier ist Claudine.") right
+  after answering. Outgoing calls play "Hallo, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an." as soon as
+  the callee has said something short like "Hallo?", or after 2.5 s of silence. A longer first utterance may be a
+  mailbox announcement: then the model decides as before. Claude is told the greeting has been spoken.
+- **End of speech:** an utterance counts as finished after `end_silence_ms` (default 450 ms) of silence. After
+  `speculative_ms` (default 300 ms) transcription and Claude already start; the answer is only spoken and changing
+  tools (switching, booking, hanging up) only run once the pause is long enough. If the caller goes on speaking it is
+  dropped and the longer utterance is answered. Every utterance is transcribed in the background as soon as it ends.
+- **Fillers** (`fillers`, default on): if the answer has no audio `filler_delay_ms` (default 600 ms) after the
+  caller stopped, a short "Hm", "Ja", "Okay" or "Mhm" (never the same twice in a row). The first tool call of an
+  answer plays a matching phrase ("Ich schaue in den Kalender.", "Ich schalte das.", "Moment, ich schau kurz
+  nach."), and after `still_working_s` (default 5) seconds without anything said "Ich bin noch dran." Fillers are
+  in the log and transcript, not in the conversation Claude sees, and can be interrupted like answers.
+- **Everything said counts once:** all the caller said since the last answer is answered as one message
+  ("Nein. Nein."). Speech while Claude is still preparing the answer (nothing said yet) restarts the answer with
+  everything said, unless a changing tool already ran; then it is the next turn. What was said before the last
+  sentence of an answer is never taken as the answer to a later question (dropped, logged).
+- **Timing log:** every turn logs, in ms after the end of the caller's speech, when the end was detected, the
+  transcription, Claude's first token and sentence, the first TTS audio, filler and playback, and the tool calls with
+  their duration. At the end of a call: median and maximum per step, e.g.
+  `Timing of 6 turns, median/max ms after end of speech: end detected 452/470, STT 980/1400, …, first audio 640/1210`.
+
 ## Languages
 
 `language`: `de`, `uk`, `en` or `auto` (answers in the language the caller spoke last).
@@ -202,7 +230,8 @@ After each call the agent fires the HA event `braincall_call`
 
 ## Limits
 
-- Response time per turn is about 1.5–3 s (STT after end of speech, then Claude, then TTS).
+- Response time per turn is about 1.5–3 s (STT after end of speech, then Claude, then TTS); a filler is heard
+  before that (see [Conversation flow and timing](#conversation-flow-and-timing)).
 - An unanswered outbound call is cancelled after `ring_timeout` seconds.
 - The machine must be on, awake and in the home network.
 - If the FRITZ!Box is restarted or unreachable, BrainCall sets up the SIP connection again after
@@ -213,7 +242,8 @@ After each call the agent fires the HA event `braincall_call`
 
 The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: network access is replaced by fakes.
 They cover access rights and tools per caller, Home Assistant control limits, calendars and restricted bookings,
-configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes.
+configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes, and the
+conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers, timing).
 
 ```bash
 python -m pip install -r requirements.txt pytest

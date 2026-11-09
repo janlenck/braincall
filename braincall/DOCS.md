@@ -77,6 +77,21 @@ the definition (triggers, conditions, branches), checks each condition against t
 the last runs Home Assistant keeps (the traces, the last 5 per automation, only for automations with an id).
 Nothing is changed. The add-on has the administrator rights this needs without an extra token.
 
+## Conversation flow
+
+Greetings, fillers ("Hm", "Ja") and status phrases ("Ich schaue in den Kalender.") are synthesized once and kept
+in `cache/` in the add-on folder, so the caller hears them without waiting. Incoming calls are greeted right after
+answering, outgoing calls as soon as the callee said "Hallo?".
+
+- *Pause until end of utterance* (`end_silence_ms`, default 450 ms): after updating from an older version the old
+  value (700) stays in the form; set it to 450 for faster answers.
+- *Early start* (`speculative_ms`, default 300 ms): transcription and answer start already after this pause, but are
+  only spoken once the caller is really done. 0 = off.
+- *Fillers* on/off, *Filler after* (default 600 ms) and *Still on it after* (default 5 s, 0 = off).
+
+What the caller says while the answer is being prepared is answered together with the rest. The log shows a timing
+line per turn and a summary per call (median/max per step) to compare settings.
+
 ## On/off switch
 
 Stopping the add-on unregisters the IP phone from the FRITZ!Box: calls then only ring on your other phones

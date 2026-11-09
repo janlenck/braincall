@@ -98,6 +98,9 @@ configuration:
   end_silence_ms:
     name: Pause until end of utterance (ms)
     description: Silence after which an utterance counts as finished.
+  speculative_ms:
+    name: Early start (ms)
+    description: After this pause transcription and answer already start; spoken only after the pause until end of utterance. 0 = off.
   silence_timeout:
     name: Silence until asking (s)
     description: Twice in a row = hang up.
@@ -107,6 +110,15 @@ configuration:
   barge_in_min_ms:
     name: Minimum time to interrupt (ms)
     description: How long the caller must speak to interrupt.
+  fillers:
+    name: Fillers
+    description: Short "Hm", "One moment, let me check" … while the answer is being prepared.
+  filler_delay_ms:
+    name: Filler after (ms)
+    description: A filler only if the answer has no audio this long after the caller stopped speaking.
+  still_working_s:
+    name: Still on it after (s)
+    description: '"I''m still on it" after this many seconds without anything said. 0 = off.'
   http_port:
     name: Call trigger port
     description: HTTP port for outbound calls (/call).

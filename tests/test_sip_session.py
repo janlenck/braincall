@@ -201,7 +201,7 @@ def intro(session, monkeypatch):
             monkeypatch.setattr(s, name, lambda: None)
         monkeypatch.setattr(s, "listen", lambda timeout: session_mod.TIMEOUT)
         monkeypatch.setattr(s, "alive", lambda: True)
-        monkeypatch.setattr(s, "_assistant_turn", lambda messages: seen.append(messages[0]["content"]) or True)
+        monkeypatch.setattr(s, "_assistant_turn", lambda messages, *a: seen.append(messages[0]["content"]) or True)
         s.run(caller="0151111", access=parse_access(access), **kw)
         return seen[0]
     return run

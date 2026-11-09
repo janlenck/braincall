@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7.0
+
+- Snappier conversations (#53):
+  - Greetings are synthesized at startup and cached in `cache/` in the log folder: incoming calls are greeted right
+    after answering, outgoing calls as soon as the callee said something short ("Hallo?"); a long first utterance
+    (maybe a mailbox) is still left to the model. Claude is told the greeting was spoken
+  - *Pause until end of utterance* (`end_silence_ms`) defaults to 450 ms instead of 700 ms (an existing add-on
+    configuration keeps its value). New *Early start* (`speculative_ms`, default 300 ms): transcription and answer start
+    after a shorter pause and are dropped if the caller goes on speaking; nothing is said and no switching, booking or
+    hanging up happens before the pause is long enough. Utterances are transcribed in the background as soon as they end
+  - New *Fillers* (`fillers`, `filler_delay_ms`, `still_working_s`): a short "Hm"/"Ja"/"Okay" when the answer is slow,
+    a matching phrase when a tool runs ("Ich schaue in den Kalender."), "Ich bin noch dran." after 5 s of silence.
+    Fast answers come without filler; fillers are not part of the conversation Claude sees
+  - Everything the caller said since the last answer is answered as one message. Speech while the answer is still
+    being prepared restarts it with everything said (not after a changing tool ran). Speech from before the last
+    sentence of an answer is never taken as the answer to a later question
+  - Timing log per turn (end detected, STT, first token, first sentence, TTS, filler, playback, tools) and a summary
+    per call with median and maximum per step
+
 ## 1.6.0
 
 - New tool `ha_automation` (access `admin` and `read`, read-only): explains one automation or script. The

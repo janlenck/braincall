@@ -37,10 +37,15 @@ DEFAULTS = {
     "tts_instructions": "Speak natural, brisk German like on the phone.",
     # voice activity detection (VAD)
     "vad_min_energy": 500,
-    "end_silence_ms": 700,
+    "end_silence_ms": 450,     # pause after which an utterance is finished and answered
+    "speculative_ms": 300,     # STT and Claude start after this pause, spoken only after end_silence_ms; 0 = off
     "silence_timeout": 12,
     "barge_in": True,
     "barge_in_min_ms": 1000,   # how long the caller must speak before the assistant lets itself be interrupted
+    # fillers and status phrases (cached audio in <log_dir>/cache, like the greetings)
+    "fillers": True,           # "Hm", "Moment, ich schau kurz nach" … while the answer is being prepared
+    "filler_delay_ms": 600,    # a filler only if the answer has no audio this long after the caller's speech
+    "still_working_s": 5,      # "Ich bin noch dran" after this many seconds without anything said; 0 = off
     # logs and call notes
     "log_dir": "",             # empty = logs\ in the project folder
     "caller_memory": "none",   # summaries of earlier calls per number as context: "none", days (e.g. 30), "forever"
