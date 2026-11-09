@@ -236,7 +236,8 @@ def confirm_key(task: dict, cfg=None, data: dict | None = None) -> str:
     # times as given: a default ("now", 24 hours later) differs by the minute between the two calls
     times = [t.isoformat() if t else "" for t in (parse_time((data or task).get(k), cfg or {"timezone": "UTC"})
                                                   for k in ("not_before", "not_after"))]
-    return json.dumps([config.norm_number(task["number"]), times, task["grants"], sorted({s["tool"] for s in task["follow_up"]}), task["call_back"],
+    return json.dumps([config.norm_number(task["number"]), times, task["grants"],
+                       sorted({s["tool"] for s in task["follow_up"]}), task["call_back"],
                        task["retries"], task["leave_message"]], sort_keys=True)
 
 
