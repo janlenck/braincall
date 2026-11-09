@@ -256,6 +256,8 @@ TOOL_SHOPPING_EDIT = {
             "action": {"type": "string", "enum": ["add", "check", "uncheck", "remove"]},
             "item": {"type": "string"},
             "list": {"type": "string"},
+            "confirmed": {"type": "boolean",
+                          "description": "only true if the caller explicitly agreed when asked"},
         },
         "required": ["action", "item"],
     },
@@ -265,6 +267,7 @@ READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TO
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for the summary after the call
 
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
+MAX_REQUESTS = 10  # requests per turn: tool rounds and continuations after pause_turn
 
 _END = re.compile(r"[.!?…:](?=\s)")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")      # [Baumarkt Mölln](https://…) -> Baumarkt Mölln
@@ -357,7 +360,7 @@ class Brain:
             tools += [TOOL_SHOPPING, TOOL_SHOPPING_EDIT]
         return tools
 
-    def system(self, language: str = "de", web: bool = False, exhausted=(), voice: bool = True) -> str:
+    def system(self, language: str = "de", web: bool = False, exhausted=()) -> str:
         """web: the web tools are in this call; exhausted: web tools whose daily limit is used up."""
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
         fillers = ("- While you use tools the phone system already plays a short waiting phrase such as \"one moment, "
@@ -366,7 +369,7 @@ class Brain:
                   .replace("{name}", self.cfg.assistant_name or "Claude")
                   .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
         if web:
-            prompt += web_mod.PROMPT.replace("{links}", web_mod.LINKS_VOICE if voice else web_mod.LINKS_TEXT)
+            prompt += web_mod.PROMPT
             if exhausted:
                 prompt += (f"- The daily limit for {' and '.join(exhausted)} is used up: do not use "
                            f"{'them' if len(exhausted) > 1 else 'it'} today; say so if the caller asks for a lookup.\n")
@@ -455,9 +458,11 @@ class Brain:
             i += 1
 
     @staticmethod
-    def _interrupted(messages: list, said: str = ""):
-        # A turn paused by the API (pause_turn) can end with a server tool call that has not run yet; it would
-        # never get its result once the turn is given up, so it is dropped.
+    def _drop_pending(messages: list) -> bool:
+        """A turn paused by the API (pause_turn) can end with a server tool call that has not run yet; it would
+        never get its result once the turn is given up, so it is dropped (completed results stay).
+        Returns True if one was dropped."""
+        dropped = False
         last = messages[-1] if messages else None
         if last and last["role"] == "assistant" and isinstance(last["content"], list):
             done = {b.get("tool_use_id") for b in last["content"] if isinstance(b, dict)}
@@ -465,17 +470,21 @@ class Brain:
                    and last["content"][-1].get("type") == "server_tool_use"
                    and last["content"][-1].get("id") not in done):
                 last["content"].pop()
+                dropped = True
             if not last["content"]:
                 messages.pop()
+        return dropped
+
+    @classmethod
+    def _interrupted(cls, messages: list, said: str = ""):
+        cls._drop_pending(messages)
         messages.append({"role": "assistant", "content": (said or "…") + " [interrupted by the caller]"})
 
     @staticmethod
     def _confirm_key(block) -> str:
-        i = block.input or {}
-        target = {"ha_control": (i.get("entity_id"), str(i.get("service", "")).split(".")[-1]),
-                  "ha_create_event": (i.get("start"),),
-                  "shopping_edit": (i.get("action"), i.get("item"))}.get(block.name, ())
-        return json.dumps([block.name, *target], ensure_ascii=False)
+        """Everything that is executed (all arguments except confirmed): a yes to 20 degrees is no yes to 35."""
+        args = {k: v for k, v in (block.input or {}).items() if k != "confirmed" and v not in (None, "", {}, [])}
+        return json.dumps([block.name, args], ensure_ascii=False, sort_keys=True)
 
     def _web_gate(self, block, messages: list, counters: dict) -> str:
         """After web content entered the conversation, a changing tool only runs with confirmed=true after the
@@ -518,20 +527,19 @@ class Brain:
     def turn(self, messages: list, on_sentence, should_abort, access=frozenset({"guest"}),
              language: str = "de", actions: list | None = None, counters: dict | None = None,
              before_tool=None, after_tool=None, on_token=None, web=None, who: str = "",
-             on_server_tool=None, voice: bool = True) -> bool:
+             on_server_tool=None) -> bool:
         """One assistant turn including the tool loop. Returns True = hang up.
         actions collects the changing tool calls and web lookups (for the summary after the call),
         counters keeps per-call state across turns (bookings by callers without admin, pending confirmations).
         before_tool(block) -> bool runs before each tool call (False = abort the turn, the tool is not run),
         after_tool(name, seconds) after it (also for web searches and fetches); on_token() on every streamed text
         piece (for the timing log); on_server_tool(name) when Claude starts a web search or fetch.
-        web: the caller's web setting (see web.allowed); who: caller and channel for the web log;
-        voice: the answer is spoken (no links)."""
+        web: the caller's web setting (see web.allowed); who: caller and channel for the web log."""
         counters = {} if counters is None else counters
         web_ok = web_mod.allowed(self.cfg, access, web)
         limits = web_mod.turn_limits(self.cfg, self.web_budget, messages) if web_ok else None
         tools = self.tools_for(access, web, limits=limits)
-        system = self.system(language, web=web_ok, exhausted=limits[2] if limits else (), voice=voice)
+        system = self.system(language, web=web_ok, exhausted=limits[2] if limits else ())
         used = {"searches": 0, "fetches": 0, "queries": [], "urls": [], "domains": []}
         try:
             return self._loop(messages, on_sentence, should_abort, access, tools, system, actions, counters,
@@ -539,23 +547,20 @@ class Brain:
         finally:
             self._web_log(used, who, actions)
 
-    def _loop(self, messages, on_sentence, should_abort, access, tools, system, actions, counters,
-              before_tool, after_tool, on_token, on_server_tool, used) -> bool:
-        for _ in range(10):
-            if should_abort():
-                self._interrupted(messages)
-                return False
-            self._repair(messages)
-            splitter = SentenceSplitter(on_sentence)
-            aborted = False
-            started = {}  # server tool id -> (name, start), for the timing log
-            with self.client.messages.stream(
-                model=self.cfg.claude_model,
-                max_tokens=2000,
-                system=system,
-                tools=tools,
-                messages=messages,
-            ) as stream:
+    def _stream(self, system, tools, messages, splitter, should_abort, after_tool, on_token, on_server_tool,
+                used):
+        """One request, streamed into the splitter. Returns the final message, or None if the caller interrupted.
+        Web results of an interrupted or broken-off stream are counted too (they were run and paid for)."""
+        started = {}  # server tool id -> (name, start), for the timing log
+        with self.client.messages.stream(
+            model=self.cfg.claude_model,
+            max_tokens=2000,
+            system=system,
+            tools=tools,
+            messages=messages,
+        ) as stream:
+            complete = False
+            try:
                 for event in stream:
                     kind = getattr(event, "type", "")
                     if kind == "content_block_start":
@@ -570,19 +575,34 @@ class Brain:
                             if name:
                                 after_tool(name, time.monotonic() - t0)
                     if should_abort():
-                        aborted = True
-                        break
+                        return None
                     if kind == "text":
                         if on_token is not None:
                             on_token()
                         splitter.feed(event.text)
-                if aborted:
-                    snapshot = getattr(stream, "current_message_snapshot", None)
-                    if snapshot is not None:
-                        self._web_used([b.model_dump(exclude_none=True) for b in snapshot.content], used)
-                else:
-                    splitter.flush()
-                    msg = stream.get_final_message()
+                splitter.flush()
+                msg = stream.get_final_message()
+                complete = True
+                return msg
+            finally:
+                if not complete:
+                    try:
+                        content = list(stream.current_message_snapshot.content)
+                    except Exception:  # noqa: BLE001  nothing received yet
+                        content = []
+                    self._web_used([b.model_dump(exclude_none=True) for b in content], used)
+
+    def _loop(self, messages, on_sentence, should_abort, access, tools, system, actions, counters,
+              before_tool, after_tool, on_token, on_server_tool, used) -> bool:
+        for _ in range(MAX_REQUESTS):
+            if should_abort():
+                self._interrupted(messages)
+                return False
+            self._repair(messages)
+            splitter = SentenceSplitter(on_sentence)
+            msg = self._stream(system, tools, messages, splitter, should_abort, after_tool, on_token,
+                               on_server_tool, used)
+            aborted = msg is None
 
             if aborted:
                 self._interrupted(messages, " ".join(splitter.emitted))
@@ -635,6 +655,9 @@ class Brain:
             if stopped:
                 self._interrupted(messages)
                 return False
+        if self._drop_pending(messages):
+            log.warning("Web research still paused after %d requests: given up, the open lookup was dropped",
+                        MAX_REQUESTS)
         return False
 
     def summarize(self, transcript: list, caller: str, actions: list, language: str = "de") -> str:

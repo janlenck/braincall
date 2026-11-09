@@ -349,3 +349,65 @@ def test_caller_spoke_since():
     assert not web.caller_spoke_since(msgs[:2], 0)
     assert web.caller_spoke_since(msgs, 1)
 
+
+
+# ---------------------------------------------------------------- review findings
+def test_a_yes_covers_only_exactly_what_was_asked(brain, ha):
+    """A yes to 20 degrees is no yes to 35 degrees."""
+    def thermostat(temp, confirmed=False, id_="t1"):
+        inp = {"entity_id": "climate.wz", "service": "set_temperature", "data": {"temperature": temp}}
+        if confirmed:
+            inp["confirmed"] = True
+        return tool("ha_control", id_, **inp)
+    msgs, counters = web_history(), {}
+    run(brain, message(thermostat(20), stop="tool_use"), message("Soll ich auf 20 Grad stellen?"), messages=msgs,
+        counters=counters)
+    msgs.append({"role": "user", "content": "Ja."})
+    r = run(brain, message(thermostat(35, True), stop="tool_use"), message("Soll ich auf 35 Grad stellen?"),
+            messages=msgs, counters=counters)
+    assert ha.calls == [] and r.messages[-2]["content"][0]["content"] == web.CONFIRM  # 35 was never asked
+    msgs.append({"role": "user", "content": "Nein, 20."})
+    run(brain, message(thermostat(20, True), stop="tool_use"), message("Erledigt."), messages=msgs,
+        counters=counters)
+    assert [c[1][2] for c in ha.calls] == [{"temperature": 20}]  # what was asked and answered
+
+
+def test_shopping_edit_can_be_confirmed(brain, ha):
+    schema = next(t for t in brain.tools_for(parse_access("admin")) if t["name"] == "shopping_edit")
+    assert schema["input_schema"]["properties"]["confirmed"]["type"] == "boolean"
+    msgs, counters = web_history(), {}
+    run(brain, message(tool("shopping_edit", action="add", item="Grünkohl"), stop="tool_use"),
+        message("Soll ich Grünkohl auf die Liste setzen?"), messages=msgs, counters=counters)
+    msgs.append({"role": "user", "content": "Ja, bitte."})
+    run(brain, message(tool("shopping_edit", action="add", item="Grünkohl", confirmed=True), stop="tool_use"),
+        message("Steht drauf."), messages=msgs, counters=counters)
+    assert ha.calls == [("shopping_edit", ("add", "Grünkohl", ""), {})]
+
+
+def test_web_results_count_when_the_stream_breaks_off(brain):
+    class Broken(FakeMessages):
+        def stream(self, **kw):
+            stream = super().stream(**kw)
+            events = list(stream)  # search and result were delivered, then the connection drops
+
+            def iterate():
+                yield from events
+                raise ConnectionError("connection reset")
+            stream.__class__ = type("BrokenStream", (type(stream),), {"__iter__": lambda self: iterate()})
+            return stream
+    brain.client = SimpleNamespace(messages=Broken(message(*search(), "Bis 20 Uhr.")))
+    with pytest.raises(ConnectionError):
+        brain.turn([{"role": "user", "content": "x"}], lambda s: None, lambda: False, access=parse_access("admin"))
+    assert brain.web_budget.today() == {"searches": 1, "fetches": 0}
+
+
+def test_a_turn_still_paused_after_the_last_request_drops_the_open_call(brain, monkeypatch):
+    import brain as brain_mod
+    monkeypatch.setattr(brain_mod, "MAX_REQUESTS", 2)
+    pending = ServerToolUseBlock(type="server_tool_use", id="s9", name="web_search", input={"query": "q"})
+    r = run(brain, message(*search("s1"), pending, stop="pause_turn"),
+            message(*search("s2"), ServerToolUseBlock(type="server_tool_use", id="s8", name="web_search",
+                                                      input={"query": "r"}), stop="pause_turn"))
+    assert len(r.fake.requests) == 2 and r.hang is False
+    assert [b["type"] for b in r.messages[-1]["content"]] == ["server_tool_use", "web_search_tool_result"]
+    assert r.messages[1]["content"][-1]["id"] == "s9"  # the earlier paused message is kept as it was
