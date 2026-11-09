@@ -145,9 +145,9 @@ def lang_for(caller: dict | None) -> str:
 
 
 def previous(number: str, access) -> str:
-    """Summaries of earlier calls with this number for the intro (empty while caller_memory is "none")."""
+    """What Claude remembers of earlier calls with this number, for the intro (memory.note)."""
     try:
-        return memory.note(calls.recent(number, access), OWNER_FIRST or "the owner", cfg.timezone)
+        return memory.note(calls.recent(number, access), OWNER_FIRST or "the owner", cfg.timezone, calls.enabled)
     except Exception:  # noqa: BLE001  the memory must never stop a call
         log.exception("Reading the caller memory failed")
         return ""
