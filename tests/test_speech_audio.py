@@ -121,7 +121,8 @@ def test_spell_numbers(text, language, expected):
 
 @pytest.mark.parametrize("text", [
     "Um 21:15 Uhr am 09.11.2026.", "Es sind 0,5 Grad.", "Das kostet 1050 Euro.", "Am 2026-11-09.", "Ruf **611 an.",
-    "James Bond 007.", "Code 0815",
+    "James Bond 007.", "Code 0815", "Am 09/11/2026.", "Am 09-11-2026.", "Am 1/12/26.",
+    "Call +４９１５１２３４５６７.",  # other digit scripts: left to the TTS instead of failing the sentence
 ])
 def test_spell_numbers_leaves_other_numbers(text):
     assert speech_mod.spell_numbers(text, "de") == text

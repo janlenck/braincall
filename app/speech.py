@@ -30,8 +30,9 @@ HALLUCINATION_PATTERNS = re.compile(
 
 # Phone numbers are spelled digit by digit before TTS: the voice otherwise reads "04542 4635" in groups
 # ("vierundsechzig" for 46, swallowed digits). A number starts with +, 0 or * and has at least 5 digits;
-# spaces, slashes and dashes between the digits are dropped. Times, dates with dots, decimals stay as they are.
-PHONE_NUMBER = re.compile(r"(?<![\w.,+*#/-])(?:\+|\*{1,2}|0)[\d*#]?(?:[ /-]?[\d*#]){3,}(?![\w*#+]|[.,:]\d)")
+# spaces, slashes and dashes between the digits are dropped. Times, dates and decimals stay as they are.
+PHONE_NUMBER = re.compile(r"(?<![\w.,+*#/-])(?:\+|\*{1,2}|0)[0-9*#]?(?:[ /-]?[0-9*#]){3,}(?![\w*#+]|[.,:]\d)")
+DATE = re.compile(r"\d{1,2}([/-])\d{1,2}\1\d{2,4}")  # 09/11/2026, 09-11-26: a date, not a number
 DIGIT_WORDS = {
     "de": "null eins zwei drei vier fünf sechs sieben acht neun".split() + ["plus", "Stern", "Raute"],
     "en": "zero one two three four five six seven eight nine".split() + ["plus", "star", "hash"],
@@ -45,8 +46,8 @@ def spell_numbers(text: str, language: str = "") -> str:
     words = DIGIT_WORDS.get(language)
 
     def spell(m):
-        chars = [c for c in m.group(0) if c.isdigit() or c in "+*#"]
-        if sum(c.isdigit() for c in chars) < 5:
+        chars = [c for c in m.group(0) if c in "0123456789+*#"]
+        if sum(c.isdigit() for c in chars) < 5 or DATE.fullmatch(m.group(0)):
             return m.group(0)
         return ", ".join(words["0123456789+*#".index(c)] if words else c for c in chars)
 
