@@ -112,7 +112,7 @@ configuration:
     description: So lange muss der Anrufer sprechen, um zu unterbrechen.
   fillers:
     name: Füllwörter
-    description: Kurzes „Hm“, „Moment, ich schau kurz nach“ … während die Antwort vorbereitet wird.
+    description: Kurzes „Hmm…“, „Moment, ich schau kurz nach“ … während die Antwort vorbereitet wird.
   filler_delay_ms:
     name: Füllwort nach (ms)
     description: Ein Füllwort nur, wenn die Antwort so lange nach dem Ende der Äußerung noch nicht zu hören ist.

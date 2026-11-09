@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1
+
+- Fillers are thinking sounds now ("Hmm…", "Ähm…", "Öhm…"), the same in every language (#53). "Okay", "Ja" or
+  "Gut" sounded like an answer: "Ist das okay?" got an "Okay." before the actual "No", "Danke und tschüss" an
+  "Okay." before the goodbye
+
 ## 1.7.0
 
 - Snappier conversations (#53):

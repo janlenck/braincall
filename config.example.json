@@ -96,7 +96,7 @@
   "silence_timeout": 12,              // seconds without speech before asking; twice in a row = hang up
   "barge_in": true,                   // caller may interrupt the assistant
   "barge_in_min_ms": 1000,            // how long the caller must speak to interrupt
-  "fillers": true,                    // short "Hm", "Moment, ich schau kurz nach" … while the answer is prepared
+  "fillers": true,                    // short "Hmm…", "Moment, ich schau kurz nach" … while the answer is prepared
   "filler_delay_ms": 600,             // filler only if the answer has no audio this long after the caller stopped
   "still_working_s": 5,               // "Ich bin noch dran" after this many seconds of silence on our side; 0 = off
 

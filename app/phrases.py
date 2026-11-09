@@ -16,6 +16,10 @@ import numpy as np
 
 log = logging.getLogger("phrases")
 
+# Thinking sounds while the answer is prepared, the same for every language: words like "Okay" or "Ja" sound
+# like an answer ("Ist das okay?" - "Okay." - … - "Nein"), a pondering "Hmm" does not.
+FILLERS = ["Hmm…", "Ähm…", "Öhm…"]
+
 TEXTS = {
     "de": {
         "greet": "Hallo, hier ist {assistant}, die Assistentin von {owner}.",
@@ -23,7 +27,7 @@ TEXTS = {
         "greet_known": "Hallo {name}, hier ist {assistant}.",
         "call": "Hallo, hier ist {assistant}, ich rufe im Auftrag von {owner} an.",
         "call_named": "Hallo {name}, hier ist {assistant}, ich rufe im Auftrag von {owner} an.",
-        "fillers": ["Hm.", "Ja.", "Okay.", "Mhm."],
+        "fillers": FILLERS,
         "still": ["Ich bin noch dran.", "Einen Moment noch."],
         "tools": {"lookup": "Moment, ich schau kurz nach.", "calendar": "Ich schaue in den Kalender.",
                   "control": "Ich schalte das.", "list": "Ich schaue auf die Liste.",
@@ -35,7 +39,7 @@ TEXTS = {
         "greet_known": "Hi {name}, this is {assistant}.",
         "call": "Hello, this is {assistant}, calling on behalf of {owner}.",
         "call_named": "Hello {name}, this is {assistant}, calling on behalf of {owner}.",
-        "fillers": ["Hm.", "Okay.", "Right.", "Mhm."],
+        "fillers": FILLERS,
         "still": ["I'm still on it.", "Just a moment."],
         "tools": {"lookup": "One moment, let me check.", "calendar": "Let me look at the calendar.",
                   "control": "I'll switch that.", "list": "Let me check the list.",
@@ -47,7 +51,7 @@ TEXTS = {
         "greet_known": "Привіт, {name}, це {assistant}.",
         "call": "Добрий день, це {assistant}, я телефоную від імені {owner}.",
         "call_named": "Добрий день, {name}, це {assistant}, я телефоную від імені {owner}.",
-        "fillers": ["Гм.", "Так.", "Добре.", "Ага."],
+        "fillers": FILLERS,
         "still": ["Я ще тут, хвилинку.", "Ще хвилинку."],
         "tools": {"lookup": "Хвилинку, зараз подивлюся.", "calendar": "Дивлюся в календар.",
                   "control": "Зараз перемкну.", "list": "Дивлюся список.",

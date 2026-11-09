@@ -112,7 +112,7 @@ configuration:
     description: How long the caller must speak to interrupt.
   fillers:
     name: Fillers
-    description: Short "Hm", "One moment, let me check" … while the answer is being prepared.
+    description: Short "Hmm…", "One moment, let me check" … while the answer is being prepared.
   filler_delay_ms:
     name: Filler after (ms)
     description: A filler only if the answer has no audio this long after the caller stopped speaking.

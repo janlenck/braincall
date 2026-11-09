@@ -210,7 +210,8 @@ After each call the agent fires the HA event `braincall_call`
   tools (switching, booking, hanging up) only run once the pause is long enough. If the caller goes on speaking it is
   dropped and the longer utterance is answered. Every utterance is transcribed in the background as soon as it ends.
 - **Fillers** (`fillers`, default on): if the answer has no audio `filler_delay_ms` (default 600 ms) after the
-  caller stopped, a short "Hm", "Ja", "Okay" or "Mhm" (never the same twice in a row). The first tool call of an
+  caller stopped, a short thinking sound "Hmm…", "Ähm…" or "Öhm…" (the same in every language, never the same twice in a row; no
+  "Okay" or "Ja", which would sound like an answer). The first tool call of an
   answer plays a matching phrase ("Ich schaue in den Kalender.", "Ich schalte das.", "Moment, ich schau kurz
   nach."), and after `still_working_s` (default 5) seconds without anything said "Ich bin noch dran." Fillers are
   in the log and transcript, not in the conversation Claude sees, and can be interrupted like answers.
