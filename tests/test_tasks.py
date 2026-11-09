@@ -92,6 +92,11 @@ def test_build_defaults():
     assert t["requester"] == JAN and t["grants"] == {} and t["follow_up"] == []
 
 
+def test_build_stores_the_number_without_spaces():
+    assert build(number=" 04542 4635 ")["number"] == "045424635"  # #51: dialed and read back exactly like this
+    assert build(number="+49 151/111-22")["number"] == "+4915111122"
+
+
 def test_build_takes_local_times_and_caps_retries():
     t = build(not_before="2026-11-10T18:00", not_after="2026-11-10T19:30", retries=99, call_back=True)
     assert t["next_try"] == "2026-11-10T18:00+01:00" and t["not_after"] == "2026-11-10T19:30+01:00"

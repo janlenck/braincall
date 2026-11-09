@@ -234,8 +234,9 @@ def outbound(number: str, message: str, task: dict | None = None):
         if refusal:
             log.warning("Not calling %s: %s", number, refusal)
             return None
-        log.info("Calling %s (reason: %s)", number, message or "-")
-        call = phone.call(number)
+        dial = norm(number)  # the complete number, without spaces or dashes (they would cut it off in the INVITE)
+        log.info("Calling %s (reason: %s)", dial, message or "-")
+        call = phone.call(dial)
         _wait_ringing(call, float(cfg.ring_timeout))
         if _ringing(call):
             log.info("Not answered after %ss, cancelling", cfg.ring_timeout)
@@ -445,6 +446,8 @@ def logged_parse(msg):
         return _orig_parse(msg)
     if method != "REGISTER" and code != 100:
         log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
+    if method == "INVITE" and code < 200:
+        return None  # 180/183: nothing to do (pyVoIP would only print "TODO: Add 500 Error …" for 183)
     if method == "CANCEL":
         return None  # pyVoIP would take the 200 OK for an answered call
     if method == "BYE" and code >= 200 and fritz_sip.bye_confirmed(phone.sip, cid):

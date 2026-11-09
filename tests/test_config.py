@@ -25,6 +25,24 @@ def test_norm_number_without_country_code_keeps_prefix():
     assert config.norm_number("+49151", "") == "0049151"
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("04542 4635", "045424635"),         # #51: the space cut the number off in the INVITE
+    (" 0151/123-4567 ", "01511234567"),
+    ("+49 (0) 4542 4635", "+4945424635"),  # the (0) is not dialed after the country code
+    ("0049 (0)151 123", "0049151123"),
+    ("(04542) 4635", "045424635"),
+    ("**611", "**611"),
+    ("+49+151", "+49151"),
+    (None, ""),
+])
+def test_dial_form(raw, expected):
+    assert config.dial_form(raw) == expected
+
+
+def test_norm_number_drops_the_bracketed_zero():
+    assert config.norm_number("+49 (0) 4542 4635", "49") == "045424635"
+
+
 # ---------------------------------------------------------------- parse_access
 @pytest.mark.parametrize("value, expected", [
     ("shopping, calendar", {"shopping", "calendar"}),

@@ -28,7 +28,7 @@ class FakeSpeech:
         time.sleep(self.stt_delay)
         return self.texts[int(pcm[0])]
 
-    def synthesize(self, text):
+    def synthesize(self, text, language=""):
         self.synthesized.append(text)
         return np.zeros(40, dtype=np.int16)  # 5 ms
 

@@ -388,7 +388,7 @@ def test_due_task_is_called_followed_up_and_reported(main, planned):
     planned.sessions.append(talked())
     main.run_tasks()
     (number, message, passed), = planned.dialed
-    assert number == "04542 1234" and "AI assistant" in message and passed["id"] == task["id"]
+    assert number == "045421234" and "AI assistant" in message and passed["id"] == task["id"]
     assert planned.followed == [task["id"]] and planned.store.get(task["id"])["status"] == "done"
     assert planned.events["notify"] == [("notify.phone", "Auftrag Anruf bei Seeblick: erledigt",
                                          "Tisch um 19 Uhr reserviert.\nAnswers: Uhrzeit: 19:00")]
@@ -441,7 +441,7 @@ def test_result_is_called_back_to_the_requester(main, planned):
     planned.add(call_back=True)
     planned.sessions.append(talked())
     main.run_tasks()
-    assert [d[0] for d in planned.dialed] == ["04542 1234", "0151111"]
+    assert [d[0] for d in planned.dialed] == ["045421234", "0151111"]
     assert "Tisch um 19 Uhr reserviert." in planned.dialed[1][1] and planned.dialed[1][2] is None
 
 
@@ -470,6 +470,22 @@ def test_blocked_numbers_are_not_dialed_by_outbound(main, monkeypatch):
     monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
     assert main.outbound("112", "test") is None
     assert not main.busy.locked()
+
+
+def test_outbound_dials_the_complete_number_without_spaces(main, monkeypatch):
+    dialed = []
+
+    def call(number):  # stops right after dialing
+        dialed.append(number)
+        raise TimeoutError("test")
+
+    assert main.busy.acquire(blocking=False)
+    monkeypatch.setattr(main, "phone", SimpleNamespace(call=call))
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    assert main.outbound("04542 4635", "test") is None  # #51: the INVITE only got "04542"
+    main.busy.acquire()
+    main.outbound("+49 (0) 4542-4635", "test")
+    assert dialed == ["045424635", "045424635"] and not main.busy.locked()
 
 
 def test_tasks_api(server, planned):
@@ -508,7 +524,7 @@ def test_tasks_api_plans_free_text_with_claude(server, planned, main, monkeypatc
     monkeypatch.setattr(main.brain, "plan", lambda text, number, name: {
         "number": "0999", "goal": "Reserve a table for 4", "may_share": ["Name Jan Lenck"], "retries": 1})
     status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Reservier einen Tisch für 4"})
-    assert status == 201 and task["number"] == "04542 1234"  # the number given is never replaced
+    assert status == 201 and task["number"] == "045421234"  # the number given is never replaced, only spaces drop
     assert task["goal"] == "Reserve a table for 4" and task["may_share"] == ["Name Jan Lenck"] and task["retries"] == 1
 
 

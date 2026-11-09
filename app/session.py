@@ -316,7 +316,7 @@ class CallSession:
                 s, kind = item
                 if self.interrupt.is_set() or self.restart.is_set() or not self.alive():
                     continue
-                pcm = self.speech.synthesize(s)
+                pcm = self.speech.synthesize(s, ph.lang_of(self.language, s))  # language: phone numbers
                 with self._answer_lock:
                     if kind == ANSWER and not self._turn_audio:
                         self._turn_audio = True  # from now on no filler before the answer

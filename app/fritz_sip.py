@@ -89,7 +89,12 @@ def _digest(sip, hdr, ch, uri):
     return f"{hdr}: Digest " + ",".join(parts) + "\r\n"
 
 
+DIALABLE = re.compile(r"\+?[\d*#]+")
+
+
 def patched_invite(self, number, ms, sendtype):
+    if not DIALABLE.fullmatch(str(number)):  # a space would end the request line early: wrong number, broken parse
+        raise ValueError(f"not a dialable number: {number!r}")
     call_id = self.gen_call_id()
     sess_id = self.sessID.next()
     tag = self.gen_tag()
@@ -97,6 +102,7 @@ def patched_invite(self, number, ms, sendtype):
     branch = "z9hG4bK" + secrets.token_hex(12)
     cseq = self.inviteCounter.next()
     invite, uri = _build_invite(self, number, str(sess_id), ms, sendtype, branch, call_id, cseq, tag)
+    first = SIP.SIPMessage(invite.encode("utf8"))  # parsed before sending: a broken INVITE never rings anywhere
 
     with self.recvLock:
         self.out.sendto(invite.encode("utf8"), (self.server, self.port))
@@ -116,12 +122,12 @@ def patched_invite(self, number, ms, sendtype):
                 log.info("SIP %s %s for INVITE", code, resp.status.phrase)
                 if code in (100, 180, 183):
                     self.pending_invites[call_id] = (uri, branch, cseq, tag)
-                    return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+                    return first, call_id, sess_id
                 if code in (401, 407):
                     break
                 # final response without auth (e.g. 403/404/486): the status logger records and acknowledges it
                 self.parse_message(resp)
-                return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+                return first, call_id, sess_id
         finally:
             self.s.setblocking(True)  # state the receive loop expects
 
@@ -133,10 +139,11 @@ def patched_invite(self, number, ms, sendtype):
         branch = "z9hG4bK" + secrets.token_hex(12)
         cseq = self.inviteCounter.next()
         invite, _ = _build_invite(self, number, str(sess_id), ms, sendtype, branch, call_id, cseq, tag, auth)
-        self.out.sendto(invite.encode("utf8"), (self.server, self.port))
+        msg = SIP.SIPMessage(invite.encode("utf8"))  # parsed before sending, see above
         self.pending_invites[call_id] = (uri, branch, cseq, tag)
+        self.out.sendto(invite.encode("utf8"), (self.server, self.port))
         log.info("INVITE with credentials sent")
-        return SIP.SIPMessage(invite.encode("utf8")), call_id, sess_id
+        return msg, call_id, sess_id
 
 
 def cancel(sip, call_id: str) -> bool:
