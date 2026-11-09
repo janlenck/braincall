@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.1
+
+- Fix (#51): planned calls to numbers written with spaces ("04542 4635") failed and the FRITZ!Box dialed only the
+  first part. Numbers are now stored without spaces, dashes or brackets and always dialed complete; an INVITE that
+  cannot be parsed is never sent
+- Phone numbers are read out digit by digit ("null, vier, fünf, vier, …"; English and Ukrainian too, in the
+  caller's language) instead of in groups with swallowed digits. Dates, times and prices stay as they are
+- No more "TODO: Add 500 Error on Receiving SIP Response" for 183 Session Progress in the log
+
 ## 1.9.0
 
 - Planned calls with a task (#51, first part): Claudine calls on her own, holds the conversation and works through
