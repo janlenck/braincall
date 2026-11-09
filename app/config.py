@@ -103,10 +103,20 @@ CONFIG_FILE = [""]  # file actually loaded (for the log)
 WARNINGS: list[str] = []  # logged by main once logging is set up
 
 
+def dial_form(n) -> str:
+    """A number as it is stored and read back: digits, * and # (internal numbers like **611) and a leading +;
+    spaces, dashes, slashes and brackets dropped ("04542 4635" -> "045424635"). "+49 (0)151 …" loses the (0)."""
+    raw = str(n or "").strip()
+    if re.match(r"(\+|00)", raw):
+        raw = re.sub(r"\(\s*0\s*\)", "", raw)
+    s = re.sub(r"[^\d*#+]", "", raw)
+    return s[:1] + s[1:].replace("+", "")
+
+
 def norm_number(n, country_code="") -> str:
-    """Complete number in a comparable form: digits plus * and # (internal numbers like **611),
+    """Complete number in a comparable and dialable form: digits plus * and # (internal numbers like **611),
     international prefix of the own country folded to a leading 0 (+49151… == 0049151… == 0151…)."""
-    s = re.sub(r"[^\d*#+]", "", str(n or ""))
+    s = dial_form(n)
     s = ("00" + s[1:] if s.startswith("+") else s).replace("+", "")
     cc = "00" + re.sub(r"\D", "", str(country_code or ""))
     if len(cc) > 2 and s.startswith(cc):

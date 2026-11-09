@@ -23,13 +23,15 @@ class FakeSpeech:
         self.texts = []
         self.stt_delay = stt_delay
         self.synthesized = []
+        self.languages = []
 
     def transcribe(self, pcm, language):
         time.sleep(self.stt_delay)
         return self.texts[int(pcm[0])]
 
-    def synthesize(self, text):
+    def synthesize(self, text, language=None):
         self.synthesized.append(text)
+        self.languages.append(language)
         return np.zeros(40, dtype=np.int16)  # 5 ms
 
 
@@ -590,3 +592,11 @@ def test_hold_for_the_caller_is_limited(monkeypatch):
     s = make(workers=False)
     s._thinking = s._in_speech = s._seg_thinking = True  # constant noise
     assert s._play(np.zeros(40, np.int16), session_mod.ANSWER, "A.")
+
+
+def test_phone_numbers_are_spoken_in_the_language_of_the_caller():
+    s = make(language="auto")
+    s.last_text = "Яка в нього номер?"
+    s.say("045424635.")  # nothing but a number: its own text says nothing about the language
+    s.sentence_q.join()
+    assert s.speech.languages == ["uk"]

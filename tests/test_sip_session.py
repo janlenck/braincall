@@ -81,6 +81,62 @@ def test_build_invite():
     assert "m=audio 30000 RTP/AVP 0 8 101" in body and "a=fmtp:101 0-15" in body and "a=sendrecv" in body
 
 
+class Counter:
+    def __init__(self):
+        self.n = 0
+
+    def next(self):
+        self.n += 1
+        return self.n
+
+
+class Sock:
+    def __init__(self, answers):
+        self.answers = list(answers)
+
+    def settimeout(self, t):
+        pass
+
+    def setblocking(self, b):
+        pass
+
+    def recv(self, n):
+        return self.answers.pop(0)
+
+
+def invite_sip(answers=()):
+    import threading
+    sip = fake_sip()
+    sip.__dict__.update(recvLock=threading.Lock(), s=Sock(answers), inviteCounter=Counter(), sessID=Counter(),
+                        gen_call_id=lambda: "cid9", parse_message=lambda m: None)
+    sip.gen_ack = lambda resp: fritz_sip.patched_gen_ack(sip, resp)
+    return sip
+
+
+MS = {30000: {0: RTP.PayloadType.PCMU, 101: RTP.PayloadType.EVENT}}
+
+
+@pytest.mark.parametrize("number", ["04542 4635", "0151-123", "", "sip:x"])
+def test_invite_refuses_a_number_that_is_not_dialable(number):
+    sip = invite_sip()
+    with pytest.raises(ValueError):
+        fritz_sip.patched_invite(sip, number, MS, RTP.TransmitType.SENDRECV)
+    assert sip.out.sent == [] and sip.pending_invites == {}  # nothing rings anywhere
+
+
+def test_invite_with_credentials_dials_the_complete_number():
+    challenge = ("SIP/2.0 401 Unauthorized\r\nVia: SIP/2.0/UDP 192.168.178.20:5062;branch=z9hG4bKx;rport\r\n"
+                 "From: <sip:620@192.168.178.1>;tag=ourtag\r\nTo: <sip:045424635@192.168.178.1>;tag=fb\r\n"
+                 "Call-ID: cid9\r\nCSeq: 1 INVITE\r\n"
+                 'WWW-Authenticate: Digest realm="fritz.box", nonce="abc"\r\nContent-Length: 0\r\n\r\n')
+    sip = invite_sip([challenge.encode()])
+    msg, call_id, _ = fritz_sip.patched_invite(sip, "045424635", MS, RTP.TransmitType.SENDRECV)
+    invites = [m for m, _ in sip.out.sent if m.startswith("INVITE")]
+    assert len(invites) == 2 and all(m.startswith("INVITE sip:045424635@192.168.178.1 SIP/2.0") for m in invites)
+    assert "Authorization: Digest" in invites[1] and call_id == "cid9" and "cid9" in sip.pending_invites
+    assert msg.headers["Call-ID"] == "cid9"
+
+
 def test_cancel_reuses_branch_and_cseq_of_the_invite():
     sip = fake_sip()
     assert fritz_sip.cancel(sip, "cid1") is False

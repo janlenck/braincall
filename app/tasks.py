@@ -169,7 +169,7 @@ def _texts(value) -> list:
 
 def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") -> tuple[dict | None, str]:
     """A task from the tool input or the API body. Returns (task, "") or (None, why it is refused)."""
-    number = str(data.get("number") or "").strip()
+    number = config.dial_form(data.get("number"))  # stored and dialed exactly like this, no spaces
     refusal = number_refusal(cfg, number)
     if refusal:
         return None, f"Not planned: {refusal}."

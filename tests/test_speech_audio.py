@@ -107,6 +107,36 @@ def test_synthesize_tts1_gets_no_instructions():
     assert "instructions" not in body
 
 
+@pytest.mark.parametrize("text, language, expected", [
+    ("Ich rufe Kastor unter 04542 4635 an.", "de",
+     "Ich rufe Kastor unter null, vier, fünf, vier, zwei, vier, sechs, drei, fünf an."),
+    ("Unter 045424635.", "de", "Unter null, vier, fünf, vier, zwei, vier, sechs, drei, fünf."),
+    ("Call +44 20 7946.", "en", "Call plus, four, four, two, zero, seven, nine, four, six."),
+    ("Номер 0151/23456", "uk", "Номер нуль, один, п'ять, один, два, три, чотири, п'ять, шість"),
+    ("Numéro 0151 23456", "fr", "Numéro 0, 1, 5, 1, 2, 3, 4, 5, 6"),  # no words: digits one by one
+])
+def test_spell_numbers(text, language, expected):
+    assert speech_mod.spell_numbers(text, language) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Um 21:15 Uhr am 09.11.2026.", "Es sind 0,5 Grad.", "Das kostet 1050 Euro.", "Am 2026-11-09.", "Ruf **611 an.",
+    "James Bond 007.", "Code 0815", "Am 09/11/2026.", "Am 09-11-2026.", "Am 1/12/26.",
+    "Call +４９１５１２３４５６７.",  # other digit scripts: left to the TTS instead of failing the sentence
+])
+def test_spell_numbers_leaves_other_numbers(text):
+    assert speech_mod.spell_numbers(text, "de") == text
+
+
+def test_synthesize_spells_phone_numbers_in_the_conversation_language():
+    _, body = tts("Kastor hat die 04542 4635.")
+    assert body["input"] == "Kastor hat die null, vier, fünf, vier, zwei, vier, sechs, drei, fünf."
+    s = Speech(make_cfg(openai_api_key="test"))
+    s.http = FakeHTTP({("POST", "/audio/speech"): FakeResponse(content=np.zeros(240, dtype="<i2").tobytes())})
+    s.synthesize("Call 04542 4635.", "en")
+    assert s.http.calls[0][2]["json"]["input"] == "Call zero, four, five, four, two, four, six, three, five."
+
+
 # ---------------------------------------------------------------- audio helpers
 def test_u8_s16_conversion():
     assert audio.u8_to_s16(bytes([128, 255, 0])).tolist() == [0, 32512, -32768]

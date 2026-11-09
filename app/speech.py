@@ -28,6 +28,32 @@ HALLUCINATION_PATTERNS = re.compile(
     r"|^copyright\b|©|^www\.\S+$")
 
 
+# Phone numbers are spelled digit by digit before TTS: the voice otherwise reads "04542 4635" in groups
+# ("vierundsechzig" for 46, swallowed digits). A number starts with +, 0 or * and has at least 5 digits;
+# spaces, slashes and dashes between the digits are dropped. Times, dates and decimals stay as they are.
+PHONE_NUMBER = re.compile(r"(?<![\w.,+*#/-])(?:\+|\*{1,2}|0)[0-9*#]?(?:[ /-]?[0-9*#]){3,}(?![\w*#+]|[.,:]\d)")
+DATE = re.compile(r"\d{1,2}([/-])\d{1,2}\1\d{2,4}")  # 09/11/2026, 09-11-26: a date, not a number
+DIGIT_WORDS = {
+    "de": "null eins zwei drei vier fünf sechs sieben acht neun".split() + ["plus", "Stern", "Raute"],
+    "en": "zero one two three four five six seven eight nine".split() + ["plus", "star", "hash"],
+    "uk": "нуль один два три чотири п'ять шість сім вісім дев'ять".split() + ["плюс", "зірочка", "решітка"],
+}
+
+
+def spell_numbers(text: str, language: str = "") -> str:
+    """Phone numbers in the text as single words, one per digit: "045424635" -> "null, vier, fünf, vier, …".
+    Language without words: the digits separated by commas, read one by one in any language."""
+    words = DIGIT_WORDS.get(language)
+
+    def spell(m):
+        chars = [c for c in m.group(0) if c in "0123456789+*#"]
+        if sum(c.isdigit() for c in chars) < 5 or DATE.fullmatch(m.group(0)):
+            return m.group(0)
+        return ", ".join(words["0123456789+*#".index(c)] if words else c for c in chars)
+
+    return PHONE_NUMBER.sub(spell, text)
+
+
 class Speech:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -60,18 +86,22 @@ class Speech:
             return ""
         return text
 
-    def synthesize(self, text: str) -> np.ndarray:
+    def synthesize(self, text: str, language: str | None = None) -> np.ndarray:
+        """language: of the conversation, for spelled phone numbers (de, en, uk; "" = unknown: plain digits;
+        None = the configured one)."""
+        letters = [c for c in text if c.isalpha()]
+        cyr = sum(unicodedata.name(c, "").startswith("CYRILLIC") for c in letters)
+        ukrainian = bool(letters) and cyr > len(letters) / 2
+        spoken = spell_numbers(text, "uk" if ukrainian else self.cfg.language if language is None else language)
         body = {
             "model": self.cfg.tts_model,
             "voice": self.cfg.tts_voice,
-            "input": text,
+            "input": spoken,
             "response_format": "pcm",
         }
         if "tts-1" not in self.cfg.tts_model:
             instr = self.cfg.tts_instructions or ""
-            letters = [c for c in text if c.isalpha()]
-            cyr = sum(unicodedata.name(c, "").startswith("CYRILLIC") for c in letters)
-            if letters and cyr > len(letters) / 2:  # Ukrainian text -> Ukrainian pronunciation
+            if ukrainian:  # Ukrainian text -> Ukrainian pronunciation
                 if "Deutsch" in instr or "German" in instr:  # user instructions may be German or English
                     instr = instr.replace("Deutsch", "Ukrainisch").replace("German", "Ukrainian")
                 else:
