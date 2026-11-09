@@ -51,8 +51,10 @@ class FakeBrain:
 
     def turn(self, messages, on_sentence, should_abort, before_tool=None, **kw):
         self.seen.append([dict(m) for m in messages])
+        self.kw = kw
         f = self.script.pop(0)
-        hang = f(SimpleNamespace(messages=messages, say=on_sentence, abort=should_abort, before_tool=before_tool))
+        hang = f(SimpleNamespace(messages=messages, say=on_sentence, abort=should_abort, before_tool=before_tool,
+                                 server_tool=kw.get("on_server_tool")))
         messages.append({"role": "assistant", "content": "…"})  # like Brain.turn
         return hang
 
@@ -332,6 +334,39 @@ def test_no_status_phrase_when_the_model_already_said_something():
     utt(s, "Wie warm ist es?")
     run_converse(s)
     assert [line for line in s.transcript if line.startswith("Claudine")] == ["Claudine: Ich schaue nach."]
+
+
+def test_web_search_gets_its_phrase_even_after_a_thinking_sound():
+    """A search takes a few seconds: "Ich suche das kurz raus." before the first one, also after "Hmm…"."""
+    def f(ctx):
+        time.sleep(0.3)  # the filler plays meanwhile
+        ctx.server_tool("web_search")
+        ctx.server_tool("web_fetch")
+        time.sleep(0.1)
+        ctx.say("Heute bis 20 Uhr.")
+        return True
+
+    brain = FakeBrain(f)
+    s = make(brain, phrases=FakeCache(), filler_delay_ms=100, still_working_s=0)
+    s.web = None
+    utt(s, "Wann hat der Baumarkt auf?")
+    run_converse(s)
+    said = [line[len("Claudine: "):] for line in s.transcript if line.startswith("Claudine")]
+    assert said[0] in ph.FILLERS
+    assert said[1:] == ["Ich suche das kurz raus.", "Heute bis 20 Uhr."]
+    assert brain.kw["web"] is None and brain.kw["who"] == "Jan (phone)"
+
+
+def test_no_web_phrase_after_the_answer_started():
+    def f(ctx):
+        ctx.say("Ich schaue im Netz.")
+        ctx.server_tool("web_search")
+        return True
+
+    s = make(FakeBrain(f), phrases=FakeCache(), filler_delay_ms=2000, still_working_s=0)
+    utt(s, "Wann fährt der Zug?")
+    run_converse(s)
+    assert [line for line in s.transcript if line.startswith("Claudine")] == ["Claudine: Ich schaue im Netz."]
 
 
 def test_long_work_gets_still_on_it():

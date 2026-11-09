@@ -333,3 +333,11 @@ def test_unknown_paths(server):
 def test_config_was_loaded_from_the_test_file(main):
     assert main.cfg.sip_user == "620"
     assert config.CONFIG_FILE[0].endswith("config.json")
+
+
+def test_web_setting_per_caller(main):
+    """Unknown callers ("*") never get the web tools; listed callers by access unless "web" says else."""
+    assert main.web_for({"number": "*", "access": frozenset({"read"}), "web": True}) is False
+    assert main.web_for(None) is False
+    assert main.web_for(main.find_caller("0171444")) is None  # Walter: by access (read)
+    assert main.web_for({"number": "0151", "web": False}) is False

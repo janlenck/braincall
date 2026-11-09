@@ -94,6 +94,7 @@ class CallSession:
         self._turn_audio = False          # the first sentence of the answer has been synthesized
         self._turn_said = False           # the model said something in this turn
         self._turn_phrase = False         # a filler or status phrase was played in this turn
+        self._turn_tool_phrase = False    # a status phrase for a tool ("Ich schaue in den Kalender.") was played
         self._turn_last_sentence = 0.0    # start of the last sentence played in this turn
         self._turn_token = 0
         self._stale_before = 0.0          # utterances that ended before this belong to an earlier question
@@ -108,6 +109,7 @@ class CallSession:
         self.audio_q: queue.Queue = queue.Queue()
         self.transcript: list[str] = []
         self.access = frozenset({"guest"})
+        self.web = False  # the caller's web setting (main.web_for): None = by access, False = never
         self.actions: list[str] = []  # changing tool calls, for the summary
         self.counters: dict[str, int] = {}  # per-call limits, e.g. bookings by callers without admin
         self.caller_turns = 0
@@ -512,11 +514,25 @@ class CallSession:
             if block.name in MUTATING:
                 self._side_effects = True
             phrase_ok = not (self._turn_said or self._turn_phrase)
-        if phrase_ok and self.cfg.fillers and (spec is None or spec.final.is_set()):
-            key = ph.tool_key(block.name, block.input, self.cfg)
-            text = self._phrase_texts().get("tools", {}).get(key, "")
-            self._queue_phrase(text, FILLER)
+        if phrase_ok:
+            self._tool_phrase(block.name, block.input)
         return True
+
+    def _server_tool(self, name: str):
+        """Claude starts a web search or fetch (runs at Anthropic, nothing to wait for): "Ich suche das kurz raus."
+        before the first one, also after a thinking sound, since a search takes a few seconds."""
+        with self._answer_lock:
+            if self._abort() or self._turn_said or self._turn_tool_phrase:
+                return
+        self._tool_phrase(name, {})
+
+    def _tool_phrase(self, name: str, data: dict):
+        spec = self._spec_turn
+        if self.cfg.fillers and (spec is None or spec.final.is_set()):
+            key = ph.tool_key(name, data, self.cfg)
+            text = self._phrase_texts().get("tools", {}).get(key, "")
+            if self._queue_phrase(text, FILLER):
+                self._turn_tool_phrase = True
 
     def _after_tool(self, name: str, seconds: float):
         if self._timer is not None:
@@ -527,7 +543,7 @@ class CallSession:
         with self._answer_lock:
             self._thinking = True
             self._side_effects = False
-            self._turn_audio = self._turn_said = self._turn_phrase = False
+            self._turn_audio = self._turn_said = self._turn_phrase = self._turn_tool_phrase = False
             self._turn_last_sentence = 0.0
             self.restart.clear()
 
@@ -544,7 +560,8 @@ class CallSession:
             hang = self.brain.turn(messages, self._say_answer, self._abort,
                                    access=self.access, language=self.language, actions=self.actions,
                                    counters=self.counters, before_tool=self._before_tool,
-                                   after_tool=self._after_tool, on_token=self._on_token)
+                                   after_tool=self._after_tool, on_token=self._on_token, web=self.web,
+                                   who=f"{self.caller_label} (phone)", on_server_tool=self._server_tool)
             if spec is not None:
                 self._await_confirm(spec)
             self.wait_spoken()
@@ -770,9 +787,11 @@ class CallSession:
                            outbound=outbound, on_behalf="admin" not in self.access)
 
     def run(self, outbound: bool, message: str = "", caller: str = "", access=frozenset({"guest"}),
-            language: str = "", caller_name: str = "", instructions: str = "", previous: str = ""):
-        """previous: system note with summaries of earlier calls with this number (memory.note), may be empty."""
+            language: str = "", caller_name: str = "", instructions: str = "", previous: str = "", web=False):
+        """previous: system note with summaries of earlier calls with this number (memory.note), may be empty.
+        web: the caller's web setting (None = by access, see web.allowed; False = never)."""
         self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
+        self.web = web
         full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
         name = ph.first_name(full)                                  # to address the person: "Jan"

@@ -58,13 +58,14 @@
   // instructions: extra instructions for the assistant for this caller (optional)
   // language: fixed language for this caller (optional, otherwise "language")
   // notify: send the summary after the call (optional; default: everyone except admin)
+  // web: may search the web (optional; default: admin and read when web_access is on; never for "*")
   "callers": [
     { "number": "0151xxxxxxx", "name": "Jan Mobile", "access": "admin" },  // first word of name = address
     { "number": "**611", "name": "Jan Internal", "access": "admin" },     // internal FRITZ!Box numbers work too
     { "number": "0171xxxxxxx", "name": "Walter", "access": "read" },
     { "number": "0170xxxxxxx", "name": "Maryna", "access": "calendar", "language": "uk",
       "instructions": "May ask whether Jan is at home in the next 7 days; if free, book her wish date titled \"Maryna comes\"." },
-    { "number": "0160xxxxxxx", "name": "Shopper", "access": ["shopping", "calendar"] },
+    { "number": "0160xxxxxxx", "name": "Shopper", "access": ["shopping", "calendar"], "web": true },
     { "number": "*", "name": "Unknown", "access": "guest" }
   ],
   "notify_services": [],              // summary after incoming calls, e.g. ["notify.mobile_app_phone", "notify.email"]
@@ -123,5 +124,17 @@
   "calendar_max_bookings": 2,         // callers without admin: appointments per call; 0 = no limit
   "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                       "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
-  "confirm_domains": ["cover", "lock", "alarm_control_panel"]  // ask for an explicit "yes" first
+  "confirm_domains": ["cover", "lock", "alarm_control_panel"],  // ask for an explicit "yes" first
+
+  // --- Web search (Anthropic's web_search / web_fetch: $10 per 1,000 searches plus tokens) ---
+  "web_access": false,                // on: callers with access admin/read (or "web": true) may look things up
+  "web_max_searches": 3,              // searches per answer; 0 = no limit
+  "web_max_fetches": 2,               // pages read per answer; 0 = no limit
+  "web_max_searches_per_day": 50,     // all calls together (logs\web-usage.json); 0 = no limit
+  "web_max_fetches_per_day": 50,
+  "web_max_content_tokens": 8000,     // longer pages are cut off; 0 = no limit
+  "web_allowed_domains": [],          // only these sites, e.g. ["bahn.de"]; or:
+  "web_blocked_domains": [],          // never these sites (ignored if web_allowed_domains is set)
+  "web_city": "",                     // for local results, e.g. "Mölln"
+  "web_country": ""                   // two letters, e.g. "DE"
 }

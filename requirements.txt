@@ -1,5 +1,5 @@
 pyVoIP==1.6.8
-anthropic>=0.40
+anthropic>=0.80
 requests>=2.31
 websocket-client>=1.7
 numpy>=1.26

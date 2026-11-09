@@ -35,6 +35,7 @@ configuration:
       calendar (nur frei/belegt, Termine ohne Rückfrage bei dir eintragen), shopping (nur Einkaufsliste),
       guest (nur Nachricht aufnehmen). instructions: zusätzliche Anweisung an den Assistenten für diesen Anrufer.
       language: feste Sprache. notify: Zusammenfassung schicken (Standard: alle außer admin).
+      web: darf im Internet suchen (Standard: admin und read, wenn Websuche an ist; nie für *).
   notify_services:
     name: Benachrichtigung nach Anrufen
     description: 'Notify-Entitäten oder -Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.handy, notify.mobile_app_handy oder ein E-Mail-Notifier.'
@@ -149,3 +150,35 @@ configuration:
   confirm_domains:
     name: Mit Rückfrage
     description: Vor dem Steuern dieser Domains fragt der Assistent ausdrücklich nach.
+  web_access:
+    name: Websuche
+    description: >-
+      Der Assistent darf im Internet suchen und Seiten lesen (Öffnungszeiten, Rezepte, Zugzeiten …), für Anrufer mit
+      Zugriff admin oder read oder mit web an. Nie für unbekannte Anrufer. Kostet etwa 10 $ pro 1.000 Suchen plus Tokens.
+  web_max_searches:
+    name: Suchen pro Antwort
+    description: 0 = keine Grenze.
+  web_max_fetches:
+    name: Gelesene Seiten pro Antwort
+    description: 0 = keine Grenze.
+  web_max_searches_per_day:
+    name: Suchen pro Tag
+    description: Alle Anrufe zusammen. 0 = keine Grenze.
+  web_max_fetches_per_day:
+    name: Gelesene Seiten pro Tag
+    description: Alle Anrufe zusammen. 0 = keine Grenze.
+  web_max_content_tokens:
+    name: Längste Seite (Tokens)
+    description: Längere Seiten werden abgeschnitten. 0 = keine Grenze.
+  web_allowed_domains:
+    name: Nur diese Seiten
+    description: z. B. bahn.de, chefkoch.de; leer = alle. Wenn gesetzt, wird „Nie diese Seiten“ ignoriert.
+  web_blocked_domains:
+    name: Nie diese Seiten
+    description: Seiten, die nie durchsucht oder gelesen werden.
+  web_city:
+    name: Ort für die Websuche
+    description: Ort für lokale Ergebnisse, z. B. Mölln. Die Zeitzone wird immer mitgegeben.
+  web_country:
+    name: Land für die Websuche
+    description: Zwei Buchstaben, z. B. DE; leer = keins.

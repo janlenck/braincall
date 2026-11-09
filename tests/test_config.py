@@ -48,13 +48,14 @@ def test_parse_access_unknown_word_is_ignored_with_warning():
 # ---------------------------------------------------------------- _callers
 def test_callers_are_normalised():
     out = config._callers([
-        {"number": " 0151 ", "name": " Jan ", "access": "admin", "language": "uk", "notify": True},
-        {"number": "*", "access": "nonsense", "notify": "yes"},
+        {"number": " 0151 ", "name": " Jan ", "access": "admin", "language": "uk", "notify": True, "web": False},
+        {"number": "*", "access": "nonsense", "notify": "yes", "web": "yes"},
     ])
     assert out[0] == {"number": "0151", "name": "Jan", "access": frozenset({"admin"}), "instructions": "",
-                      "language": "uk", "notify": True}
+                      "language": "uk", "notify": True, "web": False}
     assert out[1]["access"] == frozenset({"guest"})
     assert out[1]["notify"] is None  # only real booleans count
+    assert out[1]["web"] is None
 
 
 def test_callers_without_number_are_dropped():
@@ -211,3 +212,14 @@ def test_load_timezone_from_tz_variable(tmp_path, monkeypatch, tmp_env):
     assert _load(tmp_path, monkeypatch, {"timezone": "Europe/Kyiv"}).timezone == "Europe/Kyiv"
     monkeypatch.setenv("TZ", "CET-1CEST")  # POSIX string, not an IANA name
     assert _load(tmp_path, monkeypatch, {}).timezone == config.DEFAULTS["timezone"]
+
+
+# ---------------------------------------------------------------- deps
+def test_outdated_packages_are_found(monkeypatch):
+    import importlib.metadata
+
+    import deps
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: {"anthropic": "0.79.2"}[name])
+    assert deps.outdated("anthropic>=0.80")
+    assert not deps.outdated("anthropic>=0.79")
+    assert not deps.outdated("pyVoIP==1.6.8")  # only minimum versions are checked

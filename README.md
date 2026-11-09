@@ -5,7 +5,8 @@
 **Brain Call – when your brain calls from home.**
 
 A phone voice agent built on Claude: it calls you through a FRITZ!Box and talks with you, and you can call it.
-It can read and control Home Assistant (states, lights, lists, calendars) during the call.
+It can read and control Home Assistant (states, lights, lists, calendars) during the call, and look things up on
+the web (opening hours, recipes, train times) if you switch that on.
 
 Runs on Windows (Python 3.12) or Linux. Audio is G.711 over SIP using pyVoIP (with fixes for the FRITZ!Box).
 
@@ -16,7 +17,7 @@ Trigger (HA automation, script, test-call.bat)
 app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
    │
    ├─ voice activity detection ─► OpenAI STT (gpt-4o-transcribe)
-   ├─ Claude (streaming, tools: Home Assistant, hang up)
+   ├─ Claude (streaming, tools: Home Assistant, web search/fetch, hang up)
    └─ OpenAI TTS (gpt-4o-mini-tts) ─► phone
 ```
 
@@ -35,6 +36,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/phrases.py` | fixed phrases (greetings, fillers, status phrases) and their cached audio |
 | `app/timing.py` | timing log per turn and per call |
 | `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
+| `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
@@ -103,6 +105,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
     "free"/"busy".
   - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).
   - `guest`: no access; asks for name and reason. The note goes to `logs/call-notes.txt`.
+- `web` (`true`/`false`) overrides who may search the web (see [Web search](#web-search)); default: `admin` and
+  `read`. Guests and the `"*"` entry never get it.
 - `instructions` are appended to the prompt for this caller; they can narrow, not widen, the access.
 - `language` fixes the language of this caller.
 - Numbers are compared completely; `+49…`, `0049…` and `0…` count as the same (`country_code`).
@@ -197,6 +201,34 @@ rest_command:
 After each call the agent fires the HA event `braincall_call`
 (`number`, `answered`, `reason`, `duration_s`, `transcript`, `caller_name`, `access`, `summary`).
 
+## Web search
+
+With `web_access: true` Claudine can look things up on the web like Claude in the Claude chat: "Wann hat der
+Baumarkt in Mölln heute auf?", "Such mir ein Rezept für Grünkohl". Claude decides itself when to search and which
+page to read. Search and fetch are Anthropic's server tools (`web_search`, `web_fetch`) and run at Anthropic inside
+the request, no own crawler or search provider. Costs: $10 per 1,000 searches plus the tokens of the results and
+pages, billed to the Anthropic account.
+
+- **Who:** callers with access `admin` or `read`; `"web": true` / `false` per caller changes that. Guests and unknown
+  callers (`"*"`) never get it. Off by default (`web_access: false`).
+- **Limits:** `web_max_searches` (default 3) and `web_max_fetches` (default 2) per answer, enforced by the API;
+  `web_max_searches_per_day` / `web_max_fetches_per_day` (default 50 each) for all calls together, counted in
+  `logs/web-usage.json`. When the day is used up the tool is left out; in a call that already used it, it stays
+  (the API needs it for the earlier results) with at most one more search per answer, and Claude is told not to use
+  it. `web_max_content_tokens` (default 8000) cuts long pages. 0 = no limit for each of them.
+- **Sites:** `web_allowed_domains` (only these) or `web_blocked_domains` (never these); if both are set only the
+  first counts. `web_city` / `web_country` (e.g. `"Mölln"`, `"DE"`) and the timezone localize results.
+- **On the phone:** before the first search Claudine says "Ich suche das kurz raus." (also after a "Hmm…"), and "Ich
+  bin noch dran." if it takes long. Answers are short, without URLs; URLs and citation marks are never read out.
+  A long research that the API pauses (`pause_turn`) is continued automatically.
+- **Safety:** web pages are data, never instructions. Once a search or page result is in the conversation, switching,
+  bookings and list changes are held back until the caller has said something after Claude asked: a page cannot
+  confirm a change by itself. Every answer with web use is logged per caller (`Web Jan Mobile (phone): 2 searches,
+  1 fetches (today 7/50 …); domains: …; queries: …`), and the summary after the call mentions lookups briefly.
+- Fetching is limited to URLs that already appeared in the conversation (search results, what the caller said).
+  Pages that need JavaScript cannot be read; text, HTML and PDF work. The basic tool versions are used on every model
+  (no dynamic filtering): no code execution in between, and the limits per answer hold.
+
 ## Conversation flow and timing
 
 - **Greeting without waiting:** greetings are synthesized at startup and kept in `cache/` in the log folder
@@ -242,7 +274,8 @@ After each call the agent fires the HA event `braincall_call`
 ## Tests
 
 The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: network access is replaced by fakes.
-They cover access rights and tools per caller, Home Assistant control limits, calendars and restricted bookings,
+They cover access rights and tools per caller, web search (tools by access, limits, server tool blocks, `pause_turn`,
+confirmation after web content), Home Assistant control limits, calendars and restricted bookings,
 configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes, and the
 conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers, timing).
 

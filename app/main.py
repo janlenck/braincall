@@ -39,6 +39,7 @@ from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
 from session import CallSession  # noqa: E402
 from speech import Speech  # noqa: E402
+import web  # noqa: E402
 
 cfg = config.load()
 _LOGDIR = Path(cfg.log_dir)
@@ -120,6 +121,13 @@ def caller_name(caller: dict | None) -> str:
     if not caller or caller["number"] == "*":
         return ""
     return caller["name"] or OWNER or caller["number"]
+
+
+def web_for(caller: dict | None):
+    """The caller's web setting for Brain: None = by access (admin, read), never for unknown callers ("*")."""
+    if not caller or caller["number"] == "*":
+        return False
+    return caller.get("web")
 
 
 def lang_for(caller: dict | None) -> str:
@@ -232,7 +240,8 @@ def outbound(number: str, message: str):
         access = caller["access"] if caller else GUEST
         session.run(outbound=True, message=message, caller=number, language=lang_for(caller),
                     access=access, caller_name=caller_name(caller),
-                    instructions=caller["instructions"] if caller else "", previous=previous(number, access))
+                    instructions=caller["instructions"] if caller else "", previous=previous(number, access),
+                    web=web_for(caller))
         log.info("Call ended")
     except TimeoutError as e:
         log.warning("Outbound call failed: %s", e)
@@ -290,7 +299,7 @@ def on_incoming(call):
         session = CallSession(call, brain, speech, cfg, phrase_cache)
         session.run(outbound=False, caller=number, access=caller["access"], language=lang_for(caller),
                     caller_name=name, instructions=caller["instructions"],
-                    previous=previous(number, caller["access"]))
+                    previous=previous(number, caller["access"]), web=web_for(caller))
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
@@ -455,6 +464,11 @@ def main():
     log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
     log.info("Callers: %s", ", ".join(f"{c['name'] or c['number']} ({','.join(sorted(c['access']))})"
                                       for c in cfg.callers) or "none, incoming calls are rejected")
+    if cfg.web_access:
+        with_web = [c["name"] or c["number"] for c in cfg.callers if web.allowed(cfg, c["access"], web_for(c))]
+        log.info("Web search: on for %s", ", ".join(with_web) or "nobody (access admin/read or \"web\": true)")
+    else:
+        log.info("Web search: off (web_access)")
     server = None
 
     def on_sigterm(signum, frame):  # Home Assistant stops the add-on with SIGTERM

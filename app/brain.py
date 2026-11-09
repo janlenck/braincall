@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
+import web as web_mod
+
 log = logging.getLogger("brain")
 
 BASE_PROMPT = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic),
@@ -265,6 +267,8 @@ MUTATING = ("ha_control", "ha_create_event", "shopping_edit")  # recorded for th
 LANG_NAMES = {"de": "German", "uk": "Ukrainian", "en": "English"}
 
 _END = re.compile(r"[.!?…:](?=\s)")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")      # [Baumarkt Mölln](https://…) -> Baumarkt Mölln
+_URL = re.compile(r"\(?\b(?:https?://|www\.)[^\s)]*\)?")  # URLs are never read out
 _FAKE_HANGUP = re.compile(r"\[[^\]]*(tool call|hang_up|auflegen)|(hang_up|auflegen)\]")
 
 
@@ -279,9 +283,10 @@ class SentenceSplitter:
         # only bracketed pseudo tool calls like "[Tool call: hang_up]" (possibly split across two sentences)
         if _FAKE_HANGUP.search(s.lower()):
             self.fake_hangup = True
-        s = re.sub(r"\[[^\]]*\]?", "", s)  # never read out "[Tool call: …]" and the like
+        s = _URL.sub("", _MD_LINK.sub(r"\1", s))
+        s = re.sub(r"\[[^\]]*\]?", "", s)  # never read out "[Tool call: …]", citation marks "[1]" and the like
         s = re.sub(r"^[^\[]*\]", "", s)    # rest of a bracket that was split across two sentences
-        s = s.replace("*", "").replace("#", "").strip()
+        s = re.sub(r"\s+([,.!?:])", r"\1", re.sub(r"\s{2,}", " ", s.replace("*", "").replace("#", ""))).strip()
         if s:
             self.emitted.append(s)
             self.emit(s)
@@ -324,11 +329,21 @@ class Brain:
             self.tools += [TOOL_SHOPPING, TOOL_SHOPPING_EDIT]
         owner = (cfg.owner_name or "").strip().split(" ")[0] or "the owner"
         self.tool_busy = {**TOOL_BUSY, "description": TOOL_BUSY["description"].replace("{owner}", owner)}
+        self.web_budget = web_mod.Budget(cfg)
 
-    def tools_for(self, access) -> list:
-        """The tools a caller gets: the code decides what is allowed, not the prompt."""
+    def tools_for(self, access, web=None, messages=None, limits=None) -> list:
+        """The tools a caller gets: the code decides what is allowed, not the prompt.
+        web: the caller's web setting (None = default by access, see web.allowed); messages: the conversation,
+        for the web limits of this turn (limits: precomputed web.turn_limits)."""
+        tools = self._ha_tools_for(access)
+        if web_mod.allowed(self.cfg, access, web):
+            search, fetch, _ = limits or web_mod.turn_limits(self.cfg, self.web_budget, messages or [])
+            tools = tools + web_mod.tools(self.cfg, search, fetch)
+        return tools
+
+    def _ha_tools_for(self, access) -> list:
         if "admin" in access:
-            return self.tools
+            return list(self.tools)
         if not self.ha.enabled:
             return [TOOL_HANGUP]
         tools = [TOOL_HANGUP]
@@ -342,13 +357,19 @@ class Brain:
             tools += [TOOL_SHOPPING, TOOL_SHOPPING_EDIT]
         return tools
 
-    def system(self, language: str = "de") -> str:
+    def system(self, language: str = "de", web: bool = False, exhausted=(), voice: bool = True) -> str:
+        """web: the web tools are in this call; exhausted: web tools whose daily limit is used up."""
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
         fillers = ("- While you use tools the phone system already plays a short waiting phrase such as \"one moment, "
                    "let me check\"; do not announce lookups yourself.\n" if self.cfg.fillers else "")
         prompt = (BASE_PROMPT.replace("{now}", now).replace("{fillers}", fillers)
                   .replace("{name}", self.cfg.assistant_name or "Claude")
                   .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
+        if web:
+            prompt += web_mod.PROMPT.replace("{links}", web_mod.LINKS_VOICE if voice else web_mod.LINKS_TEXT)
+            if exhausted:
+                prompt += (f"- The daily limit for {' and '.join(exhausted)} is used up: do not use "
+                           f"{'them' if len(exhausted) > 1 else 'it'} today; say so if the caller asks for a lookup.\n")
         prompt += "\n" + LANG_RULES.get(language, LANG_RULES["auto"])
         if self.cfg.extra_prompt:
             prompt += "\n" + self.cfg.extra_prompt
@@ -408,7 +429,9 @@ class Brain:
 
     @staticmethod
     def _repair(messages: list):
-        """Safety net: every tool_use needs a tool_result right after it, otherwise the API rejects the request."""
+        """Safety net: every tool_use needs a tool_result right after it, otherwise the API rejects the request.
+        Only client tool_use blocks: server tools (web_search, web_fetch) bring their result blocks along in the
+        assistant message and never get a tool_result from us."""
         i = 0
         while i < len(messages):
             m = messages[i]
@@ -433,40 +456,131 @@ class Brain:
 
     @staticmethod
     def _interrupted(messages: list, said: str = ""):
+        # A turn paused by the API (pause_turn) can end with a server tool call that has not run yet; it would
+        # never get its result once the turn is given up, so it is dropped.
+        last = messages[-1] if messages else None
+        if last and last["role"] == "assistant" and isinstance(last["content"], list):
+            done = {b.get("tool_use_id") for b in last["content"] if isinstance(b, dict)}
+            while (last["content"] and isinstance(last["content"][-1], dict)
+                   and last["content"][-1].get("type") == "server_tool_use"
+                   and last["content"][-1].get("id") not in done):
+                last["content"].pop()
+            if not last["content"]:
+                messages.pop()
         messages.append({"role": "assistant", "content": (said or "…") + " [interrupted by the caller]"})
+
+    @staticmethod
+    def _confirm_key(block) -> str:
+        i = block.input or {}
+        target = {"ha_control": (i.get("entity_id"), str(i.get("service", "")).split(".")[-1]),
+                  "ha_create_event": (i.get("start"),),
+                  "shopping_edit": (i.get("action"), i.get("item"))}.get(block.name, ())
+        return json.dumps([block.name, *target], ensure_ascii=False)
+
+    def _web_gate(self, block, messages: list, counters: dict) -> str:
+        """After web content entered the conversation, a changing tool only runs with confirmed=true after the
+        caller said something since the tool was last refused (a web page cannot confirm for the caller).
+        Returns "" (go ahead) or the refusal for Claude."""
+        if block.name not in MUTATING or not web_mod.has_content(messages):
+            return ""
+        pending = counters.setdefault("web_confirm", {})
+        key = self._confirm_key(block)
+        if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,
+                                                                                                    pending[key]):
+            del pending[key]
+            return ""
+        pending[key] = len(messages)
+        log.info("Tool %s held back: web content in the conversation, asking the caller first", block.name)
+        return web_mod.CONFIRM
+
+    def _web_used(self, content: list, used: dict):
+        """Counts the searches and fetches of one response (also of an aborted one) for the daily limit."""
+        s = web_mod.summary(content)
+        if s["searches"] or s["fetches"]:
+            self.web_budget.add(s["searches"], s["fetches"])
+            for k in used:
+                used[k] += s[k]
+
+    def _web_log(self, used: dict, who: str, actions: list | None):
+        if not (used["searches"] or used["fetches"]):
+            return
+        today = self.web_budget.today()
+        limits = (self.cfg.web_max_searches_per_day or "-", self.cfg.web_max_fetches_per_day or "-")
+        log.info("Web %s: %d searches, %d fetches (today %d/%s searches, %d/%s fetches); domains: %s; queries: %s",
+                 who or "caller", used["searches"], used["fetches"], today["searches"], limits[0],
+                 today["fetches"], limits[1], ", ".join(dict.fromkeys(used["domains"])) or "-",
+                 "; ".join(q for q in used["queries"] if q) or "-")
+        if actions is not None:
+            what = "; ".join(q for q in used["queries"] if q) or "pages"
+            sources = ", ".join(list(dict.fromkeys(used["domains"]))[:5])
+            actions.append(f"web lookup: {what}" + (f" (sources: {sources})" if sources else ""))
 
     def turn(self, messages: list, on_sentence, should_abort, access=frozenset({"guest"}),
              language: str = "de", actions: list | None = None, counters: dict | None = None,
-             before_tool=None, after_tool=None, on_token=None) -> bool:
+             before_tool=None, after_tool=None, on_token=None, web=None, who: str = "",
+             on_server_tool=None, voice: bool = True) -> bool:
         """One assistant turn including the tool loop. Returns True = hang up.
-        actions collects the changing tool calls (for the summary after the call),
-        counters keeps per-call limits across turns (bookings by callers without admin).
+        actions collects the changing tool calls and web lookups (for the summary after the call),
+        counters keeps per-call state across turns (bookings by callers without admin, pending confirmations).
         before_tool(block) -> bool runs before each tool call (False = abort the turn, the tool is not run),
-        after_tool(name, seconds) after it; on_token() on every streamed text piece (for the timing log)."""
-        tools = self.tools_for(access)
+        after_tool(name, seconds) after it (also for web searches and fetches); on_token() on every streamed text
+        piece (for the timing log); on_server_tool(name) when Claude starts a web search or fetch.
+        web: the caller's web setting (see web.allowed); who: caller and channel for the web log;
+        voice: the answer is spoken (no links)."""
         counters = {} if counters is None else counters
-        for _ in range(8):
+        web_ok = web_mod.allowed(self.cfg, access, web)
+        limits = web_mod.turn_limits(self.cfg, self.web_budget, messages) if web_ok else None
+        tools = self.tools_for(access, web, limits=limits)
+        system = self.system(language, web=web_ok, exhausted=limits[2] if limits else (), voice=voice)
+        used = {"searches": 0, "fetches": 0, "queries": [], "urls": [], "domains": []}
+        try:
+            return self._loop(messages, on_sentence, should_abort, access, tools, system, actions, counters,
+                              before_tool, after_tool, on_token, on_server_tool, used)
+        finally:
+            self._web_log(used, who, actions)
+
+    def _loop(self, messages, on_sentence, should_abort, access, tools, system, actions, counters,
+              before_tool, after_tool, on_token, on_server_tool, used) -> bool:
+        for _ in range(10):
             if should_abort():
                 self._interrupted(messages)
                 return False
             self._repair(messages)
             splitter = SentenceSplitter(on_sentence)
             aborted = False
+            started = {}  # server tool id -> (name, start), for the timing log
             with self.client.messages.stream(
                 model=self.cfg.claude_model,
                 max_tokens=2000,
-                system=self.system(language),
+                system=system,
                 tools=tools,
                 messages=messages,
             ) as stream:
-                for text in stream.text_stream:
-                    if on_token is not None:
-                        on_token()
+                for event in stream:
+                    kind = getattr(event, "type", "")
+                    if kind == "content_block_start":
+                        block = event.content_block
+                        if block.type == "server_tool_use":
+                            splitter.flush()  # "Ich schaue nach." before the search; the next text block follows
+                            started[block.id] = (block.name, time.monotonic())
+                            if on_server_tool is not None:
+                                on_server_tool(block.name)
+                        elif block.type in web_mod.RESULT_TYPES and after_tool is not None:
+                            name, t0 = started.pop(getattr(block, "tool_use_id", ""), ("", 0.0))
+                            if name:
+                                after_tool(name, time.monotonic() - t0)
                     if should_abort():
                         aborted = True
                         break
-                    splitter.feed(text)
-                if not aborted:
+                    if kind == "text":
+                        if on_token is not None:
+                            on_token()
+                        splitter.feed(event.text)
+                if aborted:
+                    snapshot = getattr(stream, "current_message_snapshot", None)
+                    if snapshot is not None:
+                        self._web_used([b.model_dump(exclude_none=True) for b in snapshot.content], used)
+                else:
                     splitter.flush()
                     msg = stream.get_final_message()
 
@@ -474,14 +588,20 @@ class Brain:
                 self._interrupted(messages, " ".join(splitter.emitted))
                 return False
 
-            # Do not execute incomplete tool calls (cut off at max_tokens)
-            uses = [b for b in msg.content if b.type == "tool_use"
-                    and not (msg.stop_reason == "max_tokens" and b is msg.content[-1])]
-            content = [b.model_dump(exclude_none=True) for b in msg.content
-                       if b.type != "tool_use" or b in uses]
+            # Do not execute incomplete tool calls (cut off at max_tokens); a cut-off server tool call is dropped
+            cut = msg.content[-1] if msg.stop_reason == "max_tokens" and msg.content else None
+            if cut is not None and cut.type not in ("tool_use", "server_tool_use"):
+                cut = None
+            uses = [b for b in msg.content if b.type == "tool_use" and b is not cut]
+            content = [b.model_dump(exclude_none=True) for b in msg.content if b is not cut]
             if not content:
                 content = [{"type": "text", "text": "…"}]
             messages.append({"role": "assistant", "content": content})
+            self._web_used(content, used)
+            if msg.stop_reason == "pause_turn" and not uses:
+                # The API paused a long web research: send the conversation back unchanged, it goes on from there
+                log.info("Turn paused by the API (pause_turn), continuing")
+                continue
             if not uses:
                 if splitter.fake_hangup:  # model wrote "hang up" as text instead of using the tool
                     log.info("Hang-up written as text, treating it as hang-up")
@@ -492,7 +612,10 @@ class Brain:
             stopped = False
             results = []
             for b in uses:
-                if stopped or (before_tool is not None and not before_tool(b)):
+                held = "" if stopped else self._web_gate(b, messages, counters)
+                if held:
+                    out = held
+                elif stopped or (before_tool is not None and not before_tool(b)):
                     stopped = True
                     out = "Not executed (aborted)."
                 elif b.name == "hang_up":
@@ -520,7 +643,8 @@ class Brain:
         prompt = (f"Summarize this phone call for {owner} in {LANG_NAMES.get(language, 'German')}, "
                   "in at most four short sentences, plain text without markdown: who called (name if mentioned), "
                   "what they want, whether a callback is wanted, and what was done (appointments, list changes, "
-                  "switched devices). Translate everything said in other languages. "
+                  "switched devices). Mention web lookups only in a few words (what was looked up), without "
+                  "URLs or source lists. Translate everything said in other languages. "
                   "Only state what is in the transcript.\n\n"
                   f"Caller: {caller}\n"
                   f"Actions: {'; '.join(actions) or 'none'}\n"

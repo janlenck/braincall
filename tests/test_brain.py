@@ -295,11 +295,18 @@ class FakeStream:
     def __exit__(self, *exc):
         return False
 
-    @property
-    def text_stream(self):
-        for b in self.msg.content:
+    def __iter__(self):
+        """Events like the SDK's MessageStream: a start per block, text in pieces of 7 characters."""
+        for i, b in enumerate(self.msg.content):
+            self.snapshot = self.msg.content[:i + 1]
+            yield SimpleNamespace(type="content_block_start", index=i, content_block=b)
             if b.type == "text":
-                yield from (b.text[i:i + 7] for i in range(0, len(b.text), 7))
+                for j in range(0, len(b.text), 7):
+                    yield SimpleNamespace(type="text", text=b.text[j:j + 7])
+
+    @property
+    def current_message_snapshot(self):
+        return SimpleNamespace(content=getattr(self, "snapshot", []))
 
     def get_final_message(self):
         return self.msg
