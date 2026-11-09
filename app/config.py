@@ -78,9 +78,10 @@ DEFAULTS = {
     # never dialed, whoever asks (also POST /call): numbers starting with these
     "outbound_blocked": ["110", "112", "118", "0137", "019", "0900"],
     # only numbers that match it are dialed, written in national form (+49 4542 1234 -> 045421234); "" = no limit.
-    # Default: German mobile (015x-017x) and landline numbers only: no short codes (110, 112, 115, 116 117, 118 xx),
-    # no service numbers (0137, 0180, 019x, 0700, 0800, 0900), no other countries, no internal numbers (**611)
-    "outbound_allowed_regex": r"0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})",
+    # Default: German mobile (015x-017x) and landline numbers plus internal FRITZ!Box numbers (**6, **611):
+    # no short codes (110, 112, 115, 116 117, 118 xx), no service numbers (0137, 0180, 019x, 0700, 0800, 0900),
+    # no other countries
+    "outbound_allowed_regex": r"\*\*\d{1,4}|0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})",
     # web search and web fetch (Anthropic server tools), for access admin and read unless "web" per caller says else
     "web_access": False,
     "web_max_searches": 3,           # per turn (one answer); 0 = no limit

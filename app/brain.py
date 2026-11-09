@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -467,12 +467,15 @@ class Brain:
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":
                 if grants and not access & {"calendar", "read", "admin"}:
-                    return self.ha.busy_times(*self._granted_days(grants))  # only the days of the task
+                    days, first = self._granted_days(grants)  # only the days of the task
+                    if not days:
+                        return "The days agreed for this task are over: no calendar information in this call."
+                    return self.ha.busy_times(days, first, clip=True)
                 return self.ha.busy_times(i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_create_event":
                 restricted = "admin" not in access
                 if grants and not access & {"calendar", "admin"}:
-                    refusal = self._grant_refusal(grants, i.get("start", ""), counters)
+                    refusal = self._grant_refusal(grants, i.get("start", ""), i.get("end", ""), counters)
                     if refusal:
                         return refusal
                     i = {**i, "title": grants["book_title"], "calendar": "", "location": "", "description": ""}
@@ -499,30 +502,40 @@ class Brain:
 
     @staticmethod
     def _granted_days(grants: dict) -> tuple:
-        """(days, start) for ha_busy_times: the days of the grant, never before today."""
+        """(days, start) for ha_busy_times: the days of the grant, never before today; 0 days = all of them
+        are over (a later day was never granted)."""
         first = max(datetime.fromisoformat(grants["calendar_from"]).date(), datetime.now().date())
         last = datetime.fromisoformat(grants["calendar_to"]).date()
-        return max(1, (last - first).days + 1), first.isoformat()
+        return max(0, (last - first).days + 1), first.isoformat()
 
     @staticmethod
-    def _grant_refusal(grants: dict, start: str, counters: dict) -> str:
-        """Why a booking by a callee who only has the task's grant is refused; "" = within the grant."""
+    def _grant_refusal(grants: dict, start: str, end: str, counters: dict) -> str:
+        """Why a booking by a callee who only has the task's grant is refused; "" = within the grant.
+        The whole appointment has to lie in the granted days (like HA.create_event: without end one hour, or
+        the one day)."""
         if not grants.get("book_title"):
             return "Not allowed in this call."
         if counters.get("bookings", 0) >= 1:
             return "Not added: one appointment was already booked in this call, no further one is possible."
         try:
-            day = datetime.fromisoformat(start).date().isoformat()
-        except ValueError:
+            begin = datetime.fromisoformat(start)
+            if "T" in start:
+                stop = datetime.fromisoformat(end) if end and "T" in end else begin + timedelta(hours=1)
+                last = (stop - timedelta(seconds=1)).date()  # ending at midnight still belongs to the day before
+            else:
+                last = datetime.fromisoformat(end).date() if end else begin.date()
+        except (ValueError, TypeError):
             return "Date not readable. Format: 2026-10-30T14:00."
-        if not grants["calendar_from"] <= day <= grants["calendar_to"]:
+        day, last = begin.date().isoformat(), last.isoformat()
+        if not grants["calendar_from"] <= day <= last <= grants["calendar_to"]:
             return (f"Not added: only days from {grants['calendar_from']} to {grants['calendar_to']} can be booked "
                     "in this call. Suggest a free time in these days.")
         return ""
 
     def _plan_call(self, block, tools: list, messages: list, counters: dict, call: dict | None) -> str:
         """plan_call: checks the plan, and stores it only once the caller said something after it was read back
-        (confirmed=true alone is not enough, and a yes covers only the plan that was read back)."""
+        (confirmed=true alone is not enough). The task stored is the one that was read back: the confirming call
+        only has to name the same plan (tasks.confirm_key), its own wording of the details is not used."""
         log.info("Tool %s %s", block.name, block.input)
         if block.name not in {t["name"] for t in tools} or self.tasks is None:
             return "Not allowed in this call."
@@ -538,9 +551,9 @@ class Brain:
         known = any(c["number"] != "*" and config_same(self.cfg, c["number"], task["number"])
                     for c in self.cfg.callers or [])
         pending = counters.setdefault("plan_confirm", {})
-        key = tasks_mod.confirm_key(task) + str(bool(data.get("override_do_not_call")))
-        if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key]):
-            del pending[key]
+        key = tasks_mod.confirm_key(task, self.cfg, data) + str(bool(data.get("override_do_not_call")))
+        if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
+            task = pending.pop(key)[1]  # the plan as it was read back, not this call's wording of it
             if data.get("override_do_not_call"):
                 self.tasks.unblock(task["number"])
             self.tasks.add(task)
@@ -548,7 +561,7 @@ class Brain:
             return (f"Stored (task {task['id']}). " + ("The call starts as soon as the line is free: tell the caller, "
                                                         "say goodbye and hang up." if soon else
                                                         f"You will call {tasks_mod.when(task, self.cfg)}."))
-        pending[key] = len(messages)
+        pending[key] = (len(messages), task)
         return tasks_mod.read_back(task, self.cfg, known)
 
     @staticmethod

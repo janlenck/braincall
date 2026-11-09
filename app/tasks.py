@@ -229,12 +229,15 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
     }, ""
 
 
-def confirm_key(task: dict) -> str:
-    """What a yes of the requester covers: whom to call, when, and everything that grants rights or changes
-    something. Wording (goal, questions) may differ between the read-back and the confirmed call."""
-    return json.dumps([config.norm_number(task["number"]), task["not_before"][:13], task["not_after"][:13],
-                       task["grants"], sorted({s["tool"] for s in task["follow_up"]}), task["call_back"],
-                       task["retries"]], sort_keys=True)
+def confirm_key(task: dict, cfg=None, data: dict | None = None) -> str:
+    """Which plan a confirming plan_call means: whom to call, when, and what grants rights or changes something.
+    The task that is stored is the one read back under this key (Brain._plan_call), so wording that differs in
+    the confirming call (goal, questions, what may be shared) never gets in unread."""
+    # times as given: a default ("now", 24 hours later) differs by the minute between the two calls
+    times = [t.isoformat() if t else "" for t in (parse_time((data or task).get(k), cfg or {"timezone": "UTC"})
+                                                  for k in ("not_before", "not_after"))]
+    return json.dumps([config.norm_number(task["number"]), times, task["grants"], sorted({s["tool"] for s in task["follow_up"]}), task["call_back"],
+                       task["retries"], task["leave_message"]], sort_keys=True)
 
 
 def when(task: dict, cfg) -> str:
@@ -447,12 +450,15 @@ class TaskStore:
         return out
 
     def claim(self, now: datetime) -> dict | None:
-        """The next task due now (earliest first), marked as running; None if nothing is due or allowed now."""
+        """The next task due now (earliest first), marked as running; None if nothing is due or allowed now.
+        A task for a number that meanwhile asked not to be called again is not called (it ends with its window)."""
         if not in_hours(self.cfg, now):
             return None
         limit = int(self.cfg.outbound_max_calls_per_day or 0)
         with self.lock:
-            due = [t for t in self.tasks if t["status"] == PLANNED and datetime.fromisoformat(t["next_try"]) <= now]
+            due = [t for t in self.tasks if t["status"] == PLANNED
+                   and datetime.fromisoformat(t["next_try"]) <= now <= datetime.fromisoformat(t["not_after"])
+                   and not self.blocked(t["number"])]
             if not due or (limit and self.calls_today(now) >= limit):
                 return None
             t = min(due, key=lambda t: t["next_try"])

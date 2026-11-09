@@ -62,7 +62,7 @@ def test_allowed_regex_limits_numbers():
 
 @pytest.mark.parametrize("number", [
     "0151 12345678", "+49 171 1234567", "0049 160 12345678", "030 123456", "04542 1234", "+49 89 12345678",
-    "07903 12345", "032 221234567"])
+    "07903 12345", "032 221234567", "**6", "**611", "**9"])
 def test_default_regex_lets_german_mobile_and_landline_through(number):
     assert tasks.number_refusal(cfg(outbound_allowed_regex=GERMAN), number) == ""
 
@@ -70,7 +70,7 @@ def test_default_regex_lets_german_mobile_and_landline_through(number):
 @pytest.mark.parametrize("number", [
     "110", "112", "115", "116117", "11833", "+49 112", "0900 1234567", "0800 1234567", "0700 1234567",
     "0137 1234567", "0180 5123456", "0190 123456", "0193 1234", "0033 1 23456789", "+1 212 5551234",
-    "+43 1 234567", "**611", "1234567", "0151 123", "010 33 030 123456"])
+    "+43 1 234567", "**", "*21#", "**61234", "1234567", "0151 123", "010 33 030 123456"])
 def test_default_regex_keeps_everything_else_out(number):
     assert tasks.number_refusal(cfg(outbound_allowed_regex=GERMAN), number)
 
@@ -122,7 +122,8 @@ def test_confirm_key_ignores_wording_but_not_rights():
     assert tasks.confirm_key(base) == tasks.confirm_key(build(calendar_from="2026-11-12", calendar_to="2026-11-16",
                                                               goal="Anders formuliert"))
     for change in ({"number": "04542 9999"}, {"calendar_to": "2026-11-30"}, {"book_title": "X"}, {"call_back": True},
-                   {"follow_up": [{"step": "x", "tool": "shopping_edit"}]}, {"not_after": "2026-11-13T12:00"}):
+                   {"follow_up": [{"step": "x", "tool": "shopping_edit"}]}, {"not_after": "2026-11-13T12:00"},
+                   {"not_before": "2026-11-10T12:45"}, {"leave_message": False}):
         other = build(**{"calendar_from": "2026-11-12", "calendar_to": "2026-11-16", **change})
         assert tasks.confirm_key(base) != tasks.confirm_key(other), change
 
@@ -217,6 +218,17 @@ def test_call_back_continues_only_a_task_that_was_tried(store):
     assert done["status"] == "done" and done["attempts"][-1]["outcome"] == "talked"
 
 
+def test_no_call_after_the_window_or_to_a_number_that_opted_out(store):
+    late = store.add(build(not_after="2026-11-10T13:00"))
+    assert store.claim(NOON.replace(hour=13, minute=1)) is None  # also without expire() having run before
+    store.cancel(late["id"])
+    store.add(build())
+    store.block("04542 1234")  # e.g. said in the call of another task for the same number
+    assert store.claim(NOON) is None
+    store.unblock("04542 1234")
+    assert store.claim(NOON) is not None
+
+
 def test_cancel_only_planned_tasks(store):
     t = store.add(build())
     assert store.cancel("nope") == "not found"
@@ -303,10 +315,10 @@ def test_granted_busy_times_are_limited_to_the_days_of_the_task(brain, ha, today
     tools = brain.tools_for(parse_access("guest"), grants=GRANT)
     brain._run_tool(block("ha_busy_times", days=365, start="2026-01-01"), tools, parse_access("guest"), {},
                     {"grants": GRANT})
-    assert ha.calls[-1] == ("busy_times", (5, "2026-11-12"), {})
+    assert ha.calls[-1] == ("busy_times", (5, "2026-11-12"), {"clip": True})
     past = {"calendar_from": "2026-11-01", "calendar_to": "2026-11-11"}
     brain._run_tool(block("ha_busy_times"), tools, parse_access("guest"), {}, {"grants": past})
-    assert ha.calls[-1] == ("busy_times", (2, "2026-11-10"), {})  # never before today
+    assert ha.calls[-1] == ("busy_times", (2, "2026-11-10"), {"clip": True})  # never before today
 
 
 def test_granted_booking_is_one_appointment_with_the_title_in_the_days(brain, ha):
@@ -341,6 +353,32 @@ def test_callee_cannot_use_anything_beyond_the_grants(brain, ha):
     for name in ("ha_events", "ha_control", "ha_state", "shopping_edit", "plan_call"):
         assert brain._run_tool(block(name), tools, guest, {}, {"grants": BOOK}) == "Not allowed in this call."
     assert ha.calls == []
+
+
+def test_granted_busy_times_end_with_the_grant(brain, ha, today):
+    guest = parse_access("guest")
+    over = {"calendar_from": "2026-11-01", "calendar_to": "2026-11-09"}  # yesterday and before
+    out = brain._run_tool(block("ha_busy_times"), brain.tools_for(guest, grants=over), guest, {}, {"grants": over})
+    assert "are over" in out and ha.calls == []
+
+
+@pytest.mark.parametrize("start, end", [
+    ("2026-11-16T23:30", ""),                    # one hour by default: ends on the 17th
+    ("2026-11-16T18:00", "2026-11-17T10:00"), ("2026-11-16", "2026-11-18"), ("2026-11-11", "2026-11-12")])
+def test_granted_booking_must_lie_in_the_days_as_a_whole(brain, ha, start, end):
+    guest = parse_access("guest")
+    out = brain._run_tool(block("ha_create_event", title="x", start=start, end=end, confirmed=True),
+                          brain.tools_for(guest, grants=BOOK), guest, {}, {"grants": BOOK})
+    assert ("only days from" in out or "not readable" in out) and ha.calls == []
+
+
+@pytest.mark.parametrize("start, end", [("2026-11-16T23:00", ""), ("2026-11-16T22:00", "2026-11-17T00:00"),
+                                        ("2026-11-12", "2026-11-16"), ("2026-11-16", "")])
+def test_granted_booking_up_to_the_end_of_the_last_day(brain, ha, start, end):
+    guest = parse_access("guest")
+    brain._run_tool(block("ha_create_event", title="x", start=start, end=end, confirmed=True),
+                    brain.tools_for(guest, grants=BOOK), guest, {}, {"grants": BOOK})
+    assert ha.calls[-1][0] == "create_event"
 
 
 # ---------------------------------------------------------------- plan_call
@@ -392,9 +430,10 @@ def test_plan_call_is_read_back_first_and_stored_after_a_yes(brain, conversation
     assert brain.tasks.all() == []  # the caller has not said anything yet
 
     conversation.append({"role": "user", "content": "Ja, genau."})
-    actions = turn(brain, conversation, message(plan_call(**{**args, "goal": "Tisch reservieren"},
-                                                     confirmed=True)), message("Mach ich. Tschüss!"))
+    changed = {**args, "goal": "Tisch reservieren", "may_share": ["Adresse"], "may_accept": "alles"}
+    actions = turn(brain, conversation, message(plan_call(**changed, confirmed=True)), message("Mach ich. Tschüss!"))
     (task,) = brain.tasks.all()
+    assert (task["goal"], task["may_share"], task["may_accept"]) == ("Reserve a table for 4 tonight", [], "")
     assert "Stored" in last_result(conversation) and "hang up" in last_result(conversation)
     assert task["requester"] == JAN and task["call_back"] is True and task["source"] == "phone"
     assert len(actions) == 1 and actions[0].startswith("plan_call")

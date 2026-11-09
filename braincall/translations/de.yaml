@@ -173,8 +173,8 @@ configuration:
     name: Nur Nummern wählen, die passen
     description: >-
       Regulärer Ausdruck für die ganze Nummer in nationaler Schreibweise (+49 4542 1234 = 045421234), gilt auch
-      für /call. Standard: nur deutsche Handy- und Festnetznummern, keine Kurzwahlen, Sonderrufnummern (0137, 0180,
-      0800, 0900), Auslandsnummern oder internen Nummern (**611). Leer = keine Einschränkung.
+      für /call. Standard: nur deutsche Handy- und Festnetznummern und interne Nummern (**6, **611), keine
+      Kurzwahlen, Sonderrufnummern (0137, 0180, 0800, 0900) oder Auslandsnummern. Leer = keine Einschränkung.
   web_access:
     name: Websuche
     description: >-

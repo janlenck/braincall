@@ -173,8 +173,8 @@ configuration:
     name: Only dial numbers matching
     description: >-
       Regular expression for the whole number in national form (+49 4542 1234 = 045421234), also for /call.
-      Default: German mobile and landline numbers only, no short codes, service numbers (0137, 0180, 0800, 0900),
-      other countries or internal numbers (**611). Empty = no limit.
+      Default: German mobile and landline numbers and internal numbers (**6, **611), no short codes, service
+      numbers (0137, 0180, 0800, 0900) or other countries. Empty = no limit.
   web_access:
     name: Web search
     description: >-

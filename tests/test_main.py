@@ -481,6 +481,11 @@ def test_tasks_api(server, planned):
     assert server("GET", f"/tasks/{task['id']}")[1]["goal"] == "Reserve a table"
     assert server("GET", "/tasks/nope")[0] == 404
     assert server("DELETE", f"/tasks/{task['id']}") == (200, {"status": "cancelled"})
+    for _ in range(50):
+        if planned.events["events"]:
+            break
+        time.sleep(0.02)
+    assert planned.events["events"][-1][1]["status"] == "cancelled" and planned.dialed == []  # no call back
     assert server("DELETE", f"/tasks/{task['id']}")[0] == 409
     assert server("DELETE", "/tasks/nope")[0] == 404
     assert server("DELETE", "/call")[0] == 404

@@ -346,9 +346,9 @@ def settle_task(task: dict, session):
 
 def run_tasks():
     """One look at the planned calls: ends those whose window is over and makes the next call that is due."""
-    now = datetime.now(timezone.utc)
-    for expired in task_store.expire(now):
+    for expired in task_store.expire(datetime.now(timezone.utc)):
         report_task(expired)
+    now = datetime.now(timezone.utc)  # reporting may have taken minutes (call back to the requester)
     if sip_status() != PhoneStatus.REGISTERED or not busy.acquire(blocking=False):
         return
     task = None
@@ -555,10 +555,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not found"})
         if not self._authorized():
             return self._send(401, {"error": "unauthorized"})
-        error = task_store.cancel(self._task_id())
+        task_id = self._task_id()
+        error = task_store.cancel(task_id)
         if error:
             return self._send(404 if error == "not found" else 409, {"error": error})
         self._send(200, {"status": "cancelled"})
+        report_task(task_store.get(task_id))  # notification and event like every finished task, no call back
 
     def _plan_task(self, body: dict):
         """POST /tasks: plans a call with a task. Without a plan (goal) Claude makes one from the task text."""

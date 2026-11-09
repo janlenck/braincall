@@ -290,10 +290,10 @@ ends as `failed` and is reported.
 
 - `outbound_blocked`: numbers starting with one of these are never dialed, also not via `/call` (default: 110, 112,
   118…, 0137, 019…, 0900). `outbound_allowed_regex` allows only matching numbers, written in national form
-  (`+49 4542 1234` is `045421234`), also for `/call`. The default `0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})`
-  lets through German mobile (015x–017x) and landline numbers only: no short codes (110, 112, 115, 116 117, 118 xx),
-  no service numbers (0137, 0180, 019x, 0700, 0800, 0900), no other countries and no internal FRITZ!Box numbers
-  (`**611`). It is not exact about lengths. `""` = no limit; for another country set your own expression.
+  (`+49 4542 1234` is `045421234`), also for `/call`. The default `\*\*\d{1,4}|0(?:1[5-7]\d{8,9}|(?![789]00)[2-9]\d{5,11})`
+  lets through German mobile (015x–017x) and landline numbers and internal FRITZ!Box numbers (`**6`, `**611`): no
+  short codes (110, 112, 115, 116 117, 118 xx), no service numbers (0137, 0180, 019x, 0700, 0800, 0900) and no other
+  countries. It is not exact about lengths. `""` = no limit; for another country set your own expression.
 - `outbound_hours` (default `09:00-20:00`) and `outbound_max_calls_per_day` (default 20, attempts count) apply to
   planned calls; `/call` and the call back to the requester are not limited by them.
 - At the start Claudine says that she is an AI assistant calling on behalf of the requester, and before the goodbye

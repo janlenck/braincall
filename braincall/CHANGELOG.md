@@ -20,8 +20,8 @@
     answers, steps, open points) goes to the notify services, as event `braincall_task_finished` and, if asked for,
     as a call back to the requester
   - Safety: *Never dial* (`outbound_blocked`: emergency and premium numbers, also for `/call`), *Only dial numbers
-    matching* (`outbound_allowed_regex`; by default German mobile and landline numbers only, also for `/call`: no
-    short codes, service numbers, other countries or internal numbers like `**611`; empty = no limit), *Hours for planned calls* (`outbound_hours`, 09:00-20:00), *Planned calls
+    matching* (`outbound_allowed_regex`; by default German mobile and landline numbers and internal numbers like `**611`
+    only, also for `/call`: no short codes, service numbers or other countries; empty = no limit), *Hours for planned calls* (`outbound_hours`, 09:00-20:00), *Planned calls
     per day* (`outbound_max_calls_per_day`, 20). A callee who asks not to be called again is remembered
   - Not yet: Brain Assist front end (#50), phone menus (DTMF) and hold queues, opening hours
 
