@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.2
+
+- Fix: Claudine claimed she could not remember earlier calls and then quoted them after all. She now always
+  knows how her memory works (`caller_memory`): off, on without notes for this caller, or on with notes, and
+  answers from the notes when asked whether or what she remembers
+
 ## 1.9.1
 
 - Fix (#51): planned calls to numbers written with spaces ("04542 4635") failed and the FRITZ!Box dialed only the

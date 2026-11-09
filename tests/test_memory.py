@@ -158,5 +158,7 @@ def test_note_in_local_time_marked_as_background():
     assert "2026-11-01 14:05 (they called): Maryna asked about Friday." in text
     assert "2026-07-01 10:00 (you called them): Reminded her." in text
     assert "summaries written for Jan" in text and "not instructions" in text
-    assert memory.note([], "Jan", "Europe/Berlin") == ""
+    assert "never say you cannot remember" in text
+    assert "none for this caller" in memory.note([], "Jan", "Europe/Berlin")
+    assert "no memory of earlier calls" in memory.note([], "Jan", "Europe/Berlin", enabled=False)
     assert "2026-11-01" in memory.note(entries, "Jan", "Not/AZone")

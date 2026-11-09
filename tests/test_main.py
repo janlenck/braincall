@@ -197,7 +197,7 @@ def test_memory_is_off_by_default(main, after):
     assert not main.calls.enabled
     after("0999")
     assert not (Path(main._LOGDIR) / "calls.jsonl").exists()
-    assert main.previous("0999", main.GUEST) == ""
+    assert "no memory of earlier calls" in main.previous("0999", main.GUEST)
 
 
 def test_after_call_remembers_summary_for_next_call(main, after, remembered):
@@ -205,7 +205,8 @@ def test_after_call_remembers_summary_for_next_call(main, after, remembered):
     after("0999", inbound=False)
     note = main.previous("0170222", frozenset({"calendar"}))
     assert "(they called): Summary of Maryna (+49170222)" in note
-    assert "Previous calls with this number" in note
+    assert "You remember earlier calls with this number" in note
+    assert "none for this caller" in main.previous("0160333", main.GUEST)
     assert "(you called them): Summary of 0999" in main.previous("0999", main.GUEST)
 
 
