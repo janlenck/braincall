@@ -60,7 +60,8 @@ DEFAULTS = {
     "shopping_lists": ["todo.shopping_list"],  # the only lists callers with access "shopping" may use
     # control (only for callers with access "admin")
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
-                        "media_player", "cover", "button", "number", "select", "todo"],
+                        "media_player", "cover", "button", "number", "select", "todo",
+                        "input_datetime", "automation"],
     "default_calendars": [],   # entity_ids or name parts; empty = all
     "all_day_free_words": [],  # all-day entries whose title contains one of these do not count as busy
     "calendar_write": True,    # allow creating appointments (access admin/calendar, with confirmation)

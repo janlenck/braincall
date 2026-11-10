@@ -75,6 +75,8 @@ options:
     - number
     - select
     - todo
+    - input_datetime
+    - automation
   confirm_domains:
     - cover
     - lock

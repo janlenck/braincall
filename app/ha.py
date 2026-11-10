@@ -57,6 +57,8 @@ SYNONYMS = {
 
 # Service data keys that would widen a call beyond the one checked entity (e.g. area_id = whole room)
 TARGET_KEYS = ("entity_id", "area_id", "device_id", "floor_id", "label_id")
+# automation.trigger would run the actions right away, past control_domains and confirm_domains
+AUTOMATION_SERVICES = ("turn_on", "turn_off")
 
 # Useful attributes per domain for ha_state: short answers instead of complete attribute dumps
 ATTRS = {
@@ -981,7 +983,10 @@ class HA:
         if domain in (self.cfg.confirm_domains or []) and not confirmed:
             return ("Safety check: explicitly ask the caller whether you should really do this, "
                     "and only call the tool again with confirmed=true after a clear yes.")
-        service = service.strip().split(".")[-1]
+        service = (service or "").strip().split(".")[-1]
+        if domain == "automation" and service not in AUTOMATION_SERVICES:
+            return ("Not allowed: automations may only be switched on or off (turn_on, turn_off), "
+                    "not run or reloaded.")
         body = {k: v for k, v in (data or {}).items() if k not in TARGET_KEYS}
         body["entity_id"] = entity_id
         log.warning("CONTROL %s.%s %s", domain, service, body)

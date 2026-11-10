@@ -126,6 +126,9 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
   written; an existing one stays until you delete it.
 - `default_number` is only the target of the test call and grants no rights.
 - `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
+  `input_datetime` lets Claudine set times of helpers (e.g. the start time of a timer: "Stell den Timer auf
+  7:30"). `automation` only allows switching an automation on or off (arming a timer automation); she can never
+  run one with `automation.trigger`.
 - `owner_name` (e.g. `"Jan Lenck"`) is whose assistant this is; the first name is used in conversations.
 
 ## Home Assistant
