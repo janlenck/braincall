@@ -628,6 +628,14 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("HTTP " + fmt, *args)
 
 
+def check_ha_admin():
+    """Warns once at startup if the token cannot read automation definitions (needs an administrator)."""
+    if ha.is_admin() is False:
+        log.warning("Home Assistant: the token does not belong to an administrator. Claudine cannot read the "
+                    "definitions and descriptions of automations and scripts (ha_automation, ha_automations); "
+                    "use a long-lived token of an administrator, e.g. of a separate user for BrainCall.")
+
+
 def main():
     console.banner(cfg)
     for key in ("sip_user", "sip_password", "anthropic_api_key", "openai_api_key"):
@@ -707,6 +715,8 @@ def main():
             return
         log.info("SIP status: %s", sip_status().value)
         log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
+        if ha.enabled:  # in the background: Home Assistant may still be starting
+            threading.Thread(target=check_ha_admin, name="HA admin check", daemon=True).start()
         # greetings and fillers synthesized ahead, so the caller hears them without waiting for TTS
         threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
                          daemon=True).start()

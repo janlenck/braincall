@@ -86,7 +86,12 @@ Callers with access `admin` or `read` can ask what an automation or script does 
 heating automation do?", "Would it heat right now?" or "Why did it not switch on at 14:00?". The assistant reads
 the definition (triggers, conditions, branches), checks each condition against the current values and looks at
 the last runs Home Assistant keeps (the traces, the last 5 per automation, only for automations with an id).
+It also finds an automation by what its description says ("the one for the heat pump") and can predict a decision
+from forecast values ("Will the heat pump heat tonight?"), as a forecast.
 Nothing is changed. The add-on has the administrator rights this needs without an extra token.
+
+Write the description of an automation for the assistant, it is what she explains first: what the automation is
+for, its inputs (sensors, forecasts), thresholds, times and the decision rule.
 
 ## Conversation flow
 

@@ -6,10 +6,20 @@
   7:30 und schalte den R5-Timer ein"). *Controllable domains* (`control_domains`) now include `input_datetime`
   (set times with `set_datetime`) and `automation` by default. Automations can only be switched on (armed) or
   off, never run right away (`automation.trigger`) or reloaded
-- Claudine reads the whole description of an automation or script (`ha_automation`), also of one from a
-  blueprint; it used to be cut after 200 characters
 - Existing installations keep their saved *Controllable domains*: add `input_datetime` and `automation` there
   yourself
+- Automations (#61): Claudine follows what an automation does and predicts its decisions
+  - She reads the whole description of an automation or script (`ha_automation`), also of one from a blueprint;
+    it used to be cut after 200 characters. She explains from the description first
+  - New tool `ha_automations`: all automations and scripts with name, on/off and description, found by words in
+    the name or description ("the one for the heat pump")
+  - `ha_automation` with `detail: "full"`: nothing cut or capped (templates, all branches), plus every entity it
+    uses with its current value
+  - Forecasts: "Will the heat pump heat tonight?" She applies the rule to forecast values (`ha_forecast`, forecast
+    sensors), names the inputs and says it is a forecast
+  - Without administrator rights she says that the definition cannot be read, instead of guessing; the log warns
+    once at startup if the token is not an administrator (Windows setup; the add-on has the rights)
+  - README: how to write descriptions so Claudine can use them
 
 ## 1.9.3
 

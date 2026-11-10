@@ -29,7 +29,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/session.py` | one call: listening, barge-in, turn taking |
 | `app/brain.py` | Claude prompt, tools, sentence streaming |
 | `app/ha.py` | Home Assistant: search, state, control, lists, calendars, energy and long-term statistics |
-| `app/automation.py` | explains automations and scripts: definition, current evaluation, last runs (`ha_automation`) |
+| `app/automation.py` | explains automations and scripts: description, definition, current evaluation, inputs, last runs (`ha_automation`) |
 | `app/speech.py` | OpenAI speech-to-text and text-to-speech |
 | `app/fritz_sip.py`, `app/rtpfix.py` | fixes for pyVoIP (INVITE/ACK, audio quality) |
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
@@ -181,10 +181,25 @@ Questions about automations and scripts ("What does the heating automation do?",
   which branch would run if it were triggered now;
 - the last runs from the traces (`trace/list`, `trace/get`): what triggered, which condition passed or failed
   with the value it saw, which branch ran, or why it did not start. Home Assistant keeps the last 5 runs per
-  automation, and only for automations with an `id`.
+  automation, and only for automations with an `id`;
+- the description in full. With `detail: "full"` nothing is cut (templates, all branches) and `inputs` lists every
+  entity the definition uses with its current value. Claudine uses that to predict a decision ("Will the heat pump
+  heat tonight?"): she applies the rule to forecast values (`ha_forecast`, forecast sensors) and says it is a
+  forecast.
+
+`ha_automations` lists all automations and scripts with name, on/off and description (shortened to 400
+characters) and finds them by words in the name or description ("the one for the heat pump"). The definitions
+are read once over the WebSocket and kept for 5 minutes.
+
+**Write the description for Claudine.** It is what she explains first. Put in what the automation is for and how
+it decides: inputs (which sensors and forecasts), thresholds, times and the decision rule, e.g. *"Every hour:
+heats with the heat pump if the outside temperature is below 15 °C and the solar forecast for the next 3 hours
+(sensor.solar_forecast_next_3h) is above 2 kWh; otherwise it waits for the next hour."*
 
 The config and trace commands need administrator rights in Home Assistant. The add-on has them (the Supervisor
-talks to Home Assistant as an administrator); on Windows the user of `ha_token` must be an administrator.
+talks to Home Assistant as an administrator); on Windows the user of `ha_token` must be an administrator, ideally
+a separate user for BrainCall. Without them Claudine says that she cannot read the definition, and the log warns
+once at startup.
 
 Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
 

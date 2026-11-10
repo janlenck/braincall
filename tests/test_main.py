@@ -558,3 +558,11 @@ def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch
     call, denied = incoming("0888777")  # no open task any more: rejected like any unlisted number
     main.on_incoming(call)
     assert denied == [True]
+
+
+@pytest.mark.parametrize("admin, warned", [(False, True), (True, False), (None, False)])
+def test_warns_once_if_the_token_is_no_admin(main, monkeypatch, caplog, admin, warned):
+    monkeypatch.setattr(main.ha, "is_admin", lambda: admin)
+    with caplog.at_level("WARNING"):
+        main.check_ha_admin()
+    assert any("not belong to an administrator" in r.message for r in caplog.records) is warned

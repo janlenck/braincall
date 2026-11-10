@@ -1,6 +1,8 @@
 """Automations and scripts explained for the phone (tool ha_automation): the definition condensed into a few lines
 with friendly names, the conditions checked against the current states (which branch would run now), and the
 last runs from the traces (what triggered, which condition failed, which branch ran)."""
+import contextlib
+import contextvars
 import math
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -44,13 +46,51 @@ def as_list(v) -> list:
     return v if isinstance(v, list) else [v]
 
 
+# ha_automation with detail "full": no line is cut and no list capped (templates in full, every branch)
+_FULL = contextvars.ContextVar("automation_full", default=False)
+# an entity_id somewhere in a text: in templates also states.sensor.x.state, so every pair of parts counts
+_DOTTED = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)+")
+
+
+@contextlib.contextmanager
+def full_detail(on: bool = True):
+    token = _FULL.set(bool(on))
+    try:
+        yield
+    finally:
+        _FULL.reset(token)
+
+
 def _short(text, n: int = TEXT_MAX) -> str:
     t = " ".join(str(text).split())
-    return t if len(t) <= n else t[: n - 1] + "…"
+    return t if _FULL.get() or len(t) <= n else t[: n - 1] + "…"
 
 
 def _cap(lines: list, n: int) -> list:
-    return lines if len(lines) <= n else lines[:n] + [f"… {len(lines) - n} more"]
+    return lines if _FULL.get() or len(lines) <= n else lines[:n] + [f"… {len(lines) - n} more"]
+
+
+def referenced(config, known) -> list:
+    """The entity_ids of `known` that a definition uses anywhere (entity_id, target, templates), in order."""
+    found = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(k)
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, str):
+            for m in _DOTTED.finditer(v.lower()):
+                bits = m.group(0).split(".")
+                for i in range(len(bits) - 1):
+                    eid = f"{bits[i]}.{bits[i + 1]}"
+                    if eid in known and eid not in found:
+                        found.append(eid)
+    walk(config)
+    return found
 
 
 def parts(config: dict):
@@ -166,6 +206,17 @@ class Explainer:
 
     def names(self, eids, joiner: str = " or ") -> str:
         return joiner.join(self.name(e) for e in as_list(eids)) or "?"
+
+    def inputs(self, config: dict, own: str = "") -> list:
+        """Every entity the definition uses, with its current value: the inputs of its decision."""
+        out = []
+        for eid in referenced(config, self.states):
+            if eid == own:
+                continue
+            st = self.states[eid]
+            unit = st.get("attributes", {}).get("unit_of_measurement") or ""
+            out.append(f"{self.name(eid)} ({eid}): {st.get('state')}{' ' + unit if unit else ''}")
+        return out
 
     def _unit(self, c: dict) -> str:
         if c.get("attribute"):

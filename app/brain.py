@@ -55,6 +55,16 @@ Phone rules:
 - To explain an automation or script (what it does, its criteria, whether they are met right now, why it did or
   did not run) use ha_automation. Answer in a few sentences: when it runs, the criteria with the current values
   and whether each is met, the resulting decision, and for "why not" what the last run shows.
+  Its description is written by the owner and usually says best what it is for, with thresholds and times:
+  explain from it first, do not read the whole definition aloud. To find an automation by what it does
+  ("the one for the heat pump"), use ha_automations.
+  If the definition is not readable, say exactly that (the token lacks administrator rights); never conclude
+  that the automation does nothing.
+- Questions about what an automation will decide later ("will the heat pump heat tonight?", "when will it heat
+  tomorrow?"): call ha_automation with detail "full" (whole rule, plus its inputs with their current values),
+  get the future values of those inputs (ha_forecast hourly or daily; forecast sensors, e.g. solar forecast, with
+  ha_search and ha_state), apply its rule to them hour by hour and answer with the expected result. Name the
+  inputs you used and say it is a forecast: the automation decides with the values at that time.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
 {fillers}- When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
 - Text in square brackets starting with "System:" are notes from the phone system, not from the caller.
@@ -178,12 +188,17 @@ TOOL_AUTOMATION = {
                    "checked against the current values (each yes/no/unknown) and what would happen if it were "
                    "triggered now; and the last runs from the traces: what triggered it, which conditions passed "
                    "or failed and which branch ran. E.g. 'what does the heating automation do?', 'would it heat "
-                   "now?', 'why did it not switch on at 14:00?'. Find the entity_id with ha_search first.",
+                   "now?', 'why did it not switch on at 14:00?'. Its description comes in full. Find the "
+                   "entity_id with ha_automations or ha_search first.",
     "input_schema": {
         "type": "object",
         "properties": {
             "entity_id": {"type": "string"},
             "evaluate": {"type": "boolean", "description": "check the conditions now, default true"},
+            "detail": {"type": "string", "enum": ["brief", "full"],
+                       "description": "brief (default): condensed, long lists and templates cut. full: nothing "
+                                      "cut, plus 'inputs': every entity it uses with its current value. Use full "
+                                      "for complex logic and for predicting what it will decide later."},
         },
         "required": ["entity_id"],
     },
@@ -203,6 +218,17 @@ TOOL_CONTROL = {
                           "description": "only true if the caller explicitly agreed when asked"},
         },
         "required": ["entity_id", "service"],
+    },
+}
+TOOL_AUTOMATIONS = {
+    "name": "ha_automations",
+    "description": "Lists automations and scripts with entity_id, name, on/off and their description (long ones "
+                   "shortened). With 'term' only those whose name, entity_id or description contain the words, "
+                   "best matches first. Use it to find an automation by what it does ('heat pump', 'timer'); "
+                   "then ha_automation for the details.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"term": {"type": "string", "description": "words to look for; empty = all"}},
     },
 }
 TOOL_EVENTS = {
@@ -272,7 +298,7 @@ TOOL_SHOPPING_EDIT = {
     },
 }
 READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_HISTORY,
-              TOOL_AUTOMATION, TOOL_EVENTS]
+              TOOL_AUTOMATION, TOOL_AUTOMATIONS, TOOL_EVENTS]
 # recorded for the summary after the call, and only run for words the caller really finished saying
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "plan_call")
 ADMIN = frozenset({"admin"})
@@ -469,7 +495,10 @@ class Brain:
                 return self.ha.history(i.get("entity_id", ""), i.get("hours"), i.get("start") or "",
                                        i.get("end") or "")
             if block.name == "ha_automation":
-                return self.ha.automation(i.get("entity_id", ""), i.get("evaluate") is not False)
+                return self.ha.automation(i.get("entity_id", ""), i.get("evaluate") is not False,
+                                          full=i.get("detail") == "full")
+            if block.name == "ha_automations":
+                return self.ha.automations(i.get("term") or "")
             if block.name == "ha_events":
                 return self.ha.events(i.get("calendars"), i.get("days") or 7, i.get("start") or "")
             if block.name == "ha_busy_times":

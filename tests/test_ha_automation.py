@@ -253,7 +253,8 @@ def test_no_admin_rights(make_ha):
     h = make_ha({"automation/config": denied, "trace/list": denied},
                 routes={("GET", "/config/automation/config/"): FakeResponse({}, 401)})
     out = explain(h)
-    assert out["definition"] == "not available."
+    assert out["definition"].startswith("not readable (see notes)")
+    assert "do not claim it does nothing" in out["definition"]
     assert any("administrator" in n and n.startswith("Definition") for n in out["notes"])
     assert any("administrator" in n and n.startswith("Runs") for n in out["notes"])
 
@@ -561,3 +562,98 @@ def test_evaluation_reads_fresh_states(make_ha):
     h._states()  # e.g. ha_search a moment ago
     h.http.routes[("GET", "/states")] = FakeResponse(states(surplus=3))
     assert explain(h)["now"]["if_triggered_now"] == "'Überschuss' → climate.turn_on Heizung"
+
+
+# ---------------------------------------------------------------- detail "full" (#61)
+LONG_TEMPLATE = ("{{ states('sensor.outdoor_temp') | float(0) < 15 and states.sensor.pv_surplus.state | float(0) > 2 "
+                 "and now().hour in [10, 11, 12, 13, 14, 15] and not is_state('climate.heating', 'heat') }}")
+BRANCHY = {**HEATING, "description": "Rechnet stündlich, ob die Wärmepumpe heizt. " + "Regel. " * 100,
+           "conditions": [{"condition": "template", "value_template": LONG_TEMPLATE}],
+           "actions": [{"action": "notify.phone", "data": {"message": f"Schritt {n}"}} for n in range(12)]}
+
+
+def test_brief_cuts_and_caps(make_ha):
+    out = explain(make_ha({"automation/config": {"config": BRANCHY}}), evaluate=False)
+    assert out["conditions"][0].endswith("…") and len(out["conditions"][0]) < len(LONG_TEMPLATE)
+    assert len(out["actions"]) == 9 and out["actions"][-1] == "… 4 more"
+    assert out["description"] == BRANCHY["description"].strip()  # the description always comes in full
+    assert "inputs" not in out
+
+
+def test_full_has_everything_and_the_inputs(make_ha):
+    out = json.loads(make_ha({"automation/config": {"config": BRANCHY}}).automation(
+        "automation.heating", evaluate=False, full=True))
+    assert out["conditions"] == ["template " + LONG_TEMPLATE]
+    assert len(out["actions"]) == 12 and out["actions"][-1] == "notify.phone (message=Schritt 11)"
+    assert out["inputs"] == ["Außentemperatur (sensor.outdoor_temp): 12 °C",
+                             "PV-Überschuss (sensor.pv_surplus): 0.8 kW",
+                             "Heizung (climate.heating): off"]
+
+
+def test_full_does_not_leak_into_the_next_call(make_ha):
+    h = make_ha({"automation/config": {"config": BRANCHY}})
+    h.automation("automation.heating", evaluate=False, full=True)
+    h.ws.inbox.append({"type": "auth_required"})  # second WebSocket session
+    assert json.loads(h.automation("automation.heating", evaluate=False))["actions"][-1] == "… 4 more"
+
+
+def test_referenced_entities():
+    from automation import referenced
+    known = {"sensor.a": {}, "sensor.b": {}, "climate.c": {}, "light.d": {}}
+    config = {"triggers": [{"trigger": "state", "entity_id": ["sensor.a"]}],
+              "conditions": [{"condition": "template", "value_template": "{{ states.sensor.b.state | float > 1 }}"}],
+              "actions": [{"action": "climate.turn_on", "target": {"entity_id": "climate.c"}},
+                          {"action": "light.turn_on", "target": {"entity_id": "sensor.a"}}]}
+    assert referenced(config, known) == ["sensor.a", "sensor.b", "climate.c"]
+
+
+# ---------------------------------------------------------------- ha_automations (#61)
+def morning_config(msg):
+    return {"config": {"alias": "Morgenroutine", "description": "Licht im Flur an, wenn es dunkel ist."}} \
+        if msg["entity_id"] == "script.morning" else {"config": BRANCHY}
+
+
+def test_list_with_descriptions(make_ha):
+    h = make_ha({"automation/config": morning_config, "script/config": morning_config})
+    out = json.loads(h.automations())["automations"]
+    assert [r["entity_id"] for r in out] == ["automation.heating", "script.morning"]
+    assert out[0]["enabled"] is True and out[0]["name"] == "Heizungsautomation"
+    assert out[0]["description"].startswith("Rechnet stündlich, ob die Wärmepumpe heizt.")
+    assert out[0]["description"].endswith("…") and len(out[0]["description"]) == ha_mod.DESCRIPTION_BRIEF
+    assert out[1] == {"entity_id": "script.morning", "name": "Morgenroutine",
+                      "description": "Licht im Flur an, wenn es dunkel ist."}
+
+
+def test_find_by_what_it_does(make_ha):
+    h = make_ha({"automation/config": morning_config, "script/config": morning_config})
+    out = json.loads(h.automations("Wärmepumpe"))["automations"]
+    assert [r["entity_id"] for r in out] == ["automation.heating"]
+    out = json.loads(h.automations("waermepumpe flur"))["automations"]  # folded umlauts, best match first
+    assert {r["entity_id"] for r in out} == {"automation.heating", "script.morning"}
+    assert json.loads(h.automations("Rasenmäher"))["automations"].startswith("None matches")
+
+
+def test_descriptions_are_cached(make_ha):
+    h = make_ha({"automation/config": morning_config, "script/config": morning_config})
+    h.automations()
+    h.automations("Flur")
+    assert len(h.ws.commands("automation/config")) == 1 and len(h.ws.commands("script/config")) == 1
+
+
+def test_list_without_admin_rights(make_ha):
+    denied = HAError("Unauthorized", "unauthorized")
+    out = json.loads(make_ha({"automation/config": denied, "script/config": denied}).automations())
+    assert [r["entity_id"] for r in out["automations"]] == ["automation.heating", "script.morning"]
+    assert "description" not in out["automations"][0]
+    assert out["note"].startswith("Descriptions not readable") and "administrator" in out["note"]
+
+
+def test_list_without_websocket(make_ha):
+    out = json.loads(make_ha(ws_down=True).automations())
+    assert len(out["automations"]) == 2 and "WebSocket failed" in out["note"]
+
+
+@pytest.mark.parametrize("answer, expected", [({"is_admin": True}, True), ({"is_admin": False}, False),
+                                              (HAError("x", "unknown_command"), None)])
+def test_is_admin(make_ha, answer, expected):
+    assert make_ha({"auth/current_user": answer}).is_admin() is expected
