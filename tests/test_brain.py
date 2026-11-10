@@ -30,7 +30,7 @@ def names(tools):
 
 
 READ = {"ha_search", "ha_list", "ha_state", "ha_forecast", "ha_energy", "ha_statistics", "ha_history",
-        "ha_automation", "ha_events"}
+        "ha_automation", "ha_automations", "ha_events"}
 SHOP = {"shopping_list", "shopping_edit"}
 
 
@@ -169,7 +169,14 @@ def test_run_tool_automation(brain, ha):
     assert brain._run_tool(block("ha_automation", entity_id="automation.heating"), tools, a) == "automation ok"
     assert brain._run_tool(block("ha_automation", entity_id="script.x", evaluate=False), tools, a) \
         == "automation ok"
-    assert ha.calls == [("automation", ("automation.heating", True), {}), ("automation", ("script.x", False), {})]
+    assert brain._run_tool(block("ha_automation", entity_id="automation.heating", detail="full"), tools, a) \
+        == "automation ok"
+    assert brain._run_tool(block("ha_automations", term="Wärmepumpe"), tools, a) == "automations ok"
+    assert brain._run_tool(block("ha_automations"), tools, a) == "automations ok"
+    assert ha.calls == [("automation", ("automation.heating", True), {"full": False}),
+                        ("automation", ("script.x", False), {"full": False}),
+                        ("automation", ("automation.heating", True), {"full": True}),
+                        ("automations", ("Wärmepumpe",), {}), ("automations", ("",), {})]
 
 
 @pytest.mark.parametrize("access", ["guest", "calendar", "shopping"])
@@ -177,6 +184,7 @@ def test_automation_not_for_callers_without_read(brain, ha, access):
     a = parse_access(access)
     assert brain._run_tool(block("ha_automation", entity_id="automation.heating"), brain.tools_for(a), a) \
         == "Not allowed in this call."
+    assert brain._run_tool(block("ha_automations"), brain.tools_for(a), a) == "Not allowed in this call."
     assert ha.calls == []
 
 

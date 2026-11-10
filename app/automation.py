@@ -1,6 +1,9 @@
 """Automations and scripts explained for the phone (tool ha_automation): the definition condensed into a few lines
 with friendly names, the conditions checked against the current states (which branch would run now), and the
 last runs from the traces (what triggered, which condition failed, which branch ran)."""
+import contextlib
+import contextvars
+import json
 import math
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -44,13 +47,66 @@ def as_list(v) -> list:
     return v if isinstance(v, list) else [v]
 
 
+# ha_automation with detail "full": no line is cut and no list capped (templates in full, every branch)
+_FULL = contextvars.ContextVar("automation_full", default=False)
+# an entity_id somewhere in a text: in templates also states.sensor.x.state, so every pair of parts counts
+_DOTTED = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)+")
+# states['sensor']['x'] and states.sensor["x"] read like states.sensor.x
+_BRACKET = re.compile(r"""\s*\[\s*['"]([a-z0-9_.]+)['"]\s*\]""", re.IGNORECASE)
+_DOT = re.compile(r"(?<=[a-z0-9_])\s*\.\s*(?=[a-z_])", re.IGNORECASE)  # states . sensor . x
+
+
+@contextlib.contextmanager
+def full_detail(on: bool = True):
+    token = _FULL.set(bool(on))
+    try:
+        yield
+    finally:
+        _FULL.reset(token)
+
+
 def _short(text, n: int = TEXT_MAX) -> str:
     t = " ".join(str(text).split())
-    return t if len(t) <= n else t[: n - 1] + "…"
+    return t if _FULL.get() or len(t) <= n else t[: n - 1] + "…"
 
 
 def _cap(lines: list, n: int) -> list:
-    return lines if len(lines) <= n else lines[:n] + [f"… {len(lines) - n} more"]
+    return lines if _FULL.get() or len(lines) <= n else lines[:n] + [f"… {len(lines) - n} more"]
+
+
+# attributes every entity has; never the input of a rule
+_PLAIN_ATTRS = {"friendly_name", "unit_of_measurement", "icon", "device_class", "state_class", "attribution",
+                "entity_picture", "supported_features", "restored", "assumed_state"}
+
+
+def _texts(v) -> list:
+    """Every key and string of a definition, in order."""
+    if isinstance(v, dict):
+        return [t for k, x in v.items() for t in (*_texts(k), *_texts(x))]
+    if isinstance(v, list):
+        return [t for x in v for t in _texts(x)]
+    return [v] if isinstance(v, str) else []
+
+
+def referenced(config, known) -> list:
+    """The entity_ids of `known` that a definition uses anywhere (entity_id, target, templates), in order."""
+    found = []
+    for text in _texts(config):
+        for m in _DOTTED.finditer(_DOT.sub(".", _BRACKET.sub(r".\1", text)).lower()):
+            bits = m.group(0).split(".")
+            for i in range(len(bits) - 1):
+                eid = f"{bits[i]}.{bits[i + 1]}"
+                if eid in known and eid not in found:
+                    found.append(eid)
+    return found
+
+
+def used_attributes(config, attributes: dict) -> dict:
+    """The attributes whose name the definition mentions (state_attr(…, 'x'), attribute: x, states.….attributes.x),
+    e.g. the hourly values of a solar forecast sensor."""
+    text = " ".join(_texts(config))
+    return {k: v for k, v in attributes.items()
+            if k not in _PLAIN_ATTRS and re.search(rf"(?<![\w]){re.escape(str(k))}(?![\w])", text)}
 
 
 def parts(config: dict):
@@ -166,6 +222,23 @@ class Explainer:
 
     def names(self, eids, joiner: str = " or ") -> str:
         return joiner.join(self.name(e) for e in as_list(eids)) or "?"
+
+    def inputs(self, config: dict, own: str = "") -> list:
+        """Every entity the definition uses, with its current value and the attributes it reads: the inputs of its
+        decision."""
+        out = []
+        for eid in referenced(config, self.states):
+            if eid == own:
+                continue
+            st = self.states[eid]
+            attrs = st.get("attributes", {})
+            unit = attrs.get("unit_of_measurement") or ""
+            line = f"{self.name(eid)} ({eid}): {st.get('state')}{' ' + unit if unit else ''}"
+            used = used_attributes(config, attrs)
+            if used:
+                line += "; attributes " + json.dumps(used, ensure_ascii=False, default=str)
+            out.append(line)
+        return out
 
     def _unit(self, c: dict) -> str:
         if c.get("attribute"):
@@ -417,14 +490,15 @@ class Explainer:
         return lines
 
     def definition(self, config: dict, automation: bool = True) -> dict:
+        out = {}
+        # the whole description, not cut like the other lines: it often says what the automation is for
+        if str(config.get("description") or "").strip():
+            out["description"] = str(config["description"]).strip()
         if config.get("use_blueprint") and not any(x is not None for x in parts(config)):
             bp = config["use_blueprint"] if isinstance(config["use_blueprint"], dict) else {}
             inputs = ", ".join(f"{k}={_short(v, 40)}" for k, v in (bp.get("input") or {}).items())
-            return {"blueprint": f"{bp.get('path', '?')}" + (f" with {inputs}" if inputs else "")}
+            return {**out, "blueprint": f"{bp.get('path', '?')}" + (f" with {inputs}" if inputs else "")}
         triggers, conditions, actions = parts(config)
-        out = {}
-        if config.get("description"):
-            out["description"] = _short(config["description"])
         if automation:
             out["triggers"] = _cap([self.trigger(t) for t in as_list(triggers)], DEF_LINES["triggers"]) or "none"
             out["conditions"] = _cap([self.condition(c) for c in as_list(conditions)],

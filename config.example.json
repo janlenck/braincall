@@ -123,7 +123,9 @@
   "calendar_max_days_ahead": 90,      // callers without admin: how far ahead they may book; 0 = no limit
   "calendar_max_bookings": 2,         // callers without admin: appointments per call; 0 = no limit
   "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
-                      "media_player", "cover", "button", "number", "select", "todo"],  // [] = control nothing
+                      "media_player", "cover", "button", "number", "select", "todo",
+                      "input_datetime", "automation"],  // [] = control nothing; input_datetime = set times
+                                      // (e.g. a timer's start time), automation = only switch on/off, never run
   "confirm_domains": ["cover", "lock", "alarm_control_panel"],  // ask for an explicit "yes" first
 
   // --- Planned calls with a task ("Ruf im Restaurant an und reservier einen Tisch"), see README ---

@@ -57,6 +57,10 @@ SYNONYMS = {
 
 # Service data keys that would widen a call beyond the one checked entity (e.g. area_id = whole room)
 TARGET_KEYS = ("entity_id", "area_id", "device_id", "floor_id", "label_id")
+AUTOMATION_CACHE_S = 300  # ha_automations: definitions read again after this many seconds
+DESCRIPTION_BRIEF = 400   # ha_automations: description per automation; ha_automation gives it in full
+# automation.trigger would run the actions right away, past control_domains and confirm_domains
+AUTOMATION_SERVICES = ("turn_on", "turn_off")
 
 # Useful attributes per domain for ha_state: short answers instead of complete attribute dumps
 ATTRS = {
@@ -126,6 +130,11 @@ def _wd(d) -> str:
 def fold(t: str) -> str:
     """Fold umlauts the way entity IDs do: Büro -> buro."""
     return t.lower().replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+
+
+def _spelled(t: str) -> str:
+    """Umlauts written out: Wärme -> waerme."""
+    return t.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
 
 
 def _local_time(iso: str) -> str:
@@ -346,6 +355,7 @@ class HA:
         self.http = requests.Session()
         self.http.headers["Authorization"] = f"Bearer {token}"
         self._cache = (0.0, [])
+        self._configs = (0.0, {})  # definitions of automations and scripts for ha_automations
 
     @property
     def enabled(self) -> bool:
@@ -732,9 +742,105 @@ class HA:
             return f"{what} not readable: the Home Assistant token needs a user with administrator rights."
         return f"{what} not readable: {e}"
 
-    def automation(self, entity_id: str, evaluate: bool = True) -> str:
+    def is_admin(self):
+        """Whether the token belongs to a Home Assistant administrator (True/False), None if unknown."""
+        try:
+            with self._ws() as call:
+                return bool((call("auth/current_user") or {}).get("is_admin"))
+        except (HAError, OSError, websocket.WebSocketException) as e:
+            log.info("auth/current_user: %s", e)
+            return None
+
+    def _config_rest(self, s: dict) -> dict:
+        """Definition of one automation or script from the REST config API (needs the id of automations.yaml)."""
+        domain, _, object_id = s["entity_id"].partition(".")
+        item_id = str(s.get("attributes", {}).get("id") or "") if domain == "automation" else object_id
+        if not item_id:
+            raise HAError("no id (YAML without id) and the WebSocket command failed")
+        return self._get(f"/config/{domain}/config/{quote(item_id)}") or {}
+
+    def _automation_configs(self, items: list):
+        """entity_id -> definition of these automations and scripts, and a note on those not readable.
+        One WebSocket session, the REST config API for what it cannot read; cached 5 minutes only when complete."""
+        ts, cached = self._configs
+        if time.time() - ts < AUTOMATION_CACHE_S and all(s["entity_id"] in cached for s in items):
+            return cached, ""
+        configs, retry, ws_error = {}, [], None
+        try:
+            with self._ws() as call:
+                for s in items:
+                    eid = s["entity_id"]
+                    try:
+                        configs[eid] = (call(f"{eid.split('.')[0]}/config", entity_id=eid) or {}).get("config") or {}
+                    except HAError as e:
+                        if e.code == "unauthorized":
+                            return {}, self._access_note("Descriptions", e)
+                        retry.append(s)
+        except (HAError, OSError, websocket.WebSocketException) as e:
+            log.warning("Automation descriptions: WebSocket failed: %s", e)
+            ws_error = e
+            retry = [s for s in items if s["entity_id"] not in configs]
+        missing = []
+        for s in retry:
+            try:
+                configs[s["entity_id"]] = self._config_rest(s)
+            except (requests.RequestException, HAError, ValueError) as e:
+                status = getattr(getattr(e, "response", None), "status_code", 0)
+                if status in (401, 403):
+                    return {}, self._access_note("Descriptions", e)
+                missing.append(s.get("attributes", {}).get("friendly_name") or s["entity_id"])
+        if not missing:
+            self._configs = (time.time(), configs)
+            return configs, ""
+        why = f"WebSocket failed ({ws_error})" if ws_error else "neither the WebSocket nor the REST config API had them"
+        names = ", ".join(missing[:5]) + (f" and {len(missing) - 5} more" if len(missing) > 5 else "")
+        return configs, (f"Descriptions not readable for {names}: {why}. They may still match; "
+                         "ha_automation can explain one.")
+
+    def automations(self, term: str = "", limit: int = 40) -> str:
+        """Automations and scripts with name, on/off and description: find one by what it does."""
+        items = [s for s in self._states() if s["entity_id"].split(".")[0] in ("automation", "script")]
+        if not items:
+            return "No automations or scripts in Home Assistant."
+        configs, note = self._automation_configs(items)
+        words = [w for w in (term or "").lower().replace("-", " ").split() if w]
+        rows = []
+        for s in items:
+            eid = s["entity_id"]
+            name = s.get("attributes", {}).get("friendly_name") or eid
+            desc = " ".join(str((configs.get(eid) or {}).get("description") or "").split())
+            hay = f"{eid} {name} {desc}".lower()
+            hay = f"{fold(hay)} {_spelled(hay)}"  # Wärme, Warme and Waerme all match
+            score = sum(1 for w in words if fold(w) in hay or _spelled(w) in hay)
+            if words and not score:
+                continue
+            row = {"entity_id": eid, "name": name}
+            if eid.startswith("automation."):
+                row["enabled"] = s.get("state") == "on"
+            if desc:
+                row["description"] = desc if len(desc) <= DESCRIPTION_BRIEF else desc[: DESCRIPTION_BRIEF - 1] + "…"
+            rows.append((-score, eid, row))
+        rows.sort(key=lambda r: r[:2])
+        log.info("Automations '%s': %d hits", term, len(rows))
+        out = {"automations": [r for *_, r in rows[:limit]]}
+        if len(rows) > limit:
+            out["more"] = f"{len(rows) - limit} more: narrow it down with term."
+        if not rows:
+            out["automations"] = f"None matches '{term}'. Try other words or no term."
+        if note:
+            out["note"] = note
+        return json.dumps(out, ensure_ascii=False)
+
+    def automation(self, entity_id: str, evaluate: bool = True, full: bool = False) -> str:
         """What an automation or script does (triggers, conditions, branches with friendly names), whether its
-        conditions are met right now and which branch would run, and its last runs from the traces."""
+        conditions are met right now and which branch would run, and its last runs from the traces.
+        full: nothing cut or capped, plus every entity it uses with its current value (its inputs)."""
+        from automation import full_detail
+
+        with full_detail(full):
+            return self._automation(entity_id, evaluate, full)
+
+    def _automation(self, entity_id: str, evaluate: bool, full: bool) -> str:
         from automation import RUNS, Explainer  # here: automation.py uses the helpers of this module
 
         entity_id = (entity_id or "").strip()
@@ -800,9 +906,15 @@ class HA:
             out["last_triggered"] = "never"
         if isinstance(config, dict) and config:
             out.update(ex.definition(config, automation=domain == "automation"))
+            if full:  # the lines above are condensed; variables, templates and data are complete only here
+                out["inputs"] = ex.inputs(config, entity_id) or "none"
+                out["config"] = config
             if evaluate and "blueprint" not in out:
                 out["now"] = ex.evaluate(config, enabled=on or domain == "script", mode=attrs.get("mode") or "",
                                          current=attrs.get("current"), max_runs=attrs.get("max"))
+        elif config_error is not None:
+            out["definition"] = ("not readable (see notes). This says nothing about what it does: "
+                                 "do not claim it does nothing.")
         else:
             out["definition"] = "not available."
         if runs:
@@ -981,7 +1093,10 @@ class HA:
         if domain in (self.cfg.confirm_domains or []) and not confirmed:
             return ("Safety check: explicitly ask the caller whether you should really do this, "
                     "and only call the tool again with confirmed=true after a clear yes.")
-        service = service.strip().split(".")[-1]
+        service = (service or "").strip().split(".")[-1]
+        if domain == "automation" and service not in AUTOMATION_SERVICES:
+            return ("Not allowed: automations may only be switched on or off (turn_on, turn_off), "
+                    "not run or reloaded.")
         body = {k: v for k, v in (data or {}).items() if k not in TARGET_KEYS}
         body["entity_id"] = entity_id
         log.warning("CONTROL %s.%s %s", domain, service, body)

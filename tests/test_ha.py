@@ -272,6 +272,35 @@ def test_control_error_from_home_assistant(make_ha):
     assert h.call_service("light.buro", "turn_on").startswith("Error 400")
 
 
+def _with_state(h, entity_id: str, state: str):
+    h.http.routes[("GET", f"/states/{entity_id}")] = FakeResponse(
+        {"entity_id": entity_id, "state": state, "attributes": {}})
+    return h
+
+
+def test_control_sets_time_of_input_datetime(make_ha):
+    h = _with_state(make_ha(), "input_datetime.start_timer", "07:30:00")
+    assert h.call_service("input_datetime.start_timer", "set_datetime",
+                          {"time": "07:30:00"}).startswith("Done. New state:")
+    assert h.http.posted("/services/input_datetime/set_datetime") == [
+        {"time": "07:30:00", "entity_id": "input_datetime.start_timer"}]
+
+
+@pytest.mark.parametrize("service", ["turn_on", "turn_off", "automation.turn_on"])
+def test_control_switches_automation_on_and_off(make_ha, service):
+    h = _with_state(make_ha(), "automation.r5_aircon_timer", "on")
+    assert h.call_service("automation.r5_aircon_timer", service).startswith("Done. New state:")
+    name = service.split(".")[-1]
+    assert h.http.posted(f"/services/automation/{name}") == [{"entity_id": "automation.r5_aircon_timer"}]
+
+
+@pytest.mark.parametrize("service", ["trigger", "automation.trigger", "reload", "toggle", ""])
+def test_control_never_runs_an_automation(make_ha, service):
+    h = make_ha()
+    assert h.call_service("automation.r5_aircon_timer", service).startswith("Not allowed: automations")
+    assert h.http.posted("/services/") == []
+
+
 # ---------------------------------------------------------------- notify
 def test_notify_entity_uses_send_message(make_ha):
     h = make_ha()
