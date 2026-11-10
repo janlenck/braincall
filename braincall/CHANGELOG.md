@@ -6,6 +6,8 @@
   7:30 und schalte den R5-Timer ein"). *Controllable domains* (`control_domains`) now include `input_datetime`
   (set times with `set_datetime`) and `automation` by default. Automations can only be switched on (armed) or
   off, never run right away (`automation.trigger`) or reloaded
+- Claudine reads the whole description of an automation or script (`ha_automation`), also of one from a
+  blueprint; it used to be cut after 200 characters
 - Existing installations keep their saved *Controllable domains*: add `input_datetime` and `automation` there
   yourself
 

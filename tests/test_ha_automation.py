@@ -380,6 +380,15 @@ def test_blueprint_without_expanded_config():
     assert d == {"blueprint": "motion_light.yaml with motion=binary_sensor.x"}
 
 
+def test_description_is_complete():
+    text = "Startet die Klimaanlage des R5 zur Zeit aus input_datetime.start_timer.\n" + "Details. " * 300
+    d = ex("2025-10-05T12:00").definition({"description": f"  {text}  ", "triggers": [], "actions": []})
+    assert d["description"] == text.strip()
+    d = ex("2025-10-05T12:00").definition({"description": text, "use_blueprint": {"path": "timer.yaml"}})
+    assert d == {"description": text.strip(), "blueprint": "timer.yaml"}
+    assert "description" not in ex("2025-10-05T12:00").definition({"description": " ", "actions": []})
+
+
 @pytest.mark.parametrize("at, ok", [("2025-10-05T23:00", True), ("2025-10-05T05:59", True),
                                     ("2025-10-05T12:00", False)])
 def test_time_condition_across_midnight(at, ok):

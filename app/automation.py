@@ -417,14 +417,15 @@ class Explainer:
         return lines
 
     def definition(self, config: dict, automation: bool = True) -> dict:
+        out = {}
+        # the whole description, not cut like the other lines: it often says what the automation is for
+        if str(config.get("description") or "").strip():
+            out["description"] = str(config["description"]).strip()
         if config.get("use_blueprint") and not any(x is not None for x in parts(config)):
             bp = config["use_blueprint"] if isinstance(config["use_blueprint"], dict) else {}
             inputs = ", ".join(f"{k}={_short(v, 40)}" for k, v in (bp.get("input") or {}).items())
-            return {"blueprint": f"{bp.get('path', '?')}" + (f" with {inputs}" if inputs else "")}
+            return {**out, "blueprint": f"{bp.get('path', '?')}" + (f" with {inputs}" if inputs else "")}
         triggers, conditions, actions = parts(config)
-        out = {}
-        if config.get("description"):
-            out["description"] = _short(config["description"])
         if automation:
             out["triggers"] = _cap([self.trigger(t) for t in as_list(triggers)], DEF_LINES["triggers"]) or "none"
             out["conditions"] = _cap([self.condition(c) for c in as_list(conditions)],
