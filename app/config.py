@@ -96,7 +96,6 @@ DEFAULTS = {
 }
 
 ACCESS = ("admin", "read", "calendar", "shopping", "guest")
-LEGACY_KEYS = ("inbound_allowed", "trusted_numbers", "caller_languages")  # until 1.0.x, replaced by callers
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = [""]  # file actually loaded (for the log)
@@ -154,45 +153,6 @@ def _callers(items) -> list:
                     "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None,
                     "web": x.get("web") if isinstance(x.get("web"), bool) else None})
     return out
-
-
-def _pairs(value, field: str, default="") -> dict:
-    """Old format {number: value}, add-on list [{"number": …, field: …}] or plain list of numbers -> dict."""
-    if isinstance(value, dict):
-        return {str(k): v for k, v in value.items()}
-    out = {}
-    for x in value if isinstance(value, list) else []:
-        if isinstance(x, dict) and x.get("number"):
-            out[str(x["number"])] = x.get(field, "")
-        elif not isinstance(x, dict) and str(x).strip():
-            out[str(x).strip()] = default
-    return out
-
-
-def migrate(data: dict) -> list | None:
-    """callers from the old keys inbound_allowed / trusted_numbers / caller_languages; None if none is set.
-    Trusted numbers become admin, "*" in inbound_allowed becomes a guest entry, everything else is dropped."""
-    allowed = [str(n).strip() for n in data.get("inbound_allowed") or []]
-    owner = str(data.get("owner_name") or "").strip()
-    trusted = _pairs(data.get("trusted_numbers"), "name", owner)
-    langs = _pairs(data.get("caller_languages"), "language")
-    if not (allowed or trusted or langs):
-        return None
-    cc = data.get("country_code", DEFAULTS["country_code"])
-    callers = [{"number": n, "name": str(name or owner or n), "access": "admin"} for n, name in trusted.items()]
-    if "*" in allowed:
-        callers.append({"number": "*", "name": "Unknown", "access": "guest"})
-    dropped = [n for n in allowed if n not in ("*", "")
-               and not any(norm_number(n, cc) == norm_number(c["number"], cc) for c in callers)]
-    if dropped:
-        WARNINGS.append(f"Migration: numbers only in inbound_allowed dropped: {', '.join(dropped)}")
-    for n, lang in langs.items():
-        match = [c for c in callers if c["number"] != "*" and norm_number(n, cc) == norm_number(c["number"], cc)]
-        if match and lang:
-            match[0]["language"] = str(lang)
-        else:
-            WARNINGS.append(f"Migration: language for {n} dropped (number is not a caller)")
-    return callers
 
 
 def _strip_jsonc(text: str) -> str:
@@ -281,14 +241,6 @@ def load() -> Config:
     CONFIG_FILE[0] = str(path)
     cfg = Config(DEFAULTS)
     cfg.update({k: v for k, v in data.items() if v is not None and not k.startswith("_")})
-    legacy = migrate(data)
-    if legacy is not None:
-        cfg["callers"] = legacy
-        WARNINGS.append("Old settings inbound_allowed / trusted_numbers / caller_languages are used as callers "
-                        "(converted on every start). Enter them under Callers and empty the old settings:\n"
-                        + json.dumps({"callers": legacy}, ensure_ascii=False, indent=2))
-    for key in LEGACY_KEYS:
-        cfg.pop(key, None)
     for key, env in (("anthropic_api_key", "ANTHROPIC_API_KEY"),
                      ("openai_api_key", "OPENAI_API_KEY"),
                      ("ha_token", "HA_TOKEN"),
