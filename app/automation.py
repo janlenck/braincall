@@ -52,7 +52,8 @@ _FULL = contextvars.ContextVar("automation_full", default=False)
 # an entity_id somewhere in a text: in templates also states.sensor.x.state, so every pair of parts counts
 _DOTTED = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 # states['sensor']['x'] and states.sensor["x"] read like states.sensor.x
-_BRACKET = re.compile(r"""\[\s*['"]([a-z0-9_.]+)['"]\s*\]""", re.IGNORECASE)
+_BRACKET = re.compile(r"""\s*\[\s*['"]([a-z0-9_.]+)['"]\s*\]""", re.IGNORECASE)
+_DOT = re.compile(r"(?<=[a-z0-9_])\s*\.\s*(?=[a-z_])", re.IGNORECASE)  # states . sensor . x
 
 
 @contextlib.contextmanager
@@ -91,7 +92,7 @@ def referenced(config, known) -> list:
     """The entity_ids of `known` that a definition uses anywhere (entity_id, target, templates), in order."""
     found = []
     for text in _texts(config):
-        for m in _DOTTED.finditer(_BRACKET.sub(r".\1", text).lower()):
+        for m in _DOTTED.finditer(_DOT.sub(".", _BRACKET.sub(r".\1", text)).lower()):
             bits = m.group(0).split(".")
             for i in range(len(bits) - 1):
                 eid = f"{bits[i]}.{bits[i + 1]}"

@@ -630,7 +630,9 @@ def test_referenced_entities():
 
 @pytest.mark.parametrize("template", ["{{ states.sensor['a'].state }}", "{{ states['sensor']['a'].state }}",
                                       '{{ states["sensor"]["a"].state }}', "{{ states['sensor.a'].state }}",
-                                      "{{ states.sensor[ 'a' ].attributes['x'] }}", "{{ states('sensor.a') }}"])
+                                      "{{ states.sensor[ 'a' ].attributes['x'] }}", "{{ states('sensor.a') }}",
+                                      "{{ states ['sensor'] ['a'].state }}", "{{ states.sensor ['a'] }}",
+                                      "{{ states . sensor . a . state }}"])
 def test_referenced_in_bracket_notation(template):
     from automation import referenced
     assert referenced({"conditions": [{"condition": "template", "value_template": template}]},
