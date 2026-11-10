@@ -184,6 +184,17 @@ def test_load_missing_pointer_target_stops(tmp_path, monkeypatch, tmp_env):
     assert "Configuration not found" in str(e.value)
 
 
+_LEGACY = {"trusted_numbers": [{"number": "0151", "name": "Jan"}], "inbound_allowed": ["*"],
+           "caller_languages": [{"number": "0151", "language": "uk"}]}  # settings removed in 1.9.3
+
+
+def test_load_ignores_removed_legacy_settings(tmp_path, monkeypatch, tmp_env):
+    cfg = _load(tmp_path, monkeypatch, {
+        **_LEGACY, "callers": [{"number": "0999", "name": "Maryna", "access": "calendar"}]})
+    assert [(c["number"], c["access"]) for c in cfg.callers] == [("0999", frozenset({"calendar"}))]
+    assert _load(tmp_path, monkeypatch, _LEGACY).callers == []
+
+
 def test_load_timezone_from_tz_variable(tmp_path, monkeypatch, tmp_env):
     monkeypatch.setenv("TZ", "America/New_York")
     assert _load(tmp_path, monkeypatch, {}).timezone == "America/New_York"
