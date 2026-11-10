@@ -85,35 +85,6 @@ def test_callers_not_a_list():
     assert config._callers({"number": "0151"}) == []
 
 
-# ---------------------------------------------------------------- migrate
-def test_migrate_nothing_set():
-    assert config.migrate({}) is None
-    assert config.migrate({"inbound_allowed": [], "trusted_numbers": []}) is None
-
-
-def test_migrate_addon_lists():
-    data = {
-        "owner_name": "Jan Lenck",
-        "trusted_numbers": [{"number": "0151111", "name": "Jan Mobile"}, {"number": "0222", "name": ""}],
-        "inbound_allowed": ["*", "0170333", "+49151111"],
-        "caller_languages": [{"number": "+49151111", "language": "uk"}, {"number": "0999", "language": "en"}],
-    }
-    callers = config.migrate(data)
-    assert callers == [
-        {"number": "0151111", "name": "Jan Mobile", "access": "admin", "language": "uk"},
-        {"number": "0222", "name": "Jan Lenck", "access": "admin"},
-        {"number": "*", "name": "Unknown", "access": "guest"},
-    ]
-    assert any("0170333" in w and "dropped" in w for w in config.WARNINGS)
-    assert not any("+49151111" in w and "inbound_allowed" in w for w in config.WARNINGS)  # same as a trusted one
-    assert any("0999" in w for w in config.WARNINGS)
-
-
-def test_migrate_old_dict_format():
-    callers = config.migrate({"trusted_numbers": {"0151": "Jan"}, "caller_languages": {"0151": "en"}})
-    assert callers == [{"number": "0151", "name": "Jan", "access": "admin", "language": "en"}]
-
-
 # ---------------------------------------------------------------- JSONC
 def test_strip_jsonc():
     text = """{
@@ -211,17 +182,6 @@ def test_load_missing_pointer_target_stops(tmp_path, monkeypatch, tmp_env):
     with pytest.raises(SystemExit) as e:
         _load(tmp_path, monkeypatch, json.dumps({"path": str(tmp_path / "missing.json")}))
     assert "Configuration not found" in str(e.value)
-
-
-def test_load_converts_legacy_settings(tmp_path, monkeypatch, tmp_env):
-    cfg = _load(tmp_path, monkeypatch, {
-        "callers": [{"number": "0999", "name": "ignored while legacy is set", "access": "admin"}],
-        "trusted_numbers": [{"number": "0151", "name": "Jan"}], "inbound_allowed": ["*"],
-    })
-    assert [(c["number"], c["access"]) for c in cfg.callers] == [("0151", frozenset({"admin"})),
-                                                                 ("*", frozenset({"guest"}))]
-    assert not any(k in cfg for k in config.LEGACY_KEYS)
-    assert any("Old settings" in w for w in config.WARNINGS)
 
 
 def test_load_timezone_from_tz_variable(tmp_path, monkeypatch, tmp_env):

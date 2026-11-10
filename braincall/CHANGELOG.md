@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.3
+
+- Removed the old settings *Allowed callers*, *Trusted numbers* and *Language per number* (`inbound_allowed`,
+  `trusted_numbers`, `caller_languages`, until 1.0.x) (#62). They stayed in the configuration form for good and,
+  while filled, replaced *Callers* completely. Only *Callers* counts now; old keys left in a saved
+  configuration are ignored
+
 ## 1.9.2
 
 - Fix: Claudine claimed she could not remember earlier calls and then quoted them after all. She now always

@@ -49,11 +49,6 @@ repeat themselves. A number of days (e.g. `30`) keeps only that recent calls, `f
 A caller only gets summaries of calls with at most their current access. With `none` the file is neither read
 nor written; delete it to forget earlier calls.
 
-After updating from 1.0.x *Allowed callers*, *Trusted numbers* and *Language per number* keep working: on
-every start they are converted (trusted numbers become `admin`, `*` becomes a `guest` entry, numbers only
-allowed to call are dropped) and used instead of *Callers*. The log shows the converted list. Enter it under
-*Callers* and empty the three old fields; from then on only *Callers* counts.
-
 Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`) and the web
 usage of the day (`web-usage.json`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.

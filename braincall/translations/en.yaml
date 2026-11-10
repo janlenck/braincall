@@ -42,18 +42,9 @@ configuration:
   shopping_lists:
     name: Shopping lists
     description: The only to-do lists callers with access "shopping" may use.
-  inbound_allowed:
-    name: Allowed callers (old)
-    description: Still used while filled (instead of Callers). Move to Callers and empty it.
-  trusted_numbers:
-    name: Trusted numbers (old)
-    description: Still used while filled (instead of Callers). Move to Callers and empty it.
   country_code:
     name: Country code
     description: +49 / 0049 count as the same number as a leading 0.
-  caller_languages:
-    name: Language per number (old)
-    description: Still used while filled (instead of Callers). Move to Callers and empty it.
   ring_timeout:
     name: Ring time (s)
     description: After this an unanswered call is cancelled.
