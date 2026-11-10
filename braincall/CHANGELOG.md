@@ -12,9 +12,11 @@
   - She reads the whole description of an automation or script (`ha_automation`), also of one from a blueprint;
     it used to be cut after 200 characters. She explains from the description first
   - New tool `ha_automations`: all automations and scripts with name, on/off and description, found by words in
-    the name or description ("the one for the heat pump")
-  - `ha_automation` with `detail: "full"`: nothing cut or capped (templates, all branches), plus every entity it
-    uses with its current value
+    the name or description ("the one for the heat pump"); falls back to the REST config API and names those it
+    could not read
+  - `ha_automation` with `detail: "full"`: nothing cut or capped (templates, all branches), the complete definition
+    (variables, templates, service data), plus every entity it uses with its current value and the attributes the
+    rule reads (e.g. the hourly values of a solar forecast)
   - Forecasts: "Will the heat pump heat tonight?" She applies the rule to forecast values (`ha_forecast`, forecast
     sensors), names the inputs and says it is a forecast
   - Without administrator rights she says that the definition cannot be read, instead of guessing; the log warns

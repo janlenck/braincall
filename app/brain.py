@@ -61,7 +61,7 @@ Phone rules:
   If the definition is not readable, say exactly that (the token lacks administrator rights); never conclude
   that the automation does nothing.
 - Questions about what an automation will decide later ("will the heat pump heat tonight?", "when will it heat
-  tomorrow?"): call ha_automation with detail "full" (whole rule, plus its inputs with their current values),
+  tomorrow?"): call ha_automation with detail "full" (whole rule in 'config', its inputs with current values),
   get the future values of those inputs (ha_forecast hourly or daily; forecast sensors, e.g. solar forecast, with
   ha_search and ha_state), apply its rule to them hour by hour and answer with the expected result. Name the
   inputs you used and say it is a forecast: the automation decides with the values at that time.
@@ -197,8 +197,10 @@ TOOL_AUTOMATION = {
             "evaluate": {"type": "boolean", "description": "check the conditions now, default true"},
             "detail": {"type": "string", "enum": ["brief", "full"],
                        "description": "brief (default): condensed, long lists and templates cut. full: nothing "
-                                      "cut, plus 'inputs': every entity it uses with its current value. Use full "
-                                      "for complex logic and for predicting what it will decide later."},
+                                      "cut, plus 'inputs' (every entity it uses with its current value and the "
+                                      "attributes it reads, e.g. forecast values) and 'config' (the complete "
+                                      "definition: variables, templates, service data). Use full for complex "
+                                      "logic and for predicting what it will decide later."},
         },
         "required": ["entity_id"],
     },

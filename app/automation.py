@@ -3,6 +3,7 @@ with friendly names, the conditions checked against the current states (which br
 last runs from the traces (what triggered, which condition failed, which branch ran)."""
 import contextlib
 import contextvars
+import json
 import math
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -70,27 +71,39 @@ def _cap(lines: list, n: int) -> list:
     return lines if _FULL.get() or len(lines) <= n else lines[:n] + [f"… {len(lines) - n} more"]
 
 
+# attributes every entity has; never the input of a rule
+_PLAIN_ATTRS = {"friendly_name", "unit_of_measurement", "icon", "device_class", "state_class", "attribution",
+                "entity_picture", "supported_features", "restored", "assumed_state"}
+
+
+def _texts(v) -> list:
+    """Every key and string of a definition, in order."""
+    if isinstance(v, dict):
+        return [t for k, x in v.items() for t in (*_texts(k), *_texts(x))]
+    if isinstance(v, list):
+        return [t for x in v for t in _texts(x)]
+    return [v] if isinstance(v, str) else []
+
+
 def referenced(config, known) -> list:
     """The entity_ids of `known` that a definition uses anywhere (entity_id, target, templates), in order."""
     found = []
-
-    def walk(v):
-        if isinstance(v, dict):
-            for k, x in v.items():
-                walk(k)
-                walk(x)
-        elif isinstance(v, list):
-            for x in v:
-                walk(x)
-        elif isinstance(v, str):
-            for m in _DOTTED.finditer(v.lower()):
-                bits = m.group(0).split(".")
-                for i in range(len(bits) - 1):
-                    eid = f"{bits[i]}.{bits[i + 1]}"
-                    if eid in known and eid not in found:
-                        found.append(eid)
-    walk(config)
+    for text in _texts(config):
+        for m in _DOTTED.finditer(text.lower()):
+            bits = m.group(0).split(".")
+            for i in range(len(bits) - 1):
+                eid = f"{bits[i]}.{bits[i + 1]}"
+                if eid in known and eid not in found:
+                    found.append(eid)
     return found
+
+
+def used_attributes(config, attributes: dict) -> dict:
+    """The attributes whose name the definition mentions (state_attr(…, 'x'), attribute: x, states.….attributes.x),
+    e.g. the hourly values of a solar forecast sensor."""
+    text = " ".join(_texts(config))
+    return {k: v for k, v in attributes.items()
+            if k not in _PLAIN_ATTRS and re.search(rf"(?<![\w]){re.escape(str(k))}(?![\w])", text)}
 
 
 def parts(config: dict):
@@ -208,14 +221,20 @@ class Explainer:
         return joiner.join(self.name(e) for e in as_list(eids)) or "?"
 
     def inputs(self, config: dict, own: str = "") -> list:
-        """Every entity the definition uses, with its current value: the inputs of its decision."""
+        """Every entity the definition uses, with its current value and the attributes it reads: the inputs of its
+        decision."""
         out = []
         for eid in referenced(config, self.states):
             if eid == own:
                 continue
             st = self.states[eid]
-            unit = st.get("attributes", {}).get("unit_of_measurement") or ""
-            out.append(f"{self.name(eid)} ({eid}): {st.get('state')}{' ' + unit if unit else ''}")
+            attrs = st.get("attributes", {})
+            unit = attrs.get("unit_of_measurement") or ""
+            line = f"{self.name(eid)} ({eid}): {st.get('state')}{' ' + unit if unit else ''}"
+            used = used_attributes(config, attrs)
+            if used:
+                line += "; attributes " + json.dumps(used, ensure_ascii=False, default=str)
+            out.append(line)
         return out
 
     def _unit(self, c: dict) -> str:

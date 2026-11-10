@@ -182,14 +182,16 @@ Questions about automations and scripts ("What does the heating automation do?",
 - the last runs from the traces (`trace/list`, `trace/get`): what triggered, which condition passed or failed
   with the value it saw, which branch ran, or why it did not start. Home Assistant keeps the last 5 runs per
   automation, and only for automations with an `id`;
-- the description in full. With `detail: "full"` nothing is cut (templates, all branches) and `inputs` lists every
-  entity the definition uses with its current value. Claudine uses that to predict a decision ("Will the heat pump
+- the description in full. With `detail: "full"` nothing is cut (templates, all branches), `config` holds the
+  complete definition (variables, templates, service data) and `inputs` lists every entity the definition uses
+  with its current value and the attributes it reads (e.g. the hourly values of a solar forecast). Claudine uses that to predict a decision ("Will the heat pump
   heat tonight?"): she applies the rule to forecast values (`ha_forecast`, forecast sensors) and says it is a
   forecast.
 
 `ha_automations` lists all automations and scripts with name, on/off and description (shortened to 400
 characters) and finds them by words in the name or description ("the one for the heat pump"). The definitions
-are read once over the WebSocket and kept for 5 minutes.
+are read over the WebSocket (REST config API for what it cannot read) and kept for 5 minutes; the ones it could
+not read are named in the result.
 
 **Write the description for Claudine.** It is what she explains first. Put in what the automation is for and how
 it decides: inputs (which sensors and forecasts), thresholds, times and the decision rule, e.g. *"Every hour:

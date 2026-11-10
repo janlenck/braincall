@@ -751,13 +751,21 @@ class HA:
             log.info("auth/current_user: %s", e)
             return None
 
+    def _config_rest(self, s: dict) -> dict:
+        """Definition of one automation or script from the REST config API (needs the id of automations.yaml)."""
+        domain, _, object_id = s["entity_id"].partition(".")
+        item_id = str(s.get("attributes", {}).get("id") or "") if domain == "automation" else object_id
+        if not item_id:
+            raise HAError("no id (YAML without id) and the WebSocket command failed")
+        return self._get(f"/config/{domain}/config/{quote(item_id)}") or {}
+
     def _automation_configs(self, items: list):
-        """entity_id -> definition of these automations and scripts (one WebSocket session, cached 5 minutes),
-        and a note if they are not readable."""
-        ts, configs = self._configs
-        if time.time() - ts < AUTOMATION_CACHE_S and all(s["entity_id"] in configs for s in items):
-            return configs, ""
-        configs = {}
+        """entity_id -> definition of these automations and scripts, and a note on those not readable.
+        One WebSocket session, the REST config API for what it cannot read; cached 5 minutes only when complete."""
+        ts, cached = self._configs
+        if time.time() - ts < AUTOMATION_CACHE_S and all(s["entity_id"] in cached for s in items):
+            return cached, ""
+        configs, retry, ws_error = {}, [], None
         try:
             with self._ws() as call:
                 for s in items:
@@ -767,12 +775,27 @@ class HA:
                     except HAError as e:
                         if e.code == "unauthorized":
                             return {}, self._access_note("Descriptions", e)
-                        configs[eid] = {}
+                        retry.append(s)
         except (HAError, OSError, websocket.WebSocketException) as e:
             log.warning("Automation descriptions: WebSocket failed: %s", e)
-            return {}, f"Descriptions not readable: WebSocket failed ({e})."
-        self._configs = (time.time(), configs)
-        return configs, ""
+            ws_error = e
+            retry = [s for s in items if s["entity_id"] not in configs]
+        missing = []
+        for s in retry:
+            try:
+                configs[s["entity_id"]] = self._config_rest(s)
+            except (requests.RequestException, HAError, ValueError) as e:
+                status = getattr(getattr(e, "response", None), "status_code", 0)
+                if status in (401, 403):
+                    return {}, self._access_note("Descriptions", e)
+                missing.append(s.get("attributes", {}).get("friendly_name") or s["entity_id"])
+        if not missing:
+            self._configs = (time.time(), configs)
+            return configs, ""
+        why = f"WebSocket failed ({ws_error})" if ws_error else "neither the WebSocket nor the REST config API had them"
+        names = ", ".join(missing[:5]) + (f" and {len(missing) - 5} more" if len(missing) > 5 else "")
+        return configs, (f"Descriptions not readable for {names}: {why}. They may still match; "
+                         "ha_automation can explain one.")
 
     def automations(self, term: str = "", limit: int = 40) -> str:
         """Automations and scripts with name, on/off and description: find one by what it does."""
@@ -883,8 +906,9 @@ class HA:
             out["last_triggered"] = "never"
         if isinstance(config, dict) and config:
             out.update(ex.definition(config, automation=domain == "automation"))
-            if full:
+            if full:  # the lines above are condensed; variables, templates and data are complete only here
                 out["inputs"] = ex.inputs(config, entity_id) or "none"
+                out["config"] = config
             if evaluate and "blueprint" not in out:
                 out["now"] = ex.evaluate(config, enabled=on or domain == "script", mode=attrs.get("mode") or "",
                                          current=attrs.get("current"), max_runs=attrs.get("max"))

@@ -590,6 +590,27 @@ def test_full_has_everything_and_the_inputs(make_ha):
                              "Heizung (climate.heating): off"]
 
 
+def test_full_has_the_complete_config_and_the_attributes_it_reads(make_ha):
+    config = {**BRANCHY, "variables": {"should_heat": "{{ state_attr('sensor.solar_forecast', 'detailedForecast') "
+                                                     "| map(attribute='pv_estimate') | sum > 2 }}"},
+              "conditions": [{"condition": "template", "value_template": "{{ should_heat }}"}]}
+    forecast = [{"period_start": "2025-10-05T13:00:00+02:00", "pv_estimate": 1.2},
+                {"period_start": "2025-10-05T14:00:00+02:00", "pv_estimate": 1.4}]
+    current = states() + [state("sensor.solar_forecast", 5.3, friendly_name="PV-Prognose heute",
+                                unit_of_measurement="kWh", detailedForecast=forecast, attribution="Solcast")]
+    out = json.loads(make_ha({"automation/config": {"config": config}}, current=current).automation(
+        "automation.heating", evaluate=False, full=True))
+    assert out["config"] == config  # variables, templates and service data complete
+    solar = next(i for i in out["inputs"] if "sensor.solar_forecast" in i)
+    assert solar.startswith("PV-Prognose heute (sensor.solar_forecast): 5.3 kWh; attributes ")
+    assert json.loads(solar.split("; attributes ", 1)[1]) == {"detailedForecast": forecast}  # not attribution
+
+
+def test_brief_has_no_config(make_ha):
+    out = explain(make_ha({"automation/config": {"config": BRANCHY}}), evaluate=False)
+    assert "config" not in out
+
+
 def test_full_does_not_leak_into_the_next_call(make_ha):
     h = make_ha({"automation/config": {"config": BRANCHY}})
     h.automation("automation.heating", evaluate=False, full=True)
@@ -648,9 +669,37 @@ def test_list_without_admin_rights(make_ha):
     assert out["note"].startswith("Descriptions not readable") and "administrator" in out["note"]
 
 
-def test_list_without_websocket(make_ha):
-    out = json.loads(make_ha(ws_down=True).automations())
-    assert len(out["automations"]) == 2 and "WebSocket failed" in out["note"]
+def test_list_falls_back_to_the_rest_config_api(make_ha):
+    h = make_ha({"automation/config": HAError("Unknown command.", "unknown_command")},
+                routes={("GET", "/config/automation/config/"): FakeResponse(BRANCHY),
+                        ("GET", "/config/script/config/"): FakeResponse({"description": "Flurlicht"})})
+    out = json.loads(h.automations("Wärmepumpe"))
+    assert [r["entity_id"] for r in out["automations"]] == ["automation.heating"] and "note" not in out
+    assert any("/config/automation/config/1700000000001" in url for _, url, _ in h.http.calls)
+
+
+def test_list_without_websocket_uses_rest(make_ha):
+    h = make_ha(ws_down=True, routes={("GET", "/config/automation/config/"): FakeResponse(BRANCHY),
+                                      ("GET", "/config/script/config/"): FakeResponse({})})
+    out = json.loads(h.automations())
+    assert out["automations"][0]["description"].startswith("Rechnet stündlich") and "note" not in out
+
+
+def test_failed_reads_are_reported_and_not_cached(make_ha):
+    h = make_ha({"automation/config": HAError("Unknown command.", "unknown_command"), "script/config": {}},
+                routes={("GET", "/config/automation/config/"): FakeResponse({"message": "not found"}, 404)})
+    out = json.loads(h.automations("Wärmepumpe"))
+    assert out["automations"].startswith("None matches")
+    assert out["note"].startswith("Descriptions not readable for Heizungsautomation")
+    h.ws.inbox.append({"type": "auth_required"})  # second WebSocket session: read again, not from the cache
+    h.automations()
+    assert len(h.ws.commands("automation/config")) == 2
+
+
+def test_list_rest_without_admin_rights(make_ha):
+    h = make_ha(ws_down=True, routes={("GET", "/config/"): FakeResponse({}, 401)})
+    out = json.loads(h.automations())
+    assert len(out["automations"]) == 2 and "administrator" in out["note"]
 
 
 @pytest.mark.parametrize("answer, expected", [({"is_admin": True}, True), ({"is_admin": False}, False),
