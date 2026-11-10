@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.4
+
+- Claudine can set the start time of a timer and switch timer automations on or off ("Stell den Start-Timer auf
+  7:30 und schalte den R5-Timer ein"). *Controllable domains* (`control_domains`) now include `input_datetime`
+  (set times with `set_datetime`) and `automation` by default. Automations can only be switched on (armed) or
+  off, never run right away (`automation.trigger`) or reloaded
+- Existing installations keep their saved *Controllable domains*: add `input_datetime` and `automation` there
+  yourself
+
 ## 1.9.3
 
 - Removed the old settings *Allowed callers*, *Trusted numbers* and *Language per number* (`inbound_allowed`,
