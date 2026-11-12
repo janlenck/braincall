@@ -433,7 +433,7 @@ def intro(monkeypatch):
             item = s.audio_q.get()
             if item:
                 played.append(item[0])
-        return seen[0], played
+        return seen[0] if seen else "", played
     return run
 
 
@@ -459,13 +459,276 @@ def test_outbound_intro_after_the_callee_spoke(intro):
     assert "you heard: “Ja, hallo?”" in note and "mailbox" in note and "do not greet" in note
 
 
-def test_outbound_long_first_utterance_may_be_a_mailbox(intro):
+def long_first(text):
     first = Utterance(np.zeros(40000, np.int16), 0, 0, voiced_s=4.0)
-    first.text = "Hallo, Sie sind verbunden mit der Mailbox von"
+    first.text = text
     first.done.set()
-    note, played = intro("guest", outbound=True, first=first)
+    return first
+
+
+def test_outbound_long_first_utterance_may_be_a_mailbox(intro):
+    """Not known yet: no greeting into it, the model greets (and decides if nothing more gives it away)."""
+    note, played = intro("guest", outbound=True, first=long_first("Praxis Doktor Sommer, Sie sprechen mit Frau Ott"))
     assert played == []
-    assert "greet briefly" in note
+    assert "greet briefly" in note and "recognized a mailbox" not in note
+
+
+def test_outbound_mailbox_announcement_is_recognized(intro):
+    note, played = intro("guest", outbound=True, first=long_first("Hallo, Sie sind verbunden mit der Mailbox von"),
+                         caller_name="Mark")
+    greeting = "Hallo Mark, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an."
+    assert played == [greeting]  # queued for after the beep
+    assert "recognized a mailbox announcement" in note and f"after the beep the phone system says “{greeting}”" in note
+    assert "request to call Jan back" in note and "nothing from earlier calls" in note and "no tools" in note
+
+
+def test_outbound_mailbox_without_a_message_hangs_up_without_a_turn(intro):
+    note, played = intro("guest", outbound=True, first=long_first("Die Mobilbox von null eins fünf eins"),
+                         leave_message=False)
+    assert note == "" and played == []  # no turn at all: nothing is said, Claude is not asked
+
+
+# ---------------------------------------------------------------- mailbox (#65)
+@pytest.mark.parametrize("text", [
+    "Hallo, Sie sind verbunden mit der Mailbox von null eins fünf eins",
+    "Dies ist die Mobilbox von Jan", "Die Mobil Box der Nummer", "Willkommen bei der Sprachbox",
+    "Bitte sprechen Sie Ihre Nachricht nach dem Ton.", "Hinterlassen Sie eine Nachricht nach dem Signalton",
+    "Sprechen Sie nach dem Piep", "Hier ist der Anrufbeantworter von Familie Lenck",
+    "Please leave a message after the tone", "You have reached the voicemail of", "after the beep",
+    "Залиште повідомлення після сигналу", "Це автовідповідач",
+])
+def test_mailbox_words(text):
+    assert session_mod.MAILBOX_WORDS.search(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Ja, hallo?", "Restaurant Seeblick, guten Abend, was kann ich für Sie tun?",
+    "Herr Sommer ist gerade nicht erreichbar, möchten Sie eine Nachricht hinterlassen?",  # a person
+    "Der Ton ist schlecht, ich höre Sie kaum", "Nach dem Tonstudio rufe ich zurück",
+])
+def test_no_mailbox_words(text):
+    assert not session_mod.MAILBOX_WORDS.search(text)
+
+
+@pytest.fixture
+def mailbox(monkeypatch):
+    """An outbound call in its opening; what was heard so far is given as text. The pause that ends an
+    announcement is shortened."""
+    monkeypatch.setattr(session_mod, "MAILBOX_PAUSE_S", 0.05)
+
+    def start(*script, heard="Hier ist die Mailbox von null eins", greet="Hallo Mark, hier ist Claudine.", **cfg):
+        s = make(FakeBrain(*script), phrases=FakeCache(), **cfg)
+        s.caller_label = "Mark"
+        s._opening = True
+        s._callee_text = heard
+        s._greet = greet
+        s.caller_turns = 1
+        return s
+    return start
+
+
+def message(ctx):
+    ctx.say("Jan möchte wissen, wann du kommst.")
+    ctx.say("Bitte ruf ihn zurück.")
+    return False  # even without hang_up the phone system ends the call
+
+
+INTRO = [{"role": "user", "content": "[System: intro]"}]
+
+
+def test_mailbox_gets_the_message_after_the_announcement(mailbox, caplog):
+    s = mailbox(message)
+    s._in_speech = True  # the announcement is still running
+    messages = [dict(m) for m in INTRO]
+    result = []
+    with caplog.at_level(logging.INFO, logger="session"):
+        t = threading.Thread(target=lambda: result.append(s._answer(messages, [])), daemon=True)
+        t.start()
+        time.sleep(0.4)
+        assert s.transcript == [] and s.mailbox and not s.message_left  # prepared, but nothing said into it
+        utt(s, "Bitte sprechen Sie Ihre Nachricht nach dem Ton.")  # the rest: restarts nothing
+        s._in_speech = False
+        s._heard_at = time.monotonic()
+        t.join(5)
+    assert result == [True] and s.message_left and not s.restart.is_set()
+    assert s.transcript == ["Mark (mailbox): Bitte sprechen Sie Ihre Nachricht nach dem Ton.",
+                            "Claudine: Hallo Mark, hier ist Claudine.", "Claudine: Jan möchte wissen, wann du kommst.",
+                            "Claudine: Bitte ruf ihn zurück."]
+    assert len(s.brain.seen) == 1 and s.brain.kw["call"]["mailbox"] is True  # Brain.turn: no tools but hang_up
+    note = s.brain.seen[0][-1]["content"]
+    assert note.startswith("[System: intro]\n[System: The phone system recognized a mailbox announcement")
+    assert "says “Hallo Mark, hier ist Claudine.”" in note
+    assert any("Mailbox announcement recognized" in r.getMessage() for r in caplog.records)
+    assert not any("filler" in r.getMessage() or "interrupts" in r.getMessage() for r in caplog.records)
+
+
+def test_mailbox_shows_only_in_a_later_part_of_the_announcement(mailbox):
+    """The first part has no word of a mailbox: the turn restarts with each part until one gives it away."""
+    def first(ctx):
+        utt(s, "Bitte sprechen Sie Ihre Nachricht nach dem Signalton.")
+        while not ctx.abort():
+            time.sleep(0.01)
+        return False
+
+    s = mailbox(first, message, heard="Der gewünschte Teilnehmer null eins fünf eins")
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is True and s.mailbox and s.message_left
+    said = s.brain.seen[1][-1]["content"]
+    assert "Bitte sprechen Sie Ihre Nachricht nach dem Signalton.\n[System: The phone system recognized" in said
+    assert s.transcript[0] == "Mark: Bitte sprechen Sie Ihre Nachricht nach dem Signalton."
+
+
+def test_mailbox_without_leave_message_gets_no_word(mailbox):
+    s = mailbox()  # no script: a turn would fail
+    s.leave_message = False
+    assert s._answer([dict(m) for m in INTRO], []) is True
+    assert s.mailbox and not s.message_left and s.transcript == [] and "mailbox" not in s.call_info
+
+
+def test_mailbox_without_a_cached_greeting_lets_claude_introduce_herself(mailbox):
+    s = mailbox(message, greet="")
+    assert s._answer([dict(m) for m in INTRO], []) is True
+    assert "Start with who you are and for whom you are calling" in s.brain.seen[0][-1]["content"]
+    assert s.transcript[0] == "Claudine: Jan möchte wissen, wann du kommst."
+
+
+def test_mailbox_that_hangs_up_before_the_message_got_none(mailbox):
+    def late(ctx):
+        s.call.state = CallState.ENDED
+        ctx.say("Jan möchte wissen, wann du kommst.")
+        return False
+
+    s = mailbox(late)
+    assert s._answer([dict(m) for m in INTRO], []) is True
+    assert s.mailbox and not s.message_left  # the task tries again (main.settle_task)
+
+
+def test_error_on_a_mailbox_is_not_spoken_as_the_message(monkeypatch):
+    """An API failure must not put "Bei mir ist ein Fehler aufgetreten" on the recording and end the task."""
+    monkeypatch.setattr(session_mod, "MAILBOX_PAUSE_S", 0.05)
+
+    def boom(ctx):
+        raise RuntimeError("API down")
+
+    for brain, heard, said in ((FakeBrain(boom), "Hier ist die Mailbox von null eins", []),
+                               (FakeBrain(boom), "Ja, hallo?", ["Bei mir ist gerade ein Fehler aufgetreten. "
+                                                                 "Ich lege auf."])):
+        speech = FakeSpeech()
+        s = make(brain, speech, workers=False)
+        monkeypatch.setattr(s, "_reader", lambda: None)
+        first = long_first(heard)
+        monkeypatch.setattr(s, "listen", lambda timeout, first=first: first)
+        s.run(outbound=True, caller="0170222")
+        assert speech.synthesized == said and not s.message_left
+
+
+def test_greeting_already_playing_is_cut_when_the_mailbox_shows(mailbox):
+    """A short first utterance gets the greeting at once, before its words are known."""
+    s = mailbox(message)
+    s.playing.set()
+    started, cut = threading.Event(), []
+
+    def long_greeting(pcm):  # stands for the greeting being sent: two seconds, unless it is interrupted
+        started.set()
+        deadline = time.monotonic() + 2
+        while not s.interrupt.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cut.append(s.interrupt.is_set())
+
+    send = s._send
+    s._send = long_greeting
+    s.audio_q.put(("Hallo Mark, hier ist Claudine.", np.zeros(40, np.int16), session_mod.GREETING))
+    assert started.wait(2)
+    s._send = send
+    assert s._answer([dict(m) for m in INTRO], []) is True and s.message_left
+    assert cut == [True]
+    assert s.transcript.count("Claudine: Hallo Mark, hier ist Claudine.") == 2  # cut, and again after the beep
+
+
+def test_speech_into_the_message_is_a_person_after_all(mailbox):
+    def cut(ctx):
+        ctx.say("Jan möchte wissen, wann du kommst.")
+        s.sentence_q.join()
+        s.interrupt.set()  # barge-in: more than a second of speech while we talk
+        return False
+
+    s = mailbox(cut)
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is False  # the call goes on
+    assert not s.mailbox and not s.message_left and "mailbox" not in s.call_info
+    assert "this is a person, not a mailbox" in messages[-1]["content"]
+
+
+def test_no_thinking_sounds_into_a_possible_mailbox_announcement(mailbox):
+    s = mailbox(heard="Praxis Doktor Sommer, Sie sprechen mit")
+    s._suspect = True  # long first utterance
+    assert not s._queue_phrase("Hmm…", session_mod.FILLER) and s.audio_q.empty()
+    s._opening = False  # we answered and were heard out: a person
+    assert s._queue_phrase("Hmm…", session_mod.FILLER)
+    s.mailbox = True
+    assert not s._queue_phrase("Ich bin noch dran.", session_mod.FILLER, before_answer=False)
+
+
+def test_the_opening_ends_with_the_first_answer_that_was_heard_out(mailbox):
+    def answer(ctx):
+        ctx.say("Hallo, hier ist Claudine.")
+        return False
+
+    s = mailbox(answer, answer, heard="Ja, hallo?")
+    assert s._answer([dict(m) for m in INTRO], []) is False and not s._opening
+    utt(s, "Ich dachte schon, da geht nur die Mailbox ran.")  # said by a person later on
+    assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is False and not s.mailbox
+
+
+def test_sound_of_the_other_side_is_timed_for_the_end_of_the_announcement():
+    s = make(workers=False)
+    loud, quiet = np.full(160, 4000, np.int16), np.zeros(160, np.int16)
+    for i in range(10):
+        s._frame(loud, 100.0 + i * 0.02)
+    assert s._in_speech and s._heard_at == pytest.approx(100.18)
+    for i in range(40):
+        s._frame(quiet, 100.2 + i * 0.02)
+    assert not s._in_speech and s._heard_at == pytest.approx(100.18)  # silence does not move it
+    for i in range(3):
+        s._frame(loud, 101.0 + i * 0.02)
+    assert s._in_speech and s._heard_at == pytest.approx(101.04)  # also the short beep counts from its start
+
+
+def test_mailbox_call_from_answer_to_hang_up(monkeypatch):
+    """#65 as a whole, with the real reader and voice detection: the announcement comes in parts with pauses,
+    then the beep. One turn, nothing played before the beep is over, then greeting and message, then hang up."""
+    monkeypatch.setattr(session_mod, "MAILBOX_S", 0.4)
+    monkeypatch.setattr(session_mod, "MAILBOX_PAUSE_S", 0.5)
+    loud = bytes(0x80 + (60 if i % 2 else -60) for i in range(160))
+    parts = [(0.1, 0.7), (1.1, 1.5), (1.9, 2.5), (2.8, 3.0)]  # seconds after the answer; the last one is the beep
+    texts = ["Hier ist die Mailbox von null eins", "fünf eins", "Bitte sprechen Sie Ihre Nachricht nach dem Ton.", ""]
+    t0 = time.monotonic()
+    written = []
+
+    def read_audio(n, blocking):
+        t = time.monotonic() - t0
+        return loud if any(a <= t < b for a, b in parts) else b"\x80" * 160
+
+    def hangup():
+        call.state = CallState.ENDED
+
+    call = SimpleNamespace(state=CallState.ANSWERED, read_audio=read_audio, hangup=hangup, RTPClients=[],
+                           write_audio=lambda chunk: written.append(time.monotonic() - t0))
+    speech = FakeSpeech()
+    speech.transcribe = lambda pcm, language: texts.pop(0)
+    brain = FakeBrain(message)
+    s = CallSession(call, brain, speech, make_cfg(owner_name="Jan Lenck", end_silence_ms=200, speculative_ms=0),
+                    FakeCache())
+    s.run(outbound=True, message="Frag, wann er kommt.", caller="0170222", caller_name="Mark Tee")
+    assert len(brain.seen) == 1 and brain.kw["call"]["mailbox"] is True
+    assert "you heard: “Hier ist die Mailbox von null eins”" in brain.seen[0][0]["content"]
+    assert written and written[0] >= 3.0 + 0.5 - 0.1  # not a sound of ours before the beep and the pause are over
+    assert s.mailbox and s.message_left and call.state == CallState.ENDED
+    assert s.transcript == [
+        "Mark Tee: Hier ist die Mailbox von null eins", "Mark Tee (mailbox): fünf eins",
+        "Mark Tee (mailbox): Bitte sprechen Sie Ihre Nachricht nach dem Ton.",
+        "Claudine: Hallo Mark, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an.",
+        "Claudine: Jan möchte wissen, wann du kommst.", "Claudine: Bitte ruf ihn zurück."]
 
 
 def test_wanted_phrases_follow_the_configuration():

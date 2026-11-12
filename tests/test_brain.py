@@ -257,6 +257,23 @@ def test_splitter_system_note_is_not_a_hang_up():
     assert not s.fake_hangup
 
 
+def test_splitter_does_not_cut_after_an_initial():
+    """#65: "Ich habe Jan T." - pause - "dreimal angerufen"."""
+    before, out, _ = split("Ich habe Jan T. dreimal angerufen, aber nur die Mailbox erreicht. Soll ich es später ",
+                           "noch einmal versuchen? Das geht z. B. am Montag. Ende")
+    assert out == ["Ich habe Jan T. dreimal angerufen, aber nur die Mailbox erreicht.",
+                   "Soll ich es später noch einmal versuchen?", "Das geht z. B. am Montag.", "Ende"]
+    assert before == out[:3]
+    _, out, _ = split("Wir fahren mit der Linie A. Sie kommt um 8 Uhr.")  # merged, said in one go: no harm
+    assert out == ["Wir fahren mit der Linie A. Sie kommt um 8 Uhr."]
+
+
+def test_splitter_never_reads_out_emojis_and_smileys(brain):
+    _, out, _ = split("Jeder Tag ist willkommen ;-) 😉 Bis bald 👍🏽. Es ist 14:30 Uhr :) Tschüss ☀️!")
+    assert out == ["Jeder Tag ist willkommen Bis bald.", "Es ist 14:30 Uhr Tschüss!"]
+    assert "Zwinkersmiley" in brain.system("de")  # and not named in words either
+
+
 def test_splitter_cuts_long_text_at_a_comma():
     text = "Das ist ein sehr langer Satz ohne Punkt, " * 6
     before, out, _ = split(text)

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.9.5
+
+- Fix: a planned call that reached a mailbox was dialed again after the message had been left, up to three calls
+  and messages in half an hour, and then reported as "not reached" (#65)
+  - A message on the mailbox ends the task with the new status `message_left` ("Nachricht hinterlassen"): reported
+    by notification, event and call back, no further attempt. A callee who calls back until the end of the time
+    window still continues the task. Without a message (`leave_message` off, or the mailbox hung up first) the call
+    counts as not reached and is tried again, as before
+  - Mailbox announcements are recognized by the phone system ("Mailbox", "Mobilbox", "Anrufbeantworter", "nach dem
+    Ton", "voicemail", "after the tone" …): no "Ähm…" or "Ich bin noch dran." into the announcement, the greeting
+    and the message follow 1.5 s after the beep, then the call ends
+  - On a mailbox Claudine has no tools: she used to look into the calendar instead of speaking, and the mailbox
+    recorded only the thinking sounds
+  - A task call and the message contain only what the task covers, nothing from earlier calls; the sentence about
+    the written summary is not spoken onto a mailbox
+- Fix: "Ich habe Jan T. dreimal angerufen" was spoken as two sentences, cut after the initial
+- Fix: smileys are never read out, neither as characters (";-)", emojis) nor named ("Zwinkersmiley")
+- Fix: summaries of calls Claudine made no longer say that the other party called; a mailbox announcement is
+  not taken for a person speaking, and a call back is only mentioned if one was asked for
+
 ## 1.9.4
 
 - Claudine can set the start time of a timer and switch timer automations on or off ("Stell den Start-Timer auf

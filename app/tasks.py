@@ -18,7 +18,8 @@ import config
 log = logging.getLogger("tasks")
 
 PLANNED, RUNNING = "planned", "running"
-FINAL = ("done", "partial", "failed", "not_reached", "cancelled")
+LEFT = "message_left"     # only a mailbox answered and the message was left there: final, no further attempt
+FINAL = ("done", "partial", "failed", "not_reached", LEFT, "cancelled")
 KEEP_DAYS = 30            # finished tasks stay in tasks.json this long
 DEFAULT_WINDOW_H = 24     # a task without not_after is given up this long after not_before
 MAX_ITEMS, MAX_TEXT = 12, 500
@@ -66,7 +67,8 @@ TOOL_PLAN_CALL = {
                                                             "default now"},
             "not_after": {"type": "string", "description": "give up after this time; default 24 hours later"},
             "retries": {"type": "integer", "description": "further attempts if nobody is reached, default 2"},
-            "leave_message": {"type": "boolean", "description": "leave a short message on a mailbox, default true"},
+            "leave_message": {"type": "boolean", "description": "leave a short message on a mailbox, default true; "
+                                                                "the message ends the task, no further attempt"},
             "call_back": {"type": "boolean", "description": "call the requester back with the result (a notification "
                                                             "is sent in any case)"},
             "language": {"type": "string", "enum": ["de", "uk", "en", "auto"]},
@@ -84,10 +86,11 @@ TOOL_TASK_RESULT = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "status": {"type": "string", "enum": ["done", "partial", "failed", "not_reached"],
+            "status": {"type": "string", "enum": ["done", "partial", "failed", "not_reached", LEFT],
                        "description": "done = goal reached and all follow-up steps done; partial = something is "
-                                      "open; failed = the callee declined or it did not work; not_reached = nobody "
-                                      "answered in person (mailbox, no reply)"},
+                                      "open; failed = the callee declined or it did not work; message_left = only "
+                                      "a mailbox answered and you left your message on it; not_reached = nobody "
+                                      "answered in person and no message was left"},
             "summary": {"type": "string", "description": "two to four sentences for the requester, plain text"},
             "answers": {"type": "object", "description": "what the callee said, e.g. {\"date\": \"2026-11-14 18:00\"}",
                         "additionalProperties": {"type": "string"}},
@@ -266,7 +269,8 @@ def read_back(task: dict, cfg, known: bool) -> str:
     if task["follow_up"]:
         parts.append("Afterwards you will: " + "; ".join(s["step"] for s in task["follow_up"]) + ".")
     parts.append(f"Not reached: {task['retries']} more attempt(s)"
-                 + (", with a message on the mailbox." if task["leave_message"] else ", no message on a mailbox."))
+                 + ("; on a mailbox you leave a message and do not call again." if task["leave_message"]
+                    else ", no message on a mailbox."))
     parts.append("The result comes as a notification" + (" and you call back." if task["call_back"] else "."))
     parts.append("Ask whether that is right. Only after a yes call plan_call again with the same values and "
                  "confirmed=true.")
@@ -284,6 +288,8 @@ def brief(task: dict, owner: str) -> str:
     parts.append("You may tell the callee only: " + ("; ".join(task["may_share"]) if task["may_share"]
                                                      else f"that you call for {who}")
                  + f". Nothing else about {who} (no address, no other personal data)")
+    parts.append("Say only what this task covers: add no wishes, preferred days or details of your own, and nothing "
+                 "from earlier calls")
     parts.append(f"You may agree on your own to: {task['may_accept']}. Anything outside that you do not decide: "
                  f"say that {who} will get back about it" if task["may_accept"]
                  else f"Do not agree to anything on your own that the task does not cover; say that {who} will "
@@ -301,8 +307,14 @@ def brief(task: dict, owner: str) -> str:
 
 def callback_note(task: dict, owner: str) -> str:
     """For an inbound call from a number with an open task: the callee is probably calling back."""
-    return ("You tried to reach this number earlier and they are probably calling back. After the greeting say why "
-            "you had called and continue with it. " + brief(task, owner))
+    left = " and left a message on their mailbox" if message_was_left(task) else ""
+    return (f"You tried to reach this number earlier{left} and they are probably calling back. After the greeting "
+            "say why you had called and continue with it. " + brief(task, owner))
+
+
+def message_was_left(task: dict) -> bool:
+    """Whether an earlier attempt of this task left a message on the mailbox."""
+    return any(a.get("outcome") == "message left" for a in task["attempts"])
 
 
 def report_text(task: dict) -> str:
@@ -324,7 +336,8 @@ def report_text(task: dict) -> str:
 def clean_result(data: dict) -> dict:
     """The task_result input in a fixed shape (the model's output is not trusted to have it)."""
     data = data if isinstance(data, dict) else {}
-    status = data.get("status") if data.get("status") in ("done", "partial", "failed", "not_reached") else "partial"
+    status = data.get("status") if data.get("status") in ("done", "partial", "failed", "not_reached",
+                                                           LEFT) else "partial"
     answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
     steps = [{"step": str(s.get("step") or "")[:MAX_TEXT], "done": bool(s.get("done")),
               "result": str(s.get("result") or "")[:MAX_TEXT]}
@@ -465,20 +478,28 @@ class TaskStore:
             t = min(due, key=lambda t: t["next_try"])
             return self._start(t, now, "call")
 
+    def _awaits_callback(self, t: dict, key: str, now: datetime) -> bool:
+        """A task this number may continue by calling in: tried before and still planned, or ended with a message
+        on the mailbox (which asks for a call back) while its time window lasts."""
+        if not t["attempts"] or self._key(t["number"]) != key:
+            return False
+        return t["status"] == PLANNED or (t["status"] == LEFT and now <= datetime.fromisoformat(t["not_after"]))
+
     def claim_callback(self, number: str, now: datetime) -> dict | None:
         """The open task for a number that was tried before and now calls in; marked as running."""
         key = self._key(number)
         with self.lock:
-            t = next((t for t in self.tasks if t["status"] == PLANNED and t["attempts"]
-                      and self._key(t["number"]) == key), None)
+            open_ = [t for t in self.tasks if self._awaits_callback(t, key, now)]
+            # a task that would be dialed again comes first: continued here, it is not called once more
+            t = min(open_, key=lambda t: t["status"] != PLANNED, default=None)
             return self._start(t, now, "callback") if t else None
 
-    def has_callback(self, number: str) -> bool:
+    def has_callback(self, number: str, now: datetime | None = None) -> bool:
         """Whether a call from this number would continue an open task (see claim_callback)."""
         key = self._key(number)
+        now = now or datetime.now(_tz(self.cfg))
         with self.lock:
-            return any(t["status"] == PLANNED and t["attempts"] and self._key(t["number"]) == key
-                       for t in self.tasks)
+            return any(self._awaits_callback(t, key, now) for t in self.tasks)
 
     def _start(self, t: dict, now: datetime, kind: str) -> dict:
         t["status"] = RUNNING
@@ -491,7 +512,12 @@ class TaskStore:
         """After an attempt without a conversation: planned again for a retry, or final. Returns the task."""
         with self.lock:
             t = self._find(task_id)
+            left = message_was_left(t)
             t["attempts"][-1]["outcome"] = outcome
+            if left:  # a call back after the message came to nothing: the task stays as it ended, no new attempt
+                t["status"] = LEFT
+                self._save()
+                return dict(t)
             calls = sum(a["kind"] == "call" for a in t["attempts"])
             again = now + timedelta(minutes=max(1, int(self.cfg.task_retry_minutes or 15)))
             if calls <= t["retries"] and again < datetime.fromisoformat(t["not_after"]):

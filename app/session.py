@@ -2,6 +2,7 @@
 import collections
 import logging
 import queue
+import re
 import threading
 import time
 
@@ -40,6 +41,14 @@ GRACE_S = 0.6           # no barge-in at the very start of an answer
 # What is played: the answer, or a phrase from the cache (greeting, filler, status phrase)
 ANSWER, GREETING, FILLER = "answer", "greeting", "filler"
 MAILBOX_S = 2.0         # outbound: a first utterance with more speech than this may be a mailbox announcement
+MAILBOX_PAUSE_S = 1.5   # a mailbox announcement is over, beep included, after this long without a sound
+MAILBOX_MAX_S = 40.0    # longest wait for that pause before the message is spoken anyway
+# Words only a mailbox announcement uses (de, en, uk): the box itself, or speaking "after the tone". Not "nicht
+# erreichbar" or "Nachricht hinterlassen" alone: a person answering for someone else says that as well.
+MAILBOX_WORDS = re.compile(
+    r"mail[\s-]?box|mobil\w*[\s-]?box|sprach[\s-]?box|voice[\s-]?(?:mail|box)|anrufbeantworter|answering machine"
+    r"|nach dem (?:signal|piep|ton\b)|after the (?:tone|beep)"
+    r"|автовідповідач|голосов\w+ пошт|після (?:звукового )?сигналу", re.I)
 HOLD_MAX_S = 4.0        # longest the first sentence waits for a caller who started speaking while we thought
 STILL_MAX = 3           # "I'm still on it" at most this often per turn
 
@@ -117,6 +126,17 @@ class CallSession:
         self.language = cfg.language or "de"
         self.caller_label = "caller"
         self.last_text = ""
+        # outbound calls: a mailbox instead of a person (see _mailbox)
+        self.leave_message = True
+        self.mailbox = False              # the phone system recognized a mailbox announcement
+        self.message_left = False         # ... and at least one sentence of our message was played after it
+        self._opening = False             # until our first answer to the callee is through: a mailbox may still show
+        self._suspect = False             # long first utterance: maybe a mailbox, no thinking sounds into it
+        self._callee_text = ""            # what the callee said during the opening
+        self._greet = ""                  # the cached greeting of this call
+        self._announcement = False        # the mailbox may still be talking: nothing is played yet
+        self._heard_at = time.monotonic()  # last sound of an utterance from the other side
+        self._turn_cut = False            # the last turn was interrupted by the other side (barge-in)
         self.owner = (cfg.owner_name or "").strip()                 # "Jan Lenck"
         self.owner_first = self.owner.split()[0] if self.owner else "the owner"
         self.codec = rtpfix.setup(call)
@@ -201,7 +221,7 @@ class CallSession:
                 self.seg_voiced = onset
                 self._peak, self._seg_thr = e, thr
                 self._recent.clear()
-                self.speech_started_at = now
+                self.speech_started_at = self._heard_at = now
                 self._seg_thinking = self._thinking
                 self.user_speaking.set()
             return
@@ -215,6 +235,7 @@ class CallSession:
             # short pauses between syllables and words count as speech
             self.seg_voiced += 1 + (self._gap if self._gap <= GAP_FRAMES else 0)
             self._gap = 0
+            self._heard_at = now
             if not playing:
                 self._after_answer += 1
         else:
@@ -277,9 +298,10 @@ class CallSession:
     def _finished(self, u: Utterance):
         """A finished utterance: transcribe it now and queue it for the conversation."""
         with self._answer_lock:
-            if self._thinking:
+            if self._thinking and not self.mailbox:
                 # said while the model prepares an answer: answer everything together, unless a changing
-                # tool already ran - then it is the next turn
+                # tool already ran - then it is the next turn. The rest of a mailbox announcement is only waited
+                # for (_after_announcement), the message does not depend on it
                 u.while_thinking = True
             self.utterances.put(u)  # queued before the restart signal, so the restarted turn finds it
             if u.while_thinking and not self._side_effects:
@@ -299,6 +321,10 @@ class CallSession:
                 text = ""
             u.text = text
             u.stt_done_at = time.monotonic()
+            if self.mailbox and text and not u.tentative and not u.noted:
+                u.noted = True  # the rest of the announcement: for the log and the summary, nobody answers it
+                log.info("%s (mailbox): %s", self.caller_label, text)
+                self.transcript.append(f"{self.caller_label} (mailbox): {text}")
             u.done.set()
 
         threading.Thread(target=work, name="stt", daemon=True).start()
@@ -363,8 +389,20 @@ class CallSession:
         while self._caller_goes_on() and time.monotonic() < deadline and self.alive():
             time.sleep(0.02)
 
+    def _after_announcement(self):
+        """Mailbox: nothing is said into the announcement. Waits until the other side has been silent for
+        MAILBOX_PAUSE_S (then the beep is over as well), at most MAILBOX_MAX_S."""
+        deadline = time.monotonic() + MAILBOX_MAX_S
+        while self.alive() and not self.interrupt.is_set() and time.monotonic() < deadline:
+            if not self._in_speech and time.monotonic() - self._heard_at >= MAILBOX_PAUSE_S:
+                break
+            time.sleep(0.02)
+        self._announcement = False
+
     def _play(self, pcm: np.ndarray, kind: str = ANSWER, text: str = "") -> bool:
         """Plays one sentence of the answer or a cached phrase. False = dropped."""
+        if self.mailbox and self._announcement:
+            self._after_announcement()
         if kind == ANSWER and self._thinking:
             self._hold_for_caller()
         now = time.monotonic()
@@ -394,6 +432,8 @@ class CallSession:
             log.info("%s: %s%s", name, text, "" if kind == ANSWER else f" ({kind})")
             self.transcript.append(f"{name}: {text}")
         self._send(pcm)
+        if self.mailbox and kind == ANSWER and self.alive() and not self.interrupt.is_set():
+            self.message_left = True  # the mailbox recorded at least this sentence
         if own:
             with self._answer_lock:
                 if not self.interrupt.is_set():
@@ -433,6 +473,8 @@ class CallSession:
         pcm = self.phrases.get(text) if self.phrases is not None and text else None
         if pcm is None:
             return False
+        if kind == FILLER and (self.mailbox or (self._opening and self._suspect)):
+            return False  # nothing into a mailbox announcement or onto its recording
         with self._answer_lock:
             if self.interrupt.is_set() or (before_answer and self._turn_audio):
                 return False
@@ -575,6 +617,7 @@ class CallSession:
                 self._thinking = False
                 if self._turn_last_sentence:
                     self._stale_before = self._turn_last_sentence
+                self._turn_cut = self.interrupt.is_set()
             self._spec_turn = None
             self._timer = None
             self.interrupt.clear()
@@ -590,6 +633,8 @@ class CallSession:
             log.info("%s: %s", self.caller_label, u.text)
             self.transcript.append(f"{self.caller_label}: {u.text}")
             self.last_text = u.text
+            if self._opening:
+                self._callee_text += " " + u.text
         if new:
             self.caller_turns += 1
 
@@ -672,6 +717,9 @@ class CallSession:
         while True:
             self._begin_turn()
             heard += self._transcribed(self._drain())  # said meanwhile (e.g. during the transcription)
+            if self._opening and MAILBOX_WORDS.search(" ".join([self._callee_text]
+                                                               + [u.text for u in heard if not u.noted])):
+                return self._mailbox(messages, heard)
             spec = next((u for u in heard if u.tentative and not u.final.is_set()), None)
             snapshot = [dict(m) for m in messages]
             if heard:
@@ -699,7 +747,68 @@ class CallSession:
                          self.caller_label)
                 heard += more
                 continue
+            if self.caller_turns and self._turn_said and not self._turn_cut:
+                self._opening = False  # we answered the callee and were heard out: a person, not a mailbox
             return hang
+
+    def _mailbox_note(self, greeted: str) -> str:
+        """System note for the one turn on a mailbox: what the message is and what it must not contain."""
+        owner = self.owner_first
+        return ("[System: The phone system recognized a mailbox announcement: nobody is listening, you are speaking "
+                "onto a recording, and nothing said so far is on it. "
+                + (f"Right after the beep the phone system says “{greeted}”: do not greet or introduce yourself "
+                   "again, continue from there. " if greeted else
+                   "Start with who you are" + ("" if "admin" in self.access else " and for whom you are calling")
+                   + ". ")
+                + "Leave your message now, two or three short sentences: "
+                + ("what you called to say. " if "admin" in self.access else
+                   f"why you are calling and, if it needs an answer, the request to call {owner} back. ")
+                + "Say only what the reason of this call covers: no wishes, dates or details of your own and nothing "
+                  "from earlier calls. Ask nothing that needs an answer right now, and leave out the sentence about "
+                  "the written summary and the recording. You have no tools here except hang_up; the phone system "
+                  "hangs up after your message.]")
+
+    def _mailbox(self, messages, heard) -> bool:
+        """A mailbox answered an outbound call. Without leave_message: hang up at once. Otherwise Claude prepares
+        the message while the announcement still runs; it is played after the beep (_after_announcement),
+        starting with the cached greeting, without thinking sounds and without tools, and then we hang up.
+        Returns True = hang up; False = someone spoke into the message, so it is a person after all and the
+        call goes on as a conversation."""
+        with self._answer_lock:
+            self.mailbox = True  # from here on the rest of the announcement restarts nothing (_finished)
+            self.interrupt.set()  # a greeting started after a short first utterance: not into the announcement
+        self._opening = False
+        self.wait_spoken()
+        self.interrupt.clear()
+        settled = []
+        for u in heard:  # a tentative utterance that goes on comes again as a whole, with the announcement
+            while u.tentative and not (u.final.is_set() or u.cancelled.is_set()) and self.alive():
+                u.final.wait(0.02)
+            if not u.tentative or (u.final.is_set() and not u.cancelled.is_set()):
+                settled.append(u)
+        self._note_heard(settled)
+        if not self.leave_message:
+            log.info("Mailbox announcement recognized: no message wanted, hanging up")
+            return True
+        log.info("Mailbox announcement recognized: the message follows after it")
+        self.call_info["mailbox"] = True  # Brain.turn: no tools but hang_up
+        self._announcement = True
+        self._begin_turn()
+        greeted = self._greet if self._play_greeting(self._greet) else ""
+        if settled:
+            self._add_user(messages, " ".join(u.text for u in settled))
+        self._add_user(messages, self._mailbox_note(greeted))
+        self._turn_heard = settled
+        self._assistant_turn(messages)
+        if not (self._turn_cut and self.alive()):
+            return True
+        log.info("%s speaks into the message: not a mailbox, going on as a conversation", self.caller_label)
+        with self._answer_lock:
+            self.mailbox = self.message_left = False
+        del self.call_info["mailbox"]
+        messages.append({"role": "user", "content": "[System: Someone is speaking after all: this is a person, not a "
+                                                    "mailbox. Go on as a normal conversation.]"})
+        return False
 
     def _converse(self, messages):
         silence = 0
@@ -809,6 +918,8 @@ class CallSession:
         an outbound call leaves a message on a mailbox."""
         self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
         self.web = web
+        self.leave_message = leave_message
+        self._opening = outbound
         self.call_info = {"number": caller, "name": caller_name, "grants": grants or {}}
         full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
@@ -826,7 +937,7 @@ class CallSession:
             t.start()
         try:
             heard = ""
-            greet = self._greeting(outbound, name)
+            greet = self._greet = self._greeting(outbound, name)
             greeted = ""
             if outbound or not greet:
                 # Listen briefly: does a person answer ("Hello?") or a mailbox?
@@ -835,6 +946,7 @@ class CallSession:
                     return
                 at = len(self.transcript)
                 person = first is TIMEOUT or first.voiced_s <= MAILBOX_S  # long speech may be a mailbox
+                self._suspect = outbound and not person
                 if greet and person and self._play_greeting(greet):
                     greeted = greet  # right away, while the first words are transcribed and Claude prepares
                 elif greet and not person:
@@ -842,8 +954,9 @@ class CallSession:
                 if isinstance(first, Utterance):
                     heard = self._text_of(first)
                 if heard:
+                    log.info("%s: %s", self.caller_label, heard)
                     self.transcript.insert(at, f"{self.caller_label}: {heard}")
-                    self.last_text = heard
+                    self.last_text = self._callee_text = heard
                     self.caller_turns += 1
             elif self._play_greeting(greet):
                 greeted = greet
@@ -859,8 +972,9 @@ class CallSession:
                          + (f"When the call was answered you heard: “{heard}”. " if heard
                             else "Nothing was heard when the call was answered. ")
                          + said
-                         + ("If that sounds like a mailbox: do not wait for the beep, IMMEDIATELY leave a short "
-                            "message of two or three sentences and hang up afterwards. " if leave_message else
+                         + ("If that sounds like a mailbox: do not wait for the beep and use no tools, "
+                            "IMMEDIATELY leave a short message of two or three sentences with only what the "
+                            "reason above covers, and hang up afterwards. " if leave_message else
                             "If that sounds like a mailbox: leave no message, hang up right away without saying "
                             "anything. ")
                          + ("Otherwise get straight to the point.]" if greeted
@@ -892,8 +1006,9 @@ class CallSession:
         except Exception:  # noqa: BLE001
             log.exception("Error during call")
             try:
-                self.say(PHRASES.get(self.language, PHRASES["de"])["error"])
-                self.wait_spoken()
+                if not self.mailbox:  # not onto a recording: it is no message, the task tries again
+                    self.say(PHRASES.get(self.language, PHRASES["de"])["error"])
+                    self.wait_spoken()
             except Exception:  # noqa: BLE001
                 pass
         finally:

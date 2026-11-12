@@ -111,7 +111,8 @@ SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзв
 TASK_TITLE = {"de": "Auftrag Anruf bei {who}: {status}", "en": "Task call to {who}: {status}",
               "uk": "Завдання, дзвінок до {who}: {status}"}
 STATUS_WORDS = {"de": {"done": "erledigt", "partial": "teilweise erledigt", "failed": "nicht geklappt",
-                       "not_reached": "nicht erreicht", "cancelled": "abgebrochen"}}
+                       "not_reached": "nicht erreicht", "message_left": "Nachricht hinterlassen",
+                       "cancelled": "abgebrochen"}}
 
 
 def find_caller(number: str, wildcard: bool = True) -> dict | None:
@@ -178,7 +179,7 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
             name = caller_name(caller)
             try:
                 summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
-                                          session.actions, lang)
+                                          session.actions, lang, outbound=not inbound, mailbox=session.mailbox)
             except Exception as e:  # noqa: BLE001
                 log.warning("Summary failed: %s", e)
             notify = caller.get("notify") if caller else None
@@ -321,25 +322,38 @@ def call_back(task: dict, text: str):
 
 
 def settle_task(task: dict, session):
-    """After the call of a task (line already free): retry if nobody was reached, otherwise follow-up and result."""
+    """After the call of a task (line already free): retry if nobody was reached, otherwise follow-up and result.
+    A message left on a mailbox ends the task as message_left: it is reported and not dialed again."""
     try:
         now = datetime.now(timezone.utc)
+        # a call back after a message was left: the task was reported as message_left already (TaskStore.not_reached)
+        reported = (task.get("result") or {}).get("status") == tasks.LEFT
         if session is None or not session.caller_turns:
             done = task_store.not_reached(task["id"], "no answer" if session is None else "nothing said", now)
+        elif session.mailbox and not session.message_left:
+            done = task_store.not_reached(task["id"], "mailbox", now)  # nothing to follow up
         else:
             try:
-                result = brain.follow_up(task, session.transcript, list(session.actions))
+                result = brain.follow_up(task, session.transcript, list(session.actions), mailbox=session.mailbox)
             except Exception as e:  # noqa: BLE001
                 log.exception("Follow-up of task %s failed", task["id"])
-                result = {"status": "partial", "summary": f"The call took place, but the follow-up failed ({e}).",
-                          "open_points": ["Check the call summary and do the follow-up steps by hand."]}
-            if result["status"] == "not_reached":
+                result = ({"summary": "Only the mailbox answered; a message was left."} if session.mailbox else
+                          {"status": "partial", "summary": f"The call took place, but the follow-up failed ({e}).",
+                           "open_points": ["Check the call summary and do the follow-up steps by hand."]})
+            status = result.get("status")
+            if session.mailbox:
+                status = tasks.LEFT  # the phone system knows; the follow-up only wrote the summary
+            elif status == tasks.LEFT and not task["leave_message"]:
+                status = "not_reached"  # no message was to be left: what was said there does not end the task
+            if status == "not_reached":
                 done = task_store.not_reached(task["id"], "mailbox", now)
+            elif status == tasks.LEFT:
+                done = task_store.finish(task["id"], {**result, "status": status}, "message left")
             else:
                 if result.get("do_not_call"):
                     task_store.block(task["number"], task["id"])
                 done = task_store.finish(task["id"], result)
-        if done["status"] in tasks.FINAL:
+        if done["status"] in tasks.FINAL and not (reported and done["status"] == tasks.LEFT):
             report_task(done)
     except Exception:  # noqa: BLE001
         log.exception("Task %s failed", task.get("id"))
