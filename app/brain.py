@@ -908,9 +908,10 @@ class Brain:
     def follow_up(self, task: dict, transcript: list, actions: list | None = None, mailbox: bool = False) -> dict:
         """After a planned call, without the callee: does the follow-up steps of the plan on behalf of the
         requester and returns the structured result (tasks.clean_result). actions collects what was changed.
-        mailbox: the phone system recognized a mailbox and the message was played (only the summary is needed)."""
+        mailbox: the phone system recognized a mailbox and the message was played. Only the summary is needed:
+        nobody answered anything, so no step of the plan is done and task_result is the only tool."""
         actions = [] if actions is None else actions
-        tools = self.follow_up_tools(task)
+        tools = [tasks_mod.TOOL_TASK_RESULT] if mailbox else self.follow_up_tools(task)
         tz = ZoneInfo(self.cfg.timezone)
         lang = self.cfg.language if self.cfg.language in LANG_NAMES else "de"
         system = (FOLLOW_PROMPT.replace("{name}", self.cfg.assistant_name or "Claude")

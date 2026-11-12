@@ -603,6 +603,48 @@ def test_mailbox_that_hangs_up_before_the_message_got_none(mailbox):
     assert s.mailbox and not s.message_left  # the task tries again (main.settle_task)
 
 
+def test_error_on_a_mailbox_is_not_spoken_as_the_message(monkeypatch):
+    """An API failure must not put "Bei mir ist ein Fehler aufgetreten" on the recording and end the task."""
+    monkeypatch.setattr(session_mod, "MAILBOX_PAUSE_S", 0.05)
+
+    def boom(ctx):
+        raise RuntimeError("API down")
+
+    for brain, heard, said in ((FakeBrain(boom), "Hier ist die Mailbox von null eins", []),
+                               (FakeBrain(boom), "Ja, hallo?", ["Bei mir ist gerade ein Fehler aufgetreten. "
+                                                                 "Ich lege auf."])):
+        speech = FakeSpeech()
+        s = make(brain, speech, workers=False)
+        monkeypatch.setattr(s, "_reader", lambda: None)
+        first = long_first(heard)
+        monkeypatch.setattr(s, "listen", lambda timeout, first=first: first)
+        s.run(outbound=True, caller="0170222")
+        assert speech.synthesized == said and not s.message_left
+
+
+def test_greeting_already_playing_is_cut_when_the_mailbox_shows(mailbox):
+    """A short first utterance gets the greeting at once, before its words are known."""
+    s = mailbox(message)
+    s.playing.set()
+    started, cut = threading.Event(), []
+
+    def long_greeting(pcm):  # stands for the greeting being sent: two seconds, unless it is interrupted
+        started.set()
+        deadline = time.monotonic() + 2
+        while not s.interrupt.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cut.append(s.interrupt.is_set())
+
+    send = s._send
+    s._send = long_greeting
+    s.audio_q.put(("Hallo Mark, hier ist Claudine.", np.zeros(40, np.int16), session_mod.GREETING))
+    assert started.wait(2)
+    s._send = send
+    assert s._answer([dict(m) for m in INTRO], []) is True and s.message_left
+    assert cut == [True]
+    assert s.transcript.count("Claudine: Hallo Mark, hier ist Claudine.") == 2  # cut, and again after the beep
+
+
 def test_speech_into_the_message_is_a_person_after_all(mailbox):
     def cut(ctx):
         ctx.say("Jan möchte wissen, wann du kommst.")

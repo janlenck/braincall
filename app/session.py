@@ -776,7 +776,10 @@ class CallSession:
         call goes on as a conversation."""
         with self._answer_lock:
             self.mailbox = True  # from here on the rest of the announcement restarts nothing (_finished)
+            self.interrupt.set()  # a greeting started after a short first utterance: not into the announcement
         self._opening = False
+        self.wait_spoken()
+        self.interrupt.clear()
         settled = []
         for u in heard:  # a tentative utterance that goes on comes again as a whole, with the announcement
             while u.tentative and not (u.final.is_set() or u.cancelled.is_set()) and self.alive():
@@ -1003,8 +1006,9 @@ class CallSession:
         except Exception:  # noqa: BLE001
             log.exception("Error during call")
             try:
-                self.say(PHRASES.get(self.language, PHRASES["de"])["error"])
-                self.wait_spoken()
+                if not self.mailbox:  # not onto a recording: it is no message, the task tries again
+                    self.say(PHRASES.get(self.language, PHRASES["de"])["error"])
+                    self.wait_spoken()
             except Exception:  # noqa: BLE001
                 pass
         finally:

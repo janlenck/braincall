@@ -250,6 +250,19 @@ def test_message_left_is_final_but_a_call_back_continues_the_task(store):
     assert not store.has_callback("0170222", NOON + timedelta(hours=4))
 
 
+def test_call_back_continues_a_planned_task_before_one_with_a_message(store):
+    """Otherwise the planned one stays scheduled and the callee is dialed again after calling back."""
+    old = store.add(build(number="0170222", goal="Old task"))
+    store.claim(NOON)
+    store.finish(old["id"], {"status": "message_left", "summary": "Um Rückruf gebeten."}, "message left")
+    new = store.add(build(number="0170222", goal="New task", retries=2))
+    store.claim(NOON + timedelta(minutes=1))
+    store.not_reached(new["id"], "no answer", NOON + timedelta(minutes=1))
+    assert store.claim_callback("0170222", NOON + timedelta(minutes=5))["id"] == new["id"]
+    store.finish(new["id"], {"status": "done", "summary": "Erledigt."})
+    assert store.claim_callback("0170222", NOON + timedelta(minutes=30))["id"] == old["id"]  # then the older one
+
+
 def test_no_call_after_the_window_or_to_a_number_that_opted_out(store):
     late = store.add(build(not_after="2026-11-10T13:00"))
     assert store.claim(NOON.replace(hour=13, minute=1)) is None  # also without expire() having run before
@@ -564,6 +577,18 @@ def test_follow_up_knows_message_left_and_a_recognized_mailbox(brain):
     brain.follow_up(build(), ["Mark (mailbox): …"], [], mailbox=True)
     assert "recognized a mailbox announcement and played your message" in (
         brain.client.messages.requests[0]["messages"][0]["content"])
+
+
+def test_follow_up_of_a_recognized_mailbox_can_only_report(brain, ha):
+    """Nobody answered anything: no step of the plan is done, whatever the model returns."""
+    task = build(follow_up=[{"step": "Termin eintragen", "tool": "ha_create_event"}])
+    brain.client = SimpleNamespace(messages=Fake(
+        message(tool("ha_create_event", title="Seeblick", start="2026-11-10T19:00", confirmed=True)),
+        message(tool("task_result", id_="t2", status="message_left", summary="Um Rückruf gebeten."))))
+    actions = []
+    result = brain.follow_up(task, ["Seeblick (mailbox): …", "Claudine: Hallo …"], actions, mailbox=True)
+    assert names(brain.client.messages.requests[0]["tools"]) == {"task_result"}
+    assert ha.calls == [] and actions == [] and result["status"] == "message_left"
 
 
 def test_on_a_mailbox_there_are_no_tools_but_hang_up(brain):

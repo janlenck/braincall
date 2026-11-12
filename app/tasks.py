@@ -489,7 +489,9 @@ class TaskStore:
         """The open task for a number that was tried before and now calls in; marked as running."""
         key = self._key(number)
         with self.lock:
-            t = next((t for t in self.tasks if self._awaits_callback(t, key, now)), None)
+            open_ = [t for t in self.tasks if self._awaits_callback(t, key, now)]
+            # a task that would be dialed again comes first: continued here, it is not called once more
+            t = min(open_, key=lambda t: t["status"] != PLANNED, default=None)
             return self._start(t, now, "callback") if t else None
 
     def has_callback(self, number: str, now: datetime | None = None) -> bool:
