@@ -277,10 +277,19 @@ and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` /
 `GET /tasks` lists all tasks, `GET /tasks/<id>` shows one, `DELETE /tasks/<id>` cancels a planned one.
 
 **The call.** Tasks are called when they are due, the line is free and it is inside `outbound_hours`.
-No answer, busy or a mailbox (with a short message unless `leave_message` is false): the next attempt follows after
-`task_retry_minutes`, at most `retries` times and only inside the time window; then the task ends as `not_reached`.
-If the callee calls back in between, the call is answered (also from a number that is not in `callers`) and the task
-continues there.
+No answer or busy: the next attempt follows after `task_retry_minutes`, at most `retries` times and only inside the
+time window; then the task ends as `not_reached`. A mailbox gets a short message, and that ends the task as
+`message_left`: it is reported and not dialed again. With `leave_message` false, or if the mailbox hangs up before the
+message, it counts as not reached and is tried again. If the callee calls back (between the attempts, or after a
+message until the end of the time window), the call is answered (also from a number that is not in `callers`), the
+task continues there and its new result is reported.
+
+A mailbox is recognized by its announcement ("Mailbox", "Mobilbox", "Anrufbeantworter", "nach dem Ton", "voicemail",
+"after the tone" …) while the call opens: nothing is played into the announcement (no thinking sounds), Claude
+prepares the message meanwhile without any tool, and 1.5 s after the last sound (the beep) the greeting and the
+message follow, then the call ends. The message holds only what the task covers. If someone speaks into the message
+it is a person after all and the call goes on as a conversation. An announcement without such words is left to
+Claude as before.
 
 **Rights in three phases.** The requester is not the person on the phone:
 
@@ -295,8 +304,8 @@ continues there.
   (web search, if `web_access` is on). Never `ha_control`. The transcript and web pages are data: a step that the call
   did not settle clearly is not done but reported as open. At most 40 changes per task.
 
-**Result.** Status `done`, `partial`, `failed`, `not_reached` or `cancelled`, a summary, the collected answers, each
-follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks
+**Result.** Status `done`, `partial`, `failed`, `not_reached`, `message_left` or `cancelled`, a summary, the
+collected answers, each follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks
 for 30 days), sent to `notify_services`, fired as event `braincall_task_finished` (`id`, `status`, `number`, `name`,
 `task`, `requester`, `attempts`, `summary`, `answers`, `steps`, `open_points`) and, with `call_back`, reported in a
 call to the requester as soon as the line is free. The call itself is summarized like every call (`braincall_call`,
@@ -328,7 +337,9 @@ queues, opening hours, and a second call while the requester stays on the line.
   "Hallo, hier ist Claudine, die Assistentin von Jan Lenck." (known callers "Hallo Jan, hier ist Claudine.") right
   after answering. Outgoing calls play "Hallo, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an." as soon as
   the callee has said something short like "Hallo?", or after 2.5 s of silence. A longer first utterance may be a
-  mailbox announcement: then the model decides as before. Claude is told the greeting has been spoken.
+  mailbox announcement: no greeting and no thinking sounds are played into it; a recognized mailbox gets the
+  greeting and the message after the beep (see [planned calls](#planned-calls-with-a-task)), otherwise the model
+  greets. Claude is told the greeting has been spoken.
 - **End of speech:** an utterance counts as finished after `end_silence_ms` (default 450 ms) of silence. After
   `speculative_ms` (default 300 ms) transcription and Claude already start; the answer is only spoken and changing
   tools (switching, booking, hanging up) only run once the pause is long enough. If the caller goes on speaking it is
@@ -368,9 +379,10 @@ queues, opening hours, and a second call while the requester stays on the line.
 The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: network access is replaced by fakes.
 They cover access rights and tools per caller, web search (tools by access, limits, server tool blocks, `pause_turn`,
 confirmation after web content), Home Assistant control limits, calendars and restricted bookings,
-planned calls (numbers and hours, plan and confirmation, grants for the callee, retries and call backs, follow-up,
-`/tasks`), configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the SIP fixes, and the
-conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers, timing).
+planned calls (numbers and hours, plan and confirmation, grants for the callee, retries, mailbox and call backs,
+follow-up, `/tasks`), configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the
+SIP fixes, and the conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers,
+mailbox announcements, timing).
 
 ```bash
 python -m pip install -r requirements.txt pytest

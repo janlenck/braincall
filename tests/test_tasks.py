@@ -139,7 +139,8 @@ def test_brief_says_what_may_be_shared_and_the_etiquette():
                              follow_up=[{"step": "Termin eintragen", "tool": "ha_create_event"}]), "Jan")
     for part in ("Reserve a table for 4 tonight", "Restaurant Seeblick", "Ist um 19 Uhr ein Tisch frei?",
                  "only: Name Jan Lenck; 4 Personen", "no address", "18:00 bis 21:00", "AI assistant",
-                 "not to be called again", "no audio is recorded", "Termin eintragen"):
+                 "not to be called again", "no audio is recorded", "Termin eintragen",
+                 "Say only what this task covers", "nothing from earlier calls"):
         assert part in text, part
 
 
@@ -149,6 +150,7 @@ def test_clean_result_fixes_the_shape():
     assert r == {"status": "partial", "summary": "5", "answers": {}, "steps": [{"step": "a", "done": True,
                  "result": ""}], "open_points": ["eins"], "do_not_call": True}
     assert tasks.clean_result(None)["status"] == "partial"
+    assert tasks.clean_result({"status": "message_left", "summary": "x"})["status"] == "message_left"
 
 
 # ---------------------------------------------------------------- store
@@ -221,6 +223,31 @@ def test_call_back_continues_only_a_task_that_was_tried(store):
     assert store.claim(NOON + timedelta(minutes=20)) is None  # not dialed while the call back runs
     done = store.finish(t["id"], {"status": "done", "summary": "Tisch um 19 Uhr."})
     assert done["status"] == "done" and done["attempts"][-1]["outcome"] == "talked"
+
+
+def test_message_left_is_final_but_a_call_back_continues_the_task(store):
+    """#65: a message on the mailbox ends the task (no retry); the callee may still call back in the window."""
+    t = store.add(build(number="0170222", retries=2, not_after="2026-11-10T19:00"))
+    store.claim(NOON)
+    left = store.finish(t["id"], {"status": "message_left", "summary": "Um Rückruf gebeten."}, "message left")
+    assert left["status"] == "message_left" and left["attempts"][0]["outcome"] == "message left"
+    assert "message_left" in tasks.FINAL and store.claim(NOON + timedelta(hours=1)) is None  # no further attempt
+    assert store.expire(NOON.replace(hour=20)) == []  # and not reported a second time as not reached
+    assert store.has_callback("0170222", NOON + timedelta(hours=1))
+    assert not store.has_callback("0170222", NOON.replace(hour=19, minute=1))  # only inside the time window
+    assert store.claim_callback("0170222", NOON.replace(hour=19, minute=1)) is None
+    claimed = store.claim_callback("0170222", NOON + timedelta(hours=1))
+    assert claimed["status"] == "running" and claimed["result"]["status"] == "message_left"
+    assert "left a message on their mailbox" in tasks.callback_note(claimed, "Jan")
+    # the call back came to nothing: as before, still open for the next call back, never dialed again
+    again = store.not_reached(t["id"], "nothing said", NOON + timedelta(hours=1))
+    assert again["status"] == "message_left" and again["result"]["summary"] == "Um Rückruf gebeten."
+    assert store.claim(NOON + timedelta(hours=2)) is None
+    store.claim_callback("0170222", NOON + timedelta(hours=3))
+    done = store.finish(t["id"], {"status": "done", "summary": "Kommt am Samstag."})
+    assert done["status"] == "done" and [a["outcome"] for a in done["attempts"]] == [
+        "message left", "nothing said", "talked"]
+    assert not store.has_callback("0170222", NOON + timedelta(hours=4))
 
 
 def test_no_call_after_the_window_or_to_a_number_that_opted_out(store):
@@ -525,6 +552,50 @@ def test_follow_up_limits_the_number_of_changes(brain, ha, monkeypatch):
     assert len(ha.calls) == 2 and len(actions) == 2
 
 
+def test_follow_up_knows_message_left_and_a_recognized_mailbox(brain):
+    left = message(tool("task_result", status="message_left", summary="Um Rückruf gebeten."))
+    result, _, fake = follow(brain, build(), left, transcript=("Mark: … nach dem Ton.", "Claudine: Hallo Mark …"))
+    assert result["status"] == "message_left"
+    request = fake.requests[0]
+    assert "message_left if the transcript shows that you left your message" in request["system"]
+    assert "message_left" in request["tools"][0]["input_schema"]["properties"]["status"]["enum"]
+    assert "recognized a mailbox" not in request["messages"][0]["content"]
+    brain.client = SimpleNamespace(messages=Fake(left))
+    brain.follow_up(build(), ["Mark (mailbox): …"], [], mailbox=True)
+    assert "recognized a mailbox announcement and played your message" in (
+        brain.client.messages.requests[0]["messages"][0]["content"])
+
+
+def test_on_a_mailbox_there_are_no_tools_but_hang_up(brain):
+    """#65: instead of the message Claude looked into the calendar, the mailbox recorded "Ich bin noch dran"."""
+    brain.cfg["web_access"] = True
+    brain.client = SimpleNamespace(messages=Fake(message(tool("ha_events", days=10)), message("Hallo …")))
+    messages = [{"role": "user", "content": "[System: mailbox]"}]
+    brain.turn(messages, lambda s: None, lambda: False, access=parse_access("admin"),
+               call={"number": "0170222", "name": "Mark", "grants": GRANT, "mailbox": True})
+    assert names(brain.client.messages.requests[0]["tools"]) == {"hang_up"}
+    assert messages[2]["content"][0]["content"] == "Not allowed in this call." and brain.ha.calls == []
+
+
+def test_summary_of_an_outbound_call_says_who_was_called(brain):
+    """#65: "Anrufer war Jan Mobil" for a call Claudine made, and a mailbox announcement taken for a person."""
+    seen = []
+
+    def create(**kw):
+        seen.append(kw["messages"][0]["content"])
+        return message("Kurz.")
+    brain.client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    brain.summarize(["Mark: Hallo?"], "Mark (0170222)", [])
+    brain.summarize(["Mark: Hallo?"], "Mark (0170222)", [], outbound=True)
+    brain.summarize(["Mark (mailbox): … nach dem Ton."], "Mark (0170222)", [], outbound=True, mailbox=True)
+    inbound, outbound, mailbox = seen
+    assert "who called" in inbound and "Caller: Mark (0170222)" in inbound and "outgoing" not in inbound
+    assert "outgoing call: Claudine, Jan Lenck's assistant, called Mark (0170222)" in outbound
+    assert "Called: Mark (0170222)" in outbound and "whether a callback is wanted" not in outbound
+    assert "call back only if the transcript asks for one" in outbound and "only a mailbox announcement" in outbound
+    assert "Only a mailbox answered" in mailbox and "not a person speaking" in mailbox
+
+
 def test_follow_up_without_a_result_is_partial(brain):
     result, _, fake = follow(brain, build(), message("Alles erledigt."), message("Wirklich."))
     assert result["status"] == "partial" and "did not finish" in result["summary"]
@@ -572,4 +643,5 @@ def test_task_call_passes_grants_and_tells_claude_about_them():
 def test_normal_outbound_call_is_unchanged():
     seen = run_session()
     assert seen["call"]["grants"] == {} and "IMMEDIATELY leave a short message" in seen["intro"]
+    assert "use no tools" in seen["intro"] and "only what the reason above covers" in seen["intro"]
     assert "You have no access to the house in this call. Give no information" in seen["intro"]

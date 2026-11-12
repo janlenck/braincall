@@ -127,13 +127,16 @@ def test_incoming_while_busy_is_denied(main, events):
 
 
 # ---------------------------------------------------------------- after the call
-def session(*transcript, actions=()):
-    return SimpleNamespace(transcript=list(transcript), caller_turns=len(transcript), actions=list(actions))
+def session(*transcript, actions=(), mailbox=False):
+    return SimpleNamespace(transcript=list(transcript), caller_turns=len(transcript), actions=list(actions),
+                           mailbox=mailbox, message_left=False)
 
 
 @pytest.fixture
 def after(main, events, monkeypatch):
-    monkeypatch.setattr(main.brain, "summarize", lambda transcript, caller, actions, lang: f"Summary of {caller}")
+    monkeypatch.setattr(main.brain, "summarize",
+                        lambda transcript, caller, actions, lang, **kw: events.update(summarized=kw)
+                        or f"Summary of {caller}")
 
     def run(number, inbound=True, s=None):
         s = s or session("caller: Hallo", "Claudine: Hallo!")
@@ -178,11 +181,17 @@ def test_after_call_without_caller_speech_has_no_summary(after):
 
 
 def test_after_call_summary_failure_falls_back_to_transcript(main, after, monkeypatch):
-    def fail(*a):
+    def fail(*a, **kw):
         raise RuntimeError("API down")
     monkeypatch.setattr(main.brain, "summarize", fail)
     sent = after("0999")
     assert sent["notify"][0][2] == "caller: Hallo\nClaudine: Hallo!"
+
+
+def test_summary_is_told_the_direction_and_a_mailbox(after):
+    assert after("0999")["summarized"] == {"outbound": False, "mailbox": False}
+    s = session("0999 (mailbox): Bitte sprechen Sie nach dem Ton.", "Claudine: Hallo …", mailbox=True)
+    assert after("0999", inbound=False, s=s)["summarized"] == {"outbound": True, "mailbox": True}
 
 
 @pytest.fixture
@@ -211,7 +220,7 @@ def test_after_call_remembers_summary_for_next_call(main, after, remembered):
 
 
 def test_memory_is_ordered_by_call_end_not_save_time(main, remembered, events, monkeypatch):
-    monkeypatch.setattr(main.brain, "summarize", lambda transcript, caller, actions, lang: transcript[0])
+    monkeypatch.setattr(main.brain, "summarize", lambda transcript, caller, actions, lang, **kw: transcript[0])
     now = time.time()
     for text, ended in (("caller: later call", now - 60), ("caller: earlier call", now - 3600)):
         s = session(text)
@@ -221,7 +230,7 @@ def test_memory_is_ordered_by_call_end_not_save_time(main, remembered, events, m
 
 
 def test_after_call_without_summary_is_not_remembered(main, after, remembered, monkeypatch):
-    def fail(*a):
+    def fail(*a, **kw):
         raise RuntimeError("API down")
     monkeypatch.setattr(main.brain, "summarize", fail)
     after("0999")
@@ -362,8 +371,9 @@ def planned(main, events, monkeypatch, tmp_path):
         main.busy.release()
         return ctx.sessions.pop(0) if ctx.sessions else None
 
-    def follow_up(task, transcript, actions=None):
+    def follow_up(task, transcript, actions=None, mailbox=False):
         ctx.followed.append(task["id"])
+        ctx.mailbox = mailbox
         return ctx.result
 
     def add(**kw):
@@ -380,8 +390,11 @@ def planned(main, events, monkeypatch, tmp_path):
     return ctx
 
 
-def talked(*lines):
-    return SimpleNamespace(transcript=list(lines or ("Seeblick: Ja, 19 Uhr geht.",)), caller_turns=1, actions=[])
+def talked(*lines, mailbox=False, message_left=False):
+    """The session of a call in which the other side said something; mailbox / message_left: what the phone
+    system recognized (CallSession.mailbox, .message_left)."""
+    return SimpleNamespace(transcript=list(lines or ("Seeblick: Ja, 19 Uhr geht.",)), caller_turns=1, actions=[],
+                           mailbox=mailbox, message_left=message_left)
 
 
 def test_due_task_is_called_followed_up_and_reported(main, planned):
@@ -416,6 +429,66 @@ def test_mailbox_counts_as_not_reached(main, planned):
     done = planned.store.get(task["id"])
     assert done["status"] == "not_reached" and done["attempts"][0]["outcome"] == "mailbox"
     assert planned.events["notify"][0][1] == "Auftrag Anruf bei Seeblick: nicht erreicht"
+
+
+LEFT = {"status": "message_left", "summary": "Nur die Mailbox erreicht, um Rückruf gebeten."}
+
+
+def test_message_on_the_mailbox_ends_the_task_without_another_call(main, planned):
+    """#65: the task was dialed twice more after the message had been left."""
+    task = planned.add(retries=2, call_back=True)
+    planned.sessions.append(talked("Seeblick (mailbox): Bitte sprechen Sie nach dem Ton.", "Claudine: Hallo …",
+                                   mailbox=True, message_left=True))
+    planned.result = {"status": "partial", "summary": LEFT["summary"]}  # the phone system knows better
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "message_left" and done["attempts"][0]["outcome"] == "message left"
+    assert planned.mailbox is True  # the follow-up is told, it only writes the summary
+    assert planned.events["notify"] == [("notify.phone", "Auftrag Anruf bei Seeblick: Nachricht hinterlassen",
+                                         LEFT["summary"])]
+    assert planned.events["events"][-1][1]["status"] == "message_left"
+    assert [d[0] for d in planned.dialed] == ["045421234", "0151111"]  # the callee once, then the requester
+    assert "Result (message_left)" in planned.dialed[1][1]
+    planned.store.tasks[0]["next_try"] = "2026-01-01T00:00+01:00"
+    main.run_tasks()
+    assert len(planned.dialed) == 2  # final: never dialed again
+
+
+def test_recognized_mailbox_without_a_message_is_retried_without_follow_up(main, planned):
+    task = planned.add(retries=1)  # e.g. leave_message off, or the mailbox hung up before the message
+    planned.sessions.append(talked("Seeblick: Hier ist die Mailbox.", mailbox=True))
+    main.run_tasks()
+    again = planned.store.get(task["id"])
+    assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "mailbox"
+    assert planned.followed == [] and planned.events["notify"] == []
+
+
+def test_message_left_reported_by_the_follow_up_ends_the_task_too(main, planned):
+    task = planned.add(retries=2)  # the phone system did not recognize the announcement, Claude did
+    planned.sessions.append(talked("Seeblick: Sprechen Sie jetzt.", "Claudine: Hallo …"))
+    planned.result = dict(LEFT)
+    main.run_tasks()
+    assert planned.store.get(task["id"])["status"] == "message_left" and planned.mailbox is False
+
+
+def test_message_left_does_not_count_when_no_message_was_to_be_left(main, planned):
+    task = planned.add(retries=2, leave_message=False)
+    planned.sessions.append(talked("Seeblick: Sprechen Sie jetzt."))
+    planned.result = dict(LEFT)
+    main.run_tasks()
+    again = planned.store.get(task["id"])
+    assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "mailbox"
+
+
+def test_mailbox_follow_up_failure_still_ends_as_message_left(main, planned, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("API down")
+    task = planned.add()
+    planned.sessions.append(talked("Seeblick (mailbox): …", mailbox=True, message_left=True))
+    monkeypatch.setattr(main.brain, "follow_up", boom)
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "message_left" and done["result"]["summary"].startswith("Only the mailbox answered")
 
 
 def test_task_waits_while_the_line_is_busy_or_sip_is_down(main, planned, monkeypatch):
@@ -537,6 +610,7 @@ def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch
 
     class Session:
         transcript, caller_turns, actions = ["0888777: Sie hatten angerufen?"], 1, []
+        mailbox = message_left = False
 
         def __init__(self, *a):
             pass
@@ -558,6 +632,48 @@ def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch
     call, denied = incoming("0888777")  # no open task any more: rejected like any unlisted number
     main.on_incoming(call)
     assert denied == [True]
+
+
+def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch):
+    """The message asks for a call back: it is answered (also from an unlisted number) and reported again."""
+    task = planned.add(number="0888777", name="Mark")
+    monkeypatch.setitem(main.cfg, "callers", [c for c in main.cfg.callers if c["number"] != "*"])
+    planned.sessions.append(talked("Mark (mailbox): …", mailbox=True, message_left=True))
+    planned.result = dict(LEFT)
+    main.run_tasks()
+    assert planned.store.get(task["id"])["status"] == "message_left" and len(planned.events["notify"]) == 1
+    ran, turns = {}, [0, 1]  # first call back: nothing said; second: a conversation
+
+    class Session:
+        transcript, actions, mailbox, message_left = ["Mark: Du hattest angerufen?"], [], False, False
+
+        def __init__(self, *a):
+            self.caller_turns = turns.pop(0)
+
+        def run(self, **kw):
+            ran.update(kw)
+
+    def wait(status, attempts):
+        for _ in range(100):
+            t = planned.store.get(task["id"])
+            if t["status"] == status and len(t["attempts"]) == attempts:
+                return t
+            time.sleep(0.02)
+        raise AssertionError(planned.store.get(task["id"]))
+
+    monkeypatch.setattr(main, "CallSession", Session)
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    planned.result = {"status": "done", "summary": "Mark kommt am Samstag."}
+    for expected, notified in (("message_left", 1), ("done", 2)):
+        call, denied = incoming("0888777")
+        call.answer = lambda: None
+        main.on_incoming(call)
+        assert denied == [] and "left a message on their mailbox" in ran["instructions"]
+        wait(expected, 3 - len(turns))
+        time.sleep(0.05)
+        assert len(planned.events["notify"]) == notified  # hanging up without a word reports nothing new
+    assert len(planned.dialed) == 1  # and never leads to another call
+    assert planned.events["notify"][-1][1:] == ("Auftrag Anruf bei Mark: erledigt", "Mark kommt am Samstag.")
 
 
 @pytest.mark.parametrize("admin, warned", [(False, True), (True, False), (None, False)])
