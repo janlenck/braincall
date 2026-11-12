@@ -277,6 +277,13 @@ def test_splitter_does_not_cut_after_an_initial():
     ("Es ist 18 Uhr 30. Soll ich das Licht anmachen?", ["Es ist 18 Uhr 30.", "Soll ich das Licht anmachen?"]),
     ("Er wurde beim Rennen 3. Dann fuhr er heim.", ["Er wurde beim Rennen 3.", "Dann fuhr er heim."]),
     ("Das war im Jahr 2026. Danach war Ruhe.", ["Das war im Jahr 2026.", "Danach war Ruhe."]),
+    # review of #68: indefinite articles and possessives, Markdown around the number or the month
+    ("Wir machen einen 2. Versuch. Passt das?", ["Wir machen einen 2. Versuch.", "Passt das?"]),
+    ("Das ist unser 3. Anlauf heute. Okay.", ["Das ist unser 3. Anlauf heute.", "Okay."]),
+    ("Wir sehen uns Freitag, 14. **November** um 18 Uhr. Bis dann!", ["Wir sehen uns Freitag, 14. November um 18 Uhr.",
+                                                                      "Bis dann!"]),
+    ("Wir sehen uns Freitag, **14**. November um 18 Uhr. Bis dann!", ["Wir sehen uns Freitag, 14. November um 18 Uhr.",
+                                                                      "Bis dann!"]),
 ])
 def test_splitter_does_not_cut_after_an_ordinal(text, sentences):
     """#67: "Der Termin ist am 14." - pause - "November um 18 Uhr"."""
@@ -295,6 +302,22 @@ def test_splitter_waits_for_the_word_after_a_number_only_until_it_is_complete():
     s.flush()
     assert out == ["Ich habe einen Platz frei, Montag 3. Dezember um 9 Uhr.", "Es ist dann 18 Uhr 30.",
                    "Soll ich das Licht anmachen?", "Gut"]
+
+
+@pytest.mark.parametrize("after", [";-)", ":)", "😉", "–", "..."])
+def test_splitter_does_not_wait_for_a_word_that_does_not_come(after):
+    """Review of #68: a smiley after "18 Uhr 30." held back the whole answer until flush()."""
+    before, out, _ = split(f"Es ist jetzt 18 Uhr 30. {after} Soll ich das Licht anmachen? Dann sag Bescheid. ")
+    assert before == out and len(out) == 3  # all of it while streaming, nothing left for the end
+    assert out[0] == "Es ist jetzt 18 Uhr 30." and out[1].endswith("Soll ich das Licht anmachen?")
+
+
+def test_splitter_waits_while_markdown_before_the_next_word_streams():
+    out = []
+    s = SentenceSplitter(out.append)
+    for chunk in ("Wir sehen uns Freitag, 14. ", "**", "Nov", "ember** um 18 Uhr. "):
+        s.feed(chunk)
+    assert out == ["Wir sehen uns Freitag, 14. November um 18 Uhr."]
 
 
 def test_splitter_flushes_a_number_at_the_end_of_the_answer():

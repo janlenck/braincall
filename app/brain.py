@@ -348,12 +348,15 @@ _END = re.compile(r"[.!?…:](?=\s)")
 # "Jan T.", "z. B.": the period after a single letter does not end a sentence
 _INITIAL = re.compile(r"(?:^|[\s(„“\"])[^\W\d_]\.$")
 # German ordinals "am 14. November", "im 3. Stock": a period after one or two digits that the text goes on with.
-# _ORDINAL finds such a period (and the word before it), _NEXT_WORD the next word once it is complete
-_ORDINAL = re.compile(r"(?:^|(?<=\s)|(?<=[(„“\"]))(?:([^\W\d_]+),?\s+)?\d{1,2}\.$")
-_NEXT_WORD = re.compile(r"\s+[(„“\"']*([^\s,.;:!?…)“”\"']+)(?=[\s,.;:!?…)“”\"'])")
-# after these the number is an ordinal for sure: no need to wait for the next word
-_BEFORE_ORDINAL = {"am", "im", "vom", "zum", "zur", "beim", "der", "die", "das", "den", "dem", "des",
-                   "jeden", "jedem", "jeder", "ihr", "ihren", "ihrem", "sein", "seinen", "seinem"}
+# _ORDINAL finds such a period and the word before it (Markdown emphasis around the number is allowed, _out
+# removes it); _NEXT_TOKEN the next piece of text after the whitespace
+_ORDINAL = re.compile(r"(?:^|(?<=\s)|(?<=[(„“\"*_]))(?:([^\W\d_]+),?\s+)?[*_]*\d{1,2}[*_]*\.$")
+_NEXT_TOKEN = re.compile(r"\s+(\S+)")
+_WRAP = "(„“\"'*_"  # opening quotes, brackets and Markdown emphasis before a word
+# after these the number is an ordinal for sure: no need to wait for the next word ("am 14.", "einen 2. Versuch")
+_BEFORE_ORDINAL = re.compile(r"a[mn]|im|vom|zu[mr]|beim|d(?:er|ie|as|en|em|es)|jede[mnrs]?"
+                             r"|(?:[kmds]|unser)?ein(?:e[mnrs]?)?|unser(?:e[mnrs]?)?|ihr(?:e[mnrs]?)?"
+                             r"|eu(?:er|re[mnrs]?)", re.I)
 _MONTHS = {"januar", "jänner", "februar", "feber", "märz", "april", "mai", "juni", "juli", "august", "september",
            "oktober", "november", "dezember", "january", "february", "march", "may", "june", "july", "october",
            "december"}
@@ -398,13 +401,17 @@ class SentenceSplitter:
         m = _ORDINAL.search(self.buf, 0, end)
         if m is None:
             return False
-        if (m.group(1) or "").lower() in _BEFORE_ORDINAL:
+        if m.group(1) and _BEFORE_ORDINAL.fullmatch(m.group(1)):
             return True
-        word = _NEXT_WORD.match(self.buf, end)
-        if word is None:
-            return None
-        w = word.group(1)
-        return w.lower() in _MONTHS or w[0].islower() or w[0].isdigit()
+        token = _NEXT_TOKEN.match(self.buf, end)
+        if token is None:
+            return None  # only whitespace so far
+        text = token.group(1).lstrip(_WRAP)
+        word = re.match(r"[^\W_]*", text).group()
+        if token.end() == len(self.buf) and len(word) == len(text):
+            return None  # the word (or what may still become one) is being streamed
+        # a word decides; anything else (a smiley, a dash) does not continue a date
+        return bool(word) and (word.lower() in _MONTHS or word[0].islower() or word[0].isdigit())
 
     def _sentence_end(self):
         """The first period, question mark … that ends a sentence of at least 12 characters; None = none yet."""
