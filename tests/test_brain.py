@@ -268,6 +268,40 @@ def test_splitter_does_not_cut_after_an_initial():
     assert out == ["Wir fahren mit der Linie A. Sie kommt um 8 Uhr."]
 
 
+@pytest.mark.parametrize("text, sentences", [
+    ("Der Termin ist am 14. November um 18 Uhr. Passt das?", ["Der Termin ist am 14. November um 18 Uhr.",
+                                                              "Passt das?"]),
+    ("Wir sehen uns Freitag, 14. November. Bis dann!", ["Wir sehen uns Freitag, 14. November.", "Bis dann!"]),
+    ("Frei sind der 1. und 2. Dezember, sonst nichts.", ["Frei sind der 1. und 2. Dezember, sonst nichts."]),
+    ("Die Wohnung liegt im 3. Stock. Soll ich?", ["Die Wohnung liegt im 3. Stock.", "Soll ich?"]),
+    ("Es ist 18 Uhr 30. Soll ich das Licht anmachen?", ["Es ist 18 Uhr 30.", "Soll ich das Licht anmachen?"]),
+    ("Er wurde beim Rennen 3. Dann fuhr er heim.", ["Er wurde beim Rennen 3.", "Dann fuhr er heim."]),
+    ("Das war im Jahr 2026. Danach war Ruhe.", ["Das war im Jahr 2026.", "Danach war Ruhe."]),
+])
+def test_splitter_does_not_cut_after_an_ordinal(text, sentences):
+    """#67: "Der Termin ist am 14." - pause - "November um 18 Uhr"."""
+    before, out, _ = split(text)
+    assert out == sentences and before == sentences[:-1]
+
+
+def test_splitter_waits_for_the_word_after_a_number_only_until_it_is_complete():
+    out = []
+    s = SentenceSplitter(out.append)
+    for chunk, emitted in (("Ich habe einen Platz frei, Montag 3. ", 0), ("Dez", 0), ("ember um 9 Uhr. ", 1),
+                           ("Es ist dann 18 Uhr 30.", 1), (" ", 1), ("Soll", 1), (" ich das Licht anmachen?", 2)):
+        s.feed(chunk)
+        assert len(out) == emitted, (chunk, out)
+    s.feed(" Gut")
+    s.flush()
+    assert out == ["Ich habe einen Platz frei, Montag 3. Dezember um 9 Uhr.", "Es ist dann 18 Uhr 30.",
+                   "Soll ich das Licht anmachen?", "Gut"]
+
+
+def test_splitter_flushes_a_number_at_the_end_of_the_answer():
+    before, out, _ = split("Wir zählen bis 30. ")
+    assert before == [] and out == ["Wir zählen bis 30."]  # waiting for a next word that never comes
+
+
 def test_splitter_never_reads_out_emojis_and_smileys(brain):
     _, out, _ = split("Jeder Tag ist willkommen ;-) 😉 Bis bald 👍🏽. Es ist 14:30 Uhr :) Tschüss ☀️!")
     assert out == ["Jeder Tag ist willkommen Bis bald.", "Es ist 14:30 Uhr Tschüss!"]

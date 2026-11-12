@@ -347,6 +347,16 @@ MAX_REQUESTS = 10  # requests per turn: tool rounds and continuations after paus
 _END = re.compile(r"[.!?…:](?=\s)")
 # "Jan T.", "z. B.": the period after a single letter does not end a sentence
 _INITIAL = re.compile(r"(?:^|[\s(„“\"])[^\W\d_]\.$")
+# German ordinals "am 14. November", "im 3. Stock": a period after one or two digits that the text goes on with.
+# _ORDINAL finds such a period (and the word before it), _NEXT_WORD the next word once it is complete
+_ORDINAL = re.compile(r"(?:^|(?<=\s)|(?<=[(„“\"]))(?:([^\W\d_]+),?\s+)?\d{1,2}\.$")
+_NEXT_WORD = re.compile(r"\s+[(„“\"']*([^\s,.;:!?…)“”\"']+)(?=[\s,.;:!?…)“”\"'])")
+# after these the number is an ordinal for sure: no need to wait for the next word
+_BEFORE_ORDINAL = {"am", "im", "vom", "zum", "zur", "beim", "der", "die", "das", "den", "dem", "des",
+                   "jeden", "jedem", "jeder", "ihr", "ihren", "ihrem", "sein", "seinen", "seinem"}
+_MONTHS = {"januar", "jänner", "februar", "feber", "märz", "april", "mai", "juni", "juli", "august", "september",
+           "oktober", "november", "dezember", "january", "february", "march", "may", "june", "july", "october",
+           "december"}
 # never read out: emoji characters (pictographs, symbols, flags, variation selectors) and typed smileys like ;-)
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u20E3]")
 _SMILEY = re.compile(r"(?<!\S)[:;]-?[)(DPp](?!\w)")
@@ -381,14 +391,40 @@ class SentenceSplitter:
             self.emitted.append(s)
             self.emit(s)
 
+    def _ordinal_goes_on(self, end: int) -> bool | None:
+        """For a period at buf[end - 1] after a number of one or two digits: True = an ordinal the sentence goes
+        on with ("am 14. November"), False = the end of a sentence ("Es ist 18 Uhr 30. Soll ich …"), None =
+        not known until the next word is complete (it is still being streamed)."""
+        m = _ORDINAL.search(self.buf, 0, end)
+        if m is None:
+            return False
+        if (m.group(1) or "").lower() in _BEFORE_ORDINAL:
+            return True
+        word = _NEXT_WORD.match(self.buf, end)
+        if word is None:
+            return None
+        w = word.group(1)
+        return w.lower() in _MONTHS or w[0].islower() or w[0].isdigit()
+
+    def _sentence_end(self):
+        """The first period, question mark … that ends a sentence of at least 12 characters; None = none yet."""
+        for cand in _END.finditer(self.buf):
+            end = cand.end()
+            if end < 12 or _INITIAL.search(self.buf[max(0, end - 3):end]):
+                continue
+            if cand.group() == ".":
+                goes_on = self._ordinal_goes_on(end)
+                if goes_on is None:
+                    return None  # wait for the next word, the sentence may go on
+                if goes_on:
+                    continue
+            return cand
+        return None
+
     def feed(self, text: str):
         self.buf += text
         while True:
-            m = None
-            for cand in _END.finditer(self.buf):
-                if cand.end() >= 12 and not _INITIAL.search(self.buf[max(0, cand.end() - 3):cand.end()]):
-                    m = cand
-                    break
+            m = self._sentence_end()
             if m:
                 self._out(self.buf[: m.end()])
                 self.buf = self.buf[m.end():]
