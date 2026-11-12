@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.6
+
+- Fix: dates were spoken as two sentences with a pause in the middle, "Der Termin ist am 14." – "November um
+  18 Uhr" (#67). A period after a number of one or two digits ends no sentence when the text goes on with it:
+  after "am", "im", "zum", "der", "einen", "unser" … ("im 3. Stock", "einen 2. Versuch"), or when a month name,
+  a lowercase word or a number follows ("Freitag, 14. November", "der 1. und 2. Dezember"), also with Markdown
+  around it. "Es ist 18 Uhr 30. Soll ich …" is still two sentences
+
 ## 1.9.5
 
 - Fix: a planned call that reached a mailbox was dialed again after the message had been left, up to three calls
