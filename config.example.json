@@ -72,8 +72,8 @@
   "shopping_list": "todo.shopping_list",  // the one shopping list: callers with access "shopping", automatic list
   // Automatic shopping list: an item that stays checked off this long counts as bought, is removed from the
   // list and stored with its date in shopping-history.jsonl in the log folder. Unchecked again before: nothing
-  // is stored. Deleted items are never purchases.
-  "shopping_auto": true,
+  // is stored. Deleted items are never purchases. Off by default; takes effect after a restart.
+  "shopping_auto": false,
   "shopping_bought_after_minutes": 60,
   "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
   "ring_timeout": 90,                 // seconds to ring before an unanswered outbound call is cancelled

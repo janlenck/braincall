@@ -49,7 +49,8 @@ configuration:
     description: >-
       Watches the shopping list. An item that stays checked off for the time below counts as bought: it is removed
       from the list and stored with its date in shopping-history.jsonl in the add-on folder. Checked by mistake and
-      unchecked again within that time: nothing is stored. Deleted items are never purchases.
+      unchecked again within that time: nothing is stored. Deleted items are never purchases. Off by default;
+      restart the add-on after switching it on.
   shopping_bought_after_minutes:
     name: Bought after (minutes)
     description: How long an item has to stay checked off to count as bought. Default 60.

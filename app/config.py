@@ -61,7 +61,7 @@ DEFAULTS = {
     "shopping_list": "todo.shopping_list",  # the one shopping list: callers with access "shopping", history
     # automatic shopping list: an item that stays checked this long counts as bought, is removed from the list
     # and stored in shopping-history.jsonl in the log folder
-    "shopping_auto": True,
+    "shopping_auto": False,   # off by default: it removes items from the list on its own
     "shopping_bought_after_minutes": 60,
     # control (only for callers with access "admin")
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
@@ -183,7 +183,7 @@ def _shopping(cfg, data: dict):
                         f"{DEFAULTS['shopping_bought_after_minutes']} is used")
         minutes = DEFAULTS["shopping_bought_after_minutes"]
     cfg["shopping_bought_after_minutes"] = minutes
-    cfg["shopping_auto"] = cfg.shopping_auto is not False
+    cfg["shopping_auto"] = cfg.shopping_auto is True
 
 
 def log_level(cfg) -> int:

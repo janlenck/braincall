@@ -224,8 +224,8 @@ After each call the agent fires the HA event `braincall_call`
 ## Automatic shopping list
 
 `shopping_list` (default `todo.shopping_list`) is the one shopping list: callers with access `shopping` use only
-this one. With `shopping_auto` (default `true`) BrainCall looks at it once a minute and keeps a history of what
-was bought, so Claudine can answer "When did we last buy milk?" or "What did we buy last week?".
+this one. With `shopping_auto: true` (default `false`, takes effect after a restart) BrainCall looks at it once a
+minute and keeps a history of what was bought, so Claudine can answer "When did we last buy milk?" or "What did we buy last week?".
 
 - An item that stays checked off for `shopping_bought_after_minutes` (default 60) counts as **bought**: it is
   removed from the list and stored with the time it was checked.
@@ -245,7 +245,8 @@ The history is `logs/shopping-history.jsonl` (in the add-on: its config folder),
 - `GET /shopping/history` (with `api_token` like `/tasks`), optionally `?item=Milch&days=30&event=bought`.
 - Event `braincall_shopping_bought` (`list`, `item`, `key`, `time`) for own automations.
 
-`shopping_auto: false` switches it off: nothing is watched, written or removed. Until 1.9.x the setting was the
+With `shopping_auto: false` nothing is watched, written or removed, and `shopping_history` is not offered.
+Until 1.9.x the setting was the
 list `shopping_lists`; its first entry is taken over as long as `shopping_list` is not set to something else.
 
 ## Logging

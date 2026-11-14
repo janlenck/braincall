@@ -437,7 +437,7 @@ def load(tmp_path, tmp_env, data):
 
 def test_settings_default(tmp_path, tmp_env):
     cfg = load(tmp_path, tmp_env, {})
-    assert cfg.shopping_auto is True and cfg.shopping_list == LIST and cfg.shopping_bought_after_minutes == 60
+    assert cfg.shopping_auto is False and cfg.shopping_list == LIST and cfg.shopping_bought_after_minutes == 60
     assert "shopping_lists" not in cfg
     assert config.log_level(cfg) == logging.INFO
 
@@ -465,6 +465,6 @@ def test_log_level(value, level):
 
 
 def test_invalid_minutes_fall_back(tmp_path, tmp_env):
-    cfg = load(tmp_path, tmp_env, {"shopping_bought_after_minutes": 0, "shopping_auto": False})
-    assert cfg.shopping_bought_after_minutes == 60 and cfg.shopping_auto is False
+    cfg = load(tmp_path, tmp_env, {"shopping_bought_after_minutes": 0, "shopping_auto": True})
+    assert cfg.shopping_bought_after_minutes == 60 and cfg.shopping_auto is True
     assert config.WARNINGS

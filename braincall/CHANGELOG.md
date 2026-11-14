@@ -2,12 +2,12 @@
 
 ## 1.10.0
 
-- New: automatic shopping list (#69), **on by default**. BrainCall looks at the shopping list once a minute. An
+- New: automatic shopping list (#69), off by default: switch on *Automatic shopping list* (`shopping_auto`) and
+  restart the add-on. BrainCall then looks at the shopping list once a minute. An
   item that stays checked off for an hour counts as bought: it disappears from the list and is stored with the
   time it was checked in `shopping-history.jsonl` (add-on folder). Checked by mistake in the shop and unchecked
   again within the hour: nothing is stored. Deleted items are never purchases. After a restart the hour starts
-  anew. *Automatic shopping list* off (`shopping_auto: false`) keeps the old behaviour; *Bought after*
-  (`shopping_bought_after_minutes`) changes the hour
+  anew. *Bought after* (`shopping_bought_after_minutes`) changes the hour
   - Claudine answers "Wann haben wir zuletzt Milch gekauft?" and "Was haben wir letzte Woche gekauft?" with the new
     tool `shopping_history` (access `admin`, `read`, `shopping`), dates and counts computed in code
   - `GET /shopping/history` (`item`, `days`, `event`) and the event `braincall_shopping_bought` (`list`, `item`,

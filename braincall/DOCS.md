@@ -178,7 +178,8 @@ On a mailbox it leaves a short message after the beep and does not call again: t
 ## Automatic shopping list
 
 *Shopping list* (default `todo.shopping_list`) is the one list callers with access `shopping` use. With
-*Automatic shopping list* on (default) BrainCall looks at it once a minute:
+*Automatic shopping list* switched on (it is off by default) and the add-on restarted, BrainCall looks at it once
+a minute:
 
 - An item that stays checked off for *Bought after* (default 60 minutes) counts as bought: it disappears from the
   list and is stored with the time it was checked.

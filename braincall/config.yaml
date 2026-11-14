@@ -29,7 +29,7 @@ options:
   callers: []
   notify_services: []
   shopping_list: todo.shopping_list
-  shopping_auto: true
+  shopping_auto: false
   shopping_bought_after_minutes: 60
   country_code: "49"
   ring_timeout: 90
