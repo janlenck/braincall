@@ -272,8 +272,9 @@ consumable and is asked about again with its next purchase.
 
 **What you can do** (app, dashboard, or Claudine for `admin` with `shopping_rhythm`):
 
-- change the interval in the name (`Milch (10 days)`): it stays, what BrainCall learns goes into the description;
-  remove it (`Milch`) and BrainCall fills in the learned one again;
+- change the interval in the name (`Milch (10 days)`): it stays, what BrainCall learns goes into the description,
+  which marks the interval `set by hand`; remove it (`Milch`) and BrainCall fills in the learned one again and
+  follows what it learns from then on;
 - write `(never)`: the entry stays, the product is never due and never added;
 - move the due date: it stays until the next purchase;
 - check the entry off: paused, not added; ends by unchecking it or with the next purchase;
@@ -296,6 +297,10 @@ you move its due date.
 **Forecast.** `shopping_history` modes `due` (running low or probably out) and `stock` (everything) and
 `GET /shopping/forecast`: `in_stock` (less than 80 % of the interval passed), `running_low`, `probably_out`
 (past the due date), `on_list`, `paused`, `never`. It is an estimate from the buying rhythm, not an inventory.
+
+A list that cannot be read, or answers without items while it still counts open ones, changes nothing; a new
+list that could not be filled and an entry that could not be updated after a purchase are done again with the
+next polls.
 
 **Creating the lists.** With `shopping_auto` on, BrainCall creates a missing `todo.shopping_list` (the built-in
 *Shopping list*), another missing shopping list and the rhythm list (*Local To-do*, display name "Recurring
