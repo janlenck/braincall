@@ -175,6 +175,9 @@ class Shopping:
         self.rhythm = None          # rhythm.Rhythm while there is a rhythm list (#70)
         self.lists_checked = False  # missing lists were looked for (and created) after the start
         self.expected: list[str] = []  # names just added by the rhythm list: not logged again as added
+        self.view: dict = {}        # {key: "open" | "checked"} as last seen, for answers without waiting for a poll
+        self.pending: list = []     # purchases whose history line could not be written yet
+        self.write_failing = False
 
     def describe(self) -> str:
         return (f"watching {self.entity_id}, items checked for {self.cfg.shopping_bought_after_minutes} min "
@@ -196,9 +199,11 @@ class Shopping:
 
     # ------------------------------------------------------------------ watching
     def poll(self):
-        """One look at the list: compare with the last one, remove what stayed checked long enough."""
+        """One look at the list: compare with the last one, remove what stayed checked long enough.
+        The lock only keeps two polls apart; answers read self.view and the history file and never wait for it."""
         with self.lock:
             now = self.now()
+            self._flush()
             try:
                 if not self.lists_checked and not self._ensure_lists():
                     return
@@ -221,12 +226,14 @@ class Shopping:
                 for item in seen.values():
                     item.since = now if item.checked else None
                 self.items = seen
+                self.view = self._view()
                 checked = sum(1 for i in seen.values() if i.checked)
                 log.debug("Shopping list %s: starting with %d items, %d checked (their time starts now)",
                           self.entity_id, len(seen), checked)
                 return
             self._compare(seen, now)
             self._remove_due(now)
+            self.view = self._view()
             if self.rhythm is not None and self.rhythm.due_for_sync(now):
                 self.rhythm.sync(now)
 
@@ -300,7 +307,7 @@ class Shopping:
             items[nid] = item
         for oid in old.keys() - seen.keys():
             item = old[oid]
-            if self._due(item, now):  # it had stayed checked long enough: bought, whoever removed it
+            if item.removing:  # removing it after the full time was tried and seemed to fail, but went through
                 self._bought(item)
             else:
                 self._event("removed", item, now)
@@ -327,12 +334,30 @@ class Shopping:
             self._bought(item)
 
     def _bought(self, item: Item):
-        entry = self._event("bought", item, item.since)
+        """The item is off the list: its purchase is written, then announced. A purchase that cannot be written
+        is kept and written with the next poll; the event and the rhythm list follow only then."""
         log.debug("Shopping list: %s bought (checked %s), removed from the list", item.name, self._clock(item.since))
-        self.ha.fire_event(BOUGHT_EVENT, {"list": self.entity_id, "item": item.name, "key": entry["key"],
-                                          "time": entry["time"]})
-        if self.rhythm is not None:
-            self.rhythm.on_bought(item.name, entry["key"])
+        self.pending.append((self._entry("bought", item, item.since), item.name))
+        self._flush()
+
+    def _flush(self):
+        while self.pending:
+            entry, name = self.pending[0]
+            try:
+                self.history.add(entry)
+            except OSError as e:
+                if not self.write_failing:
+                    self.write_failing = True
+                    log.warning("Shopping history: writing a purchase failed, tried again in a minute: %s", e)
+                return
+            self.pending.pop(0)
+            if self.write_failing:
+                self.write_failing = False
+                log.warning("Shopping history: purchases written again")
+            self.ha.fire_event(BOUGHT_EVENT, {"list": self.entity_id, "item": name, "key": entry["key"],
+                                              "time": entry["time"]})
+            if self.rhythm is not None:
+                self.rhythm.on_bought(name, entry["key"])
 
     def add_item(self, name: str, due):
         """Puts a product that is due on the shopping list (rhythm list, #70); the history says so once."""
@@ -342,13 +367,17 @@ class Shopping:
                           "key": split(name)[0], "by": "rhythm", "due": due.isoformat()})
         log.debug("Shopping list: %s added, it was due on %s", name, due.isoformat())
 
-    def _event(self, event: str, item: Item, when: datetime) -> dict:
+    def _entry(self, event: str, item: Item, when: datetime) -> dict:
         key, amount = split(item.name)
         entry = {"time": _iso(when), "list": self.entity_id, "event": event, "item": item.name, "key": key}
         if amount:
             entry["amount"] = amount
         if item.uid:
             entry["uid"] = item.uid
+        return entry
+
+    def _event(self, event: str, item: Item, when: datetime) -> dict:
+        entry = self._entry(event, item, when)
         try:
             self.history.add(entry)
         except OSError as e:
@@ -365,16 +394,17 @@ class Shopping:
     def _day(self, t: datetime) -> str:
         return self._local(t).strftime("%A %Y-%m-%d")
 
-    def on_list(self) -> dict:
-        """{key: "open" | "checked"} of the list as last seen."""
-        with self.lock:
-            items = list((self.items or {}).values())
+    def _view(self) -> dict:
         out = {}
-        for item in items:
+        for item in (self.items or {}).values():
             key = split(item.name)[0]
             if out.get(key) != "open":
                 out[key] = "checked" if item.checked else "open"
         return out
+
+    def on_list(self) -> dict:
+        """{key: "open" | "checked"} of the list as last seen; never waits for a poll that is running."""
+        return dict(self.view)
 
     def answer(self, mode: str, item: str = "", days=None) -> str:
         """The tool shopping_history. Dates and counts are computed here, the model only reads them out."""

@@ -699,7 +699,8 @@ def test_shopping_history_api(server, main, monkeypatch, tmp_path):
     status, body = server("GET", "/shopping/history")
     assert status == 200 and body["list"] == "todo.shopping_list" and len(body["events"]) == 3
     assert [e["item"] for e in server("GET", "/shopping/history?item=milch&days=30")[1]["events"]] == ["2 Milch"]
-    assert server("GET", "/shopping/history?days=many")[0] == 400
+    for days in ("many", "nan", "inf", "-inf", "1e400", "-5", "0"):
+        assert server("GET", f"/shopping/history?days={days}")[0] == 400, days
 
 
 def test_shopping_forecast_api(server, main, monkeypatch, tmp_path):

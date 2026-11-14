@@ -475,3 +475,45 @@ def test_invalid_minutes_fall_back(tmp_path, tmp_env):
     cfg = load(tmp_path, tmp_env, {"shopping_bought_after_minutes": 0, "shopping_auto": True})
     assert cfg.shopping_bought_after_minutes == 60 and cfg.shopping_auto is True
     assert config.WARNINGS
+
+
+# ---------------------------------------------------------------- review of #71
+def test_deleted_in_the_last_minute_of_the_hour_is_not_bought(s, ha, clock):
+    ha.add("Milch")
+    run(s, clock, 1)
+    ha.check("Milch")
+    run(s, clock, 59)          # seen checked for 58 minutes so far
+    ha.delete("Milch")         # deleted shortly before the hour is over
+    run(s, clock, 1)           # this poll would be at 60 minutes
+    assert [e["event"] for e in events(s)] == ["added", "removed"] and ha.events == []
+
+
+def test_a_purchase_that_cannot_be_written_is_kept_and_announced_after_writing(s, ha, clock, caplog, monkeypatch):
+    ha.add("Milch")
+    run(s, clock, 1)
+    ha.check("Milch")
+    real = s.history.add
+
+    def broken(entry):
+        if entry["event"] == "bought":
+            raise OSError("disk full")
+        real(entry)
+    monkeypatch.setattr(s.history, "add", broken)
+    with caplog.at_level(logging.WARNING, "shopping"):
+        run(s, clock, 65)
+    assert ha.items == [] and events(s, "bought") == [] and ha.events == []
+    assert sum("writing a purchase failed" in r.getMessage() for r in caplog.records) == 1
+    monkeypatch.setattr(s.history, "add", real)
+    run(s, clock, 1)
+    bought, = events(s, "bought")
+    assert ha.events == [(shop.BOUGHT_EVENT, {"list": LIST, "item": "Milch", "key": "milch", "time": bought["time"]})]
+    run(s, clock, 3)
+    assert len(events(s, "bought")) == 1 and len(ha.events) == 1
+
+
+def test_answers_do_not_wait_for_a_running_poll(s, ha, clock):
+    ha.add("Milch")
+    run(s, clock, 1)
+    with s.lock:               # a poll that hangs on Home Assistant
+        assert s.on_list() == {"milch": "open"}
+        assert json.loads(s.answer("item", "Milch"))["on_list"] == "open"

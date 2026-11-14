@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import logging.handlers
+import math
 import os
 import signal
 import socket
@@ -584,7 +585,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             days = float(query["days"]) if query.get("days") else None
         except ValueError:
-            return self._send(400, {"error": "days must be a number"})
+            days = -1.0
+        if days is not None and not (math.isfinite(days) and 0 < days <= 36500):
+            return self._send(400, {"error": "days must be a number from 0 to 36500"})
         self._send(200, {"list": shopping_list.entity_id,
                          "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
 

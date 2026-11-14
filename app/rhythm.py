@@ -406,40 +406,40 @@ class Rhythm:
 
     # ------------------------------------------------------------------ changes asked for in a call
     def edit(self, action: str, item: str, interval=None, due: str = "") -> str:
-        """shopping_rhythm: interval, pause, resume, remove or due of one entry (access admin)."""
-        with self.shopping.lock:
-            entries = self._read()
-            wanted = shop.split(item)[0]
-            matches = [e for e in entries if e.key == wanted] or [e for e in entries if wanted and wanted in e.key]
-            if len(matches) != 1:
-                names = ", ".join(e.summary for e in (matches or entries)) or "none"
-                return (f"Not clear which entry: {names}." if matches else
-                        f"{item} is not on the rhythm list. Entries: {names}.")
-            e = matches[0]
-            if action == "interval":
-                raw = str(interval if interval is not None else "").strip().lower()
-                value = (NEVER if raw in ("0", "never", "nie") else int(raw) if raw.isdigit()
-                         else parse_interval(raw)[0])
-                if value is None:
-                    return "Error: interval must be a number of days or never."
-                data = {"rename": f"{e.product} ({interval_text(value)})"}
-                last = self.info(e.key).last
-                if value != NEVER and last:
-                    data["due_date"] = (last + timedelta(days=value)).isoformat()
-                self._update(e, **data)
-            elif action in ("pause", "resume"):
-                self._update(e, status="completed" if action == "pause" else "needs_action")
-            elif action == "remove":
-                self.ha.todo_call("remove_item", self.entity_id, item=e.ref)
-                log.debug("Rhythm list: %s removed", e.summary)
-            elif action == "due":
-                day = _date(due)
-                if day is None:
-                    return "Error: due must be a date like 2026-12-01."
-                self._update(e, due_date=day.isoformat())
-            else:
-                return "Error: action must be interval, pause, resume, remove or due."
-            log.warning("SHOPPING rhythm %s %s %s", action, e.summary, interval if action == "interval" else due)
+        """shopping_rhythm: interval, pause, resume, remove or due of one entry (access admin). Takes no lock:
+        Home Assistant keeps the changes in order, and a call must not wait for a poll that is running."""
+        entries = self._read()
+        wanted = shop.split(item)[0]
+        matches = [e for e in entries if e.key == wanted] or [e for e in entries if wanted and wanted in e.key]
+        if len(matches) != 1:
+            names = ", ".join(e.summary for e in (matches or entries)) or "none"
+            return (f"Not clear which entry: {names}." if matches else
+                    f"{item} is not on the rhythm list. Entries: {names}.")
+        e = matches[0]
+        if action == "interval":
+            raw = str(interval if interval is not None else "").strip().lower()
+            value = (NEVER if raw in ("0", "never", "nie") else int(raw) if raw.isdigit()
+                     else parse_interval(raw)[0])
+            if value is None:
+                return "Error: interval must be a number of days or never."
+            data = {"rename": f"{e.product} ({interval_text(value)})"}
+            last = self.info(e.key).last
+            if value != NEVER and last:
+                data["due_date"] = (last + timedelta(days=value)).isoformat()
+            self._update(e, **data)
+        elif action in ("pause", "resume"):
+            self._update(e, status="completed" if action == "pause" else "needs_action")
+        elif action == "remove":
+            self.ha.todo_call("remove_item", self.entity_id, item=e.ref)
+            log.debug("Rhythm list: %s removed", e.summary)
+        elif action == "due":
+            day = _date(due)
+            if day is None:
+                return "Error: due must be a date like 2026-12-01."
+            self._update(e, due_date=day.isoformat())
+        else:
+            return "Error: action must be interval, pause, resume, remove or due."
+        log.warning("SHOPPING rhythm %s %s %s", action, e.summary, interval if action == "interval" else due)
         entry = next((f for f in self.forecast() if shop.split(f["product"])[0] == e.key), None)
         return "Done. " + json.dumps(entry or {"removed": e.product}, ensure_ascii=False)
 
