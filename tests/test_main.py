@@ -700,3 +700,20 @@ def test_shopping_history_api(server, main, monkeypatch, tmp_path):
     assert status == 200 and body["list"] == "todo.shopping_list" and len(body["events"]) == 3
     assert [e["item"] for e in server("GET", "/shopping/history?item=milch&days=30")[1]["events"]] == ["2 Milch"]
     assert server("GET", "/shopping/history?days=many")[0] == 400
+
+
+def test_shopping_forecast_api(server, main, monkeypatch, tmp_path):
+    import shopping
+    assert server("GET", "/shopping/forecast")[0] == 404
+    watcher = shopping.Shopping(main.cfg, main.ha, tmp_path / "shopping-history.jsonl")
+    monkeypatch.setattr(main, "shopping_list", watcher)
+    assert server("GET", "/shopping/forecast")[0] == 404          # no rhythm list
+    products = [{"product": "Milch", "class": "staple", "interval": "7 days", "status": "probably_out"}]
+    watcher.rhythm = SimpleNamespace(entity_id="todo.shopping_rhythm", forecast=lambda: products)
+    assert server("GET", "/shopping/forecast", token=None)[0] == 401
+    assert server("GET", "/shopping/forecast") == (200, {"list": "todo.shopping_rhythm", "products": products})
+
+    def broken():
+        raise OSError("down")
+    watcher.rhythm = SimpleNamespace(entity_id="todo.shopping_rhythm", forecast=broken)
+    assert server("GET", "/shopping/forecast")[0] == 503

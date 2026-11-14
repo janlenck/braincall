@@ -38,6 +38,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
 | `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
 | `app/shopping.py` | automatic shopping list: watches the list, removes what stayed checked, history (`shopping-history.jsonl`), `shopping_history` |
+| `app/rhythm.py` | rhythm list: recurring products with interval, self-repair, automatic adding, forecast, `shopping_rhythm` |
 | `app/tasks.py` | planned calls with a task: task store (`tasks.json`), numbers and hours that may be dialed, plan and result |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
@@ -249,11 +250,64 @@ With `shopping_auto: false` nothing is watched, written or removed, and `shoppin
 Until 1.9.x the setting was the
 list `shopping_lists`; its first entry is taken over as long as `shopping_list` is not set to something else.
 
+### Rhythm list
+
+`shopping_rhythm_list` (default `todo.shopping_rhythm`, `""` = none) is a second to-do list with the products that
+are bought again and again, one entry each:
+
+| Field | Content | Written by |
+| --- | --- | --- |
+| name | `Milch (7 days)`: product and interval | BrainCall; you may change it |
+| due date | next purchase expected (last purchase + interval) | BrainCall on every purchase; you may move it |
+| description | `staple · learned: 7 days · last: 2026-11-14 · 12 purchases` | BrainCall |
+
+Everything BrainCall writes there is English, whatever `language` says; product names are never translated.
+
+**Which products get an entry.** Claude classifies each product once by its name (`shopping-products.json`):
+`staple` (milk, butter, rolls) after 2 days with a purchase, `consumable` (pepper, dishwasher tabs) after 3,
+`one_off` (a hamster, a piano) never. The interval is the median of the gaps between purchases; with only two
+purchases of a staple and a gap that does not fit its typical interval (a holiday in between), the typical
+interval is taken and the description says `estimated`. If Claude cannot be asked, the product counts as a
+consumable and is asked about again with its next purchase.
+
+**What you can do** (app, dashboard, or Claudine for `admin` with `shopping_rhythm`):
+
+- change the interval in the name (`Milch (10 days)`): it stays, what BrainCall learns goes into the description;
+  remove it (`Milch`) and BrainCall fills in the learned one again;
+- write `(never)`: the entry stays, the product is never due and never added;
+- move the due date: it stays until the next purchase;
+- check the entry off: paused, not added; ends by unchecking it or with the next purchase;
+- delete the entry: not recurring any more; it comes back with the next purchase (self-repair);
+- add an entry by hand (`Spülmaschinentabs (60 days)`): it counts at once; without a due date today + interval.
+
+Intervals: `(N days)`, `(N weeks)`, `(N months)`, `(daily)`, `(weekly)`, `(monthly)`, `(never)`; German ones typed
+by hand (`(10 Tage)`, `(2 Wochen)`, `(wöchentlich)`, `(nie)`) are rewritten in English with the same value.
+"Clear completed" on the rhythm list deletes the paused entries; each comes back with its next purchase.
+
+**Self-repair.** After every purchase the product's entry is there and active (created, unpaused, due date moved
+on). A paused or deleted entry is never put on the shopping list by BrainCall, so it only gets there when someone
+needs it, and with that purchase it is back.
+
+**Automatic adding.** Every 5 minutes a product is put on the shopping list (name without the interval) when its
+entry is active, its due date is today or earlier, it is not on the shopping list (open or checked) and it was not
+added for this due date before. Deleted from the shopping list, it comes back only after the next purchase or when
+you move its due date.
+
+**Forecast.** `shopping_history` modes `due` (running low or probably out) and `stock` (everything) and
+`GET /shopping/forecast`: `in_stock` (less than 80 % of the interval passed), `running_low`, `probably_out`
+(past the due date), `on_list`, `paused`, `never`. It is an estimate from the buying rhythm, not an inventory.
+
+**Creating the lists.** With `shopping_auto` on, BrainCall creates a missing `todo.shopping_list` (the built-in
+*Shopping list*), another missing shopping list and the rhythm list (*Local To-do*, display name "Recurring
+purchases") once Home Assistant has finished starting, and fills a new rhythm list from the history. Existing lists
+are never touched. Creating needs administrator rights (the add-on has them); otherwise the log says how to create
+the list by hand and that part stays off.
+
 ## Logging
 
 `log_level` (default `"info"`) decides how much `braincall.log` and the console show: `"warning"` only problems,
-`"info"` calls and changes, `"debug"` also details (every change seen on the shopping list, every removal),
-`"trace"` also every look at the shopping list. Other libraries never log below `info`.
+`"info"` calls and changes, `"debug"` also details (every change seen on the shopping list, every removal,
+every change to the rhythm list, every product added or classified), `"trace"` also every look at the lists. Other libraries never log below `info`.
 
 ## Web search
 
@@ -417,6 +471,7 @@ They cover access rights and tools per caller, web search (tools by access, limi
 confirmation after web content), Home Assistant control limits, calendars and restricted bookings,
 planned calls (numbers and hours, plan and confirmation, grants for the callee, retries, mailbox and call backs,
 follow-up, `/tasks`), the automatic shopping list (the hour, mistakes, restarts, errors, history, `/shopping/history`),
+the rhythm list (learning, classes, self-repair, automatic adding, forecast, creating lists, `/shopping/forecast`),
 configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the
 SIP fixes, and the conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers,
 mailbox announcements, timing).

@@ -585,3 +585,46 @@ def test_restricted_booking_is_checked_before_asking(make_ha):
 def test_admin_booking_has_no_limits(make_ha):
     h = make_ha(default_calendars=["calendar.family"], calendar_max_days_ahead=90)
     assert h.create_event("", "x", in_days(-1), in_days(400), confirmed=True, booked=5) == "Added to Familie: x."
+
+
+# ---------------------------------------------------------------- lists for the rhythm list (#70)
+def test_entity_exists(make_ha):
+    h = make_ha()
+    assert h.entity_exists("todo.shopping_list") and not h.entity_exists("sensor.missing")
+    h.http.routes[("GET", "/states/todo.x")] = FakeResponse({}, 500)
+    with pytest.raises(Exception):  # noqa: B017  an error is not "missing"
+        h.entity_exists("todo.x")
+
+
+@pytest.mark.parametrize("config, running", [({"state": "RUNNING"}, True), ({"state": "STARTING"}, False),
+                                             ({}, True)])
+def test_core_running(make_ha, config, running):
+    h = make_ha()
+    h.http.routes[("GET", "/config")] = FakeResponse(config)
+    assert h.core_running() is running
+
+
+def test_config_flow_answers_the_form(make_ha):
+    h = make_ha()
+    h.http.routes[("POST", "/config/config_entries/flow")] = FakeResponse({"type": "form", "flow_id": "f1"})
+    h.http.routes[("POST", "/config/config_entries/flow/f1")] = FakeResponse({"type": "create_entry"})
+    assert h.config_flow("local_todo", {"todo_list_name": "Shopping rhythm"})["type"] == "create_entry"
+    assert h.http.posted("/config/config_entries/flow") == [{"handler": "local_todo"},
+                                                             {"todo_list_name": "Shopping rhythm"}]
+
+
+@pytest.mark.parametrize("answer", [FakeResponse({"type": "abort", "reason": "single_instance_allowed"}),
+                                    FakeResponse({"message": "Unauthorized"}, 401)])
+def test_config_flow_failures_raise(make_ha, answer):
+    h = make_ha()
+    h.http.routes[("POST", "/config/config_entries/flow")] = answer
+    with pytest.raises(ValueError):
+        h.config_flow("shopping_list", {})
+
+
+def test_todo_call_drops_unset_fields(make_ha):
+    h = make_ha()
+    h.todo_call("update_item", "todo.shopping_rhythm", item="u1", rename="Milch (7 days)", status=None,
+                due_date="2026-11-20")
+    assert h.http.posted("/services/todo/update_item") == [
+        {"entity_id": "todo.shopping_rhythm", "item": "u1", "rename": "Milch (7 days)", "due_date": "2026-11-20"}]

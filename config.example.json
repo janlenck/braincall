@@ -75,6 +75,9 @@
   // is stored. Deleted items are never purchases. Off by default; takes effect after a restart.
   "shopping_auto": false,
   "shopping_bought_after_minutes": 60,
+  // Products bought again and again, with their interval: "Milch (7 days)". Created in Home Assistant if missing;
+  // what is due is put on the shopping list. "" = none.
+  "shopping_rhythm_list": "todo.shopping_rhythm",
   "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
   "ring_timeout": 90,                 // seconds to ring before an unanswered outbound call is cancelled
 

@@ -985,10 +985,60 @@ class HA:
 
     def remove_todo(self, entity_id: str, item: str):
         """Removes one item (summary or uid) from a to-do list; raises if Home Assistant refuses."""
-        r = self.http.post(f"{self.base}/services/todo/remove_item", json={"entity_id": entity_id, "item": item},
-                           timeout=15, verify=self.verify)
+        self.todo_call("remove_item", entity_id, item=item)
+
+    def todo_call(self, service: str, entity_id: str, **data):
+        """todo.<service> (add_item, update_item, remove_item) on one list; raises if Home Assistant refuses."""
+        body = {"entity_id": entity_id, **{k: v for k, v in data.items() if v is not None}}
+        r = self.http.post(f"{self.base}/services/todo/{service}", json=body, timeout=15, verify=self.verify)
         if r.status_code >= 400:
-            raise ValueError(f"todo.remove_item: {r.status_code} {r.text[:200]}")
+            raise ValueError(f"todo.{service}: {r.status_code} {r.text[:200]}")
+
+    def entity_exists(self, entity_id: str) -> bool:
+        """True/False; raises if Home Assistant cannot be asked (an error is not "missing")."""
+        try:
+            self._get(f"/states/{entity_id}")
+            return True
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return False
+            raise
+
+    def core_running(self) -> bool:
+        """Whether Home Assistant has finished starting (/api/config state RUNNING); raises if it cannot be asked.
+        While it starts, integrations load one by one and their entities are still missing."""
+        state = self._get("/config").get("state")
+        return state in (None, "RUNNING")
+
+    def config_entries(self, domain: str) -> list:
+        """The config entries of one integration (title, entry_id, state …)."""
+        out = self._get(f"/config/config_entries/entry?domain={quote(domain)}")
+        return out if isinstance(out, list) else []
+
+    def config_flow(self, handler: str, data: dict) -> dict:
+        """Sets up an integration through its config flow: starts it and answers each form with data.
+        Returns the result (type create_entry); raises if the flow ends otherwise (abort, errors, refused)."""
+        r = self.http.post(f"{self.base}/config/config_entries/flow", json={"handler": handler},
+                           timeout=30, verify=self.verify)
+        for _ in range(3):
+            if r.status_code >= 400:
+                raise ValueError(f"config flow {handler}: {r.status_code} {r.text[:200]}")
+            result = r.json()
+            if result.get("type") != "form":
+                break
+            r = self.http.post(f"{self.base}/config/config_entries/flow/{result['flow_id']}", json=data,
+                               timeout=30, verify=self.verify)
+        else:
+            raise ValueError(f"config flow {handler}: still asking after 3 forms")
+        if result.get("type") != "create_entry":
+            raise ValueError(f"config flow {handler}: {result.get('type')} "
+                             f"{result.get('reason') or result.get('errors') or ''}".strip())
+        return result
+
+    def rename_entity(self, entity_id: str, name: str):
+        """Sets the display name of an entity in the entity registry (WebSocket)."""
+        with self._ws() as call:
+            call("config/entity_registry/update", entity_id=entity_id, name=name)
 
     def get_state(self, entity_id: str) -> str:
         try:

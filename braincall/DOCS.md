@@ -192,7 +192,23 @@ The assistant answers "When did we last buy milk?" and "What did we buy last wee
 purchase fires the event `braincall_shopping_bought` (`list`, `item`, `key`, `time`). Switch *Automatic shopping
 list* off and nothing is watched, written or removed.
 
-*Log level* `debug` shows every change seen on the list and every removal, `trace` also each look at it.
+### Rhythm list
+
+*Rhythm list* (default `todo.shopping_rhythm`) holds the products bought again and again, e.g. `Milch (7 days)`,
+with the next purchase as due date. With the automatic shopping list on, the add-on creates it (and a missing
+shopping list) as a *Local To-do* list "Recurring purchases" and fills it from what was bought.
+
+- Milk, butter, rolls get an entry after 2 purchases, pepper or dishwasher tabs after 3, a hamster or a piano never:
+  Claude says once per product which kind it is.
+- When a product is due and not on the shopping list, it is put there, once per due date.
+- Change the interval in the name, move the due date, check an entry off to pause it, write `(never)` to keep it but
+  never have it added. A deleted or paused entry comes back with the next purchase of the product.
+- "What is probably running out?" and "What do we still have?" are answered from it, as an estimate.
+  `GET /shopping/forecast` returns the same.
+
+Everything the add-on writes into the rhythm list is English. Empty *Rhythm list* = none.
+
+*Log level* `debug` shows every change seen on the lists and every removal, `trace` also each look at them.
 
 ## Updates
 

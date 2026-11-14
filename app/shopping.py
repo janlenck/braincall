@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ TRACE = 5  # below DEBUG: every poll
 logging.addLevelName(TRACE, "TRACE")
 
 POLL_SECONDS = 60
+BUILTIN_LIST = "todo.shopping_list"  # the entity of Home Assistant's own Shopping list integration
 BOUGHT_EVENT = "braincall_shopping_bought"
 RECENT_DAYS = 14   # shopping_history recent without days
 MAX_DATES = 12     # dates of one product in an answer
@@ -40,9 +42,8 @@ _LEAD = re.compile(rf"^\s*({_AMOUNT})\.?\s+(.+?)\s*$", re.I)
 _TRAIL = re.compile(rf"^\s*(.+?)\s+\(?({_AMOUNT})\)?\s*$", re.I)
 
 
-def split(name: str) -> tuple[str, str]:
-    """(key, amount) of an item: the name folded for counting and the amount written before or after it.
-    "2 Milch", "milch" and "Milch (2)" are the same product "milch"; "H-Milch" is another one."""
+def parts(name: str) -> tuple[str, str]:
+    """(product, amount) as written: "2 Milch" -> ("Milch", "2"), "Mehl 500 g" -> ("Mehl", "500 g")."""
     text = re.sub(r"\s+", " ", str(name or "")).strip()
     amount = ""
     m = _LEAD.match(text)
@@ -52,8 +53,14 @@ def split(name: str) -> tuple[str, str]:
         m = _TRAIL.match(text)
         if m:
             text, amount = m.group(1), m.group(2)
-    key = fold(text).strip(" .,;:-")
-    return key, re.sub(r"\s+", " ", amount).strip()
+    return text, re.sub(r"\s+", " ", amount).strip()
+
+
+def split(name: str) -> tuple[str, str]:
+    """(key, amount) of an item: the name folded for counting and the amount written before or after it.
+    "2 Milch", "milch" and "Milch (2)" are the same product "milch"; "H-Milch" is another one."""
+    text, amount = parts(name)
+    return fold(text).strip(" .,;:-"), amount
 
 
 @dataclass
@@ -101,6 +108,43 @@ class History:
         return out
 
 
+def list_title(entity_id: str) -> str:
+    """The name a Local To-do list needs to get this entity id: todo.shopping_rhythm -> "Shopping rhythm"."""
+    return entity_id.split(".", 1)[-1].replace("_", " ").capitalize()
+
+
+def create_list(ha, entity_id: str, what: str, display_name: str = "") -> bool:
+    """Creates a missing to-do list in Home Assistant: todo.shopping_list as the built-in Shopping list, any other
+    as a Local To-do list. True when it exists afterwards; otherwise one warning with what to do by hand.
+    Raises only if Home Assistant cannot be asked (tried again later)."""
+    builtin = entity_id == BUILTIN_LIST
+    title = list_title(entity_id)
+    how = ("Settings > Devices & services > Add integration > Shopping list" if builtin else
+           f"Settings > Devices & services > Add integration > Local To-do, named \"{title}\"")
+    try:
+        if not builtin and any(e.get("title") == title for e in ha.config_entries("local_todo")):
+            raise ValueError(f"a Local To-do list \"{title}\" exists, but not as {entity_id}: "
+                             "set the setting to its entity id")
+        ha.config_flow("shopping_list" if builtin else "local_todo", {} if builtin else {"todo_list_name": title})
+        for _ in range(20):
+            if ha.entity_exists(entity_id):
+                break
+            time.sleep(0.5)
+        else:
+            raise ValueError(f"it was created, but {entity_id} did not show up")
+    except Exception as e:  # noqa: BLE001
+        log.warning("The %s %s is missing and could not be created: %s. Create it by hand (%s); until then it is "
+                    "not used", what, entity_id, e, how)
+        return False
+    if display_name:
+        try:
+            ha.rename_entity(entity_id, display_name)
+        except Exception as e:  # noqa: BLE001
+            log.info("The %s %s keeps its name: %s", what, entity_id, e)
+    log.info("Created the %s %s in Home Assistant", what, entity_id)
+    return True
+
+
 def _time(entry: dict) -> datetime | None:
     try:
         t = datetime.fromisoformat(str(entry.get("time")))
@@ -128,10 +172,27 @@ class Shopping:
         self.items: dict[str, Item] | None = None  # None until the first poll after the start
         self.failing = False
         self.lock = threading.Lock()
+        self.rhythm = None          # rhythm.Rhythm while there is a rhythm list (#70)
+        self.lists_checked = False  # missing lists were looked for (and created) after the start
+        self.expected: list[str] = []  # names just added by the rhythm list: not logged again as added
 
     def describe(self) -> str:
         return (f"watching {self.entity_id}, items checked for {self.cfg.shopping_bought_after_minutes} min "
-                f"count as bought (history: {self.history.path.name})")
+                f"count as bought (history: {self.history.path.name})"
+                + (f", rhythm list {self.rhythm.entity_id}" if self.rhythm else ""))
+
+    def _ensure_lists(self) -> bool:
+        """Once after the start, when Home Assistant is running: creates the lists that are missing. False while
+        Home Assistant is still starting (an integration not loaded yet must not look like a missing list)."""
+        if not self.ha.core_running():
+            log.log(TRACE, "Shopping list: Home Assistant is still starting")
+            return False
+        if not self.ha.entity_exists(self.entity_id):
+            create_list(self.ha, self.entity_id, "shopping list")
+        if self.rhythm is not None:
+            self.rhythm.ensure()
+        self.lists_checked = True
+        return True
 
     # ------------------------------------------------------------------ watching
     def poll(self):
@@ -139,6 +200,8 @@ class Shopping:
         with self.lock:
             now = self.now()
             try:
+                if not self.lists_checked and not self._ensure_lists():
+                    return
                 state = self.ha.entity_state(self.entity_id)
                 if state in ("unavailable", "unknown", "None", ""):
                     raise ValueError(f"the list is {state or 'empty'}")
@@ -164,6 +227,8 @@ class Shopping:
                 return
             self._compare(seen, now)
             self._remove_due(now)
+            if self.rhythm is not None and self.rhythm.due_for_sync(now):
+                self.rhythm.sync(now)
 
     def _failed(self, e):
         if self.failing:
@@ -214,6 +279,9 @@ class Shopping:
             if item is None:
                 new.since = now if new.checked else None
                 items[nid] = new
+                if fold(new.name) in self.expected:  # put there by the rhythm list, already in the history
+                    self.expected.remove(fold(new.name))
+                    continue
                 self._event("added", new, now)
                 log.debug("Shopping list: added %s%s", new.name, " (checked)" if new.checked else "")
                 continue
@@ -239,6 +307,7 @@ class Shopping:
                 log.debug("Shopping list: %s deleted%s, not bought", item.name,
                           " while checked" if item.checked else "")
         self.items = items
+        self.expected.clear()  # what the rhythm list added shows up in the first poll after it, or never
 
     def _due(self, item: Item, now: datetime) -> bool:
         return item.checked and item.since is not None and now - item.since >= self.after
@@ -262,6 +331,16 @@ class Shopping:
         log.debug("Shopping list: %s bought (checked %s), removed from the list", item.name, self._clock(item.since))
         self.ha.fire_event(BOUGHT_EVENT, {"list": self.entity_id, "item": item.name, "key": entry["key"],
                                           "time": entry["time"]})
+        if self.rhythm is not None:
+            self.rhythm.on_bought(item.name, entry["key"])
+
+    def add_item(self, name: str, due):
+        """Puts a product that is due on the shopping list (rhythm list, #70); the history says so once."""
+        self.ha.todo_call("add_item", self.entity_id, item=name)
+        self.expected.append(fold(name))
+        self.history.add({"time": _iso(self.now()), "list": self.entity_id, "event": "added", "item": name,
+                          "key": split(name)[0], "by": "rhythm", "due": due.isoformat()})
+        log.debug("Shopping list: %s added, it was due on %s", name, due.isoformat())
 
     def _event(self, event: str, item: Item, when: datetime) -> dict:
         key, amount = split(item.name)
@@ -305,7 +384,23 @@ class Shopping:
             return self._item(item, entries, start)
         if mode == "recent":
             return self._recent(days, entries, start)
-        return "Error: mode must be item or recent."
+        if mode in ("due", "stock"):
+            return self._forecast(mode)
+        return "Error: mode must be item, recent, due or stock."
+
+    def _forecast(self, mode: str) -> str:
+        if self.rhythm is None or not self.rhythm.on:
+            return "There is no rhythm list: no forecast, only item and recent."
+        try:
+            products = self.rhythm.forecast()
+        except Exception as e:  # noqa: BLE001
+            return f"Error: the rhythm list cannot be read: {e}"
+        note = ("Estimated from the buying rhythm, not an inventory: say it is an estimate. Staples come first.")
+        if mode == "stock":
+            return json.dumps({"products": products, "note": note}, ensure_ascii=False)
+        due = [p for p in products if p["status"] in ("probably_out", "running_low")]
+        on_list = [p["product"] for p in products if p["status"] == "on_list"]
+        return json.dumps({"due": due, "already_on_the_list": on_list, "note": note}, ensure_ascii=False)
 
     def _started(self, start) -> str:
         return (f"The history started on {self._day(start)}." if start else
@@ -334,6 +429,14 @@ class Shopping:
             if key in on_list:
                 product["on_list"] = on_list[key]
             out.append(product)
+        if self.rhythm is not None and self.rhythm.on:
+            try:
+                rhythm = {split(p["product"])[0]: p for p in self.rhythm.forecast()}
+            except Exception:  # noqa: BLE001  the history answers on its own
+                rhythm = {}
+            for product in out:
+                extra = rhythm.get(split(product["product"])[0], {})
+                product.update({k: extra[k] for k in ("class", "interval", "next_due", "status") if k in extra})
         result = {"item": item, "products": out, "note": self._started(start)}
         if not out:
             result["note"] = f"Not bought since the history started. {self._started(start)}"

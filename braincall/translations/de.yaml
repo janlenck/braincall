@@ -50,10 +50,19 @@ configuration:
       Beobachtet die Einkaufsliste. Ein Eintrag, der so lange abgehakt bleibt wie unten eingestellt, gilt als
       gekauft: Er wird von der Liste entfernt und mit Datum in shopping-history.jsonl im Add-on-Ordner gespeichert.
       Versehentlich abgehakt und innerhalb dieser Zeit wieder aufgemacht: Es wird nichts gespeichert. Gelöschte
-      Einträge sind nie Käufe. Standardmäßig aus; nach dem Einschalten das Add-on neu starten.
+      Einträge sind nie Käufe. Standardmäßig aus; nach dem Einschalten das Add-on neu starten. Dann werden
+      Einkaufsliste und Rhythmus-Liste in Home Assistant angelegt, falls sie fehlen, und fällige Produkte kommen
+      von selbst auf die Einkaufsliste.
   shopping_bought_after_minutes:
     name: Gekauft nach (Minuten)
     description: Wie lange ein Eintrag abgehakt bleiben muss, um als gekauft zu gelten. Standard 60.
+  shopping_rhythm_list:
+    name: Rhythmus-Liste
+    description: >-
+      To-do-Liste (Entity-ID) der Produkte, die immer wieder gekauft werden, z. B. „Milch (7 days)“. BrainCall
+      pflegt sie und setzt ein Produkt auf die Einkaufsliste, wenn es fällig ist. Intervall im Namen ändern,
+      Fälligkeit verschieben, abhaken = pausieren, (never) = bleibt stehen, wird aber nie gesetzt. Leer = keine
+      Rhythmus-Liste.
   country_code:
     name: Ländervorwahl
     description: +49 / 0049 gelten als dieselbe Nummer wie eine führende 0.

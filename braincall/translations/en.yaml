@@ -50,10 +50,17 @@ configuration:
       Watches the shopping list. An item that stays checked off for the time below counts as bought: it is removed
       from the list and stored with its date in shopping-history.jsonl in the add-on folder. Checked by mistake and
       unchecked again within that time: nothing is stored. Deleted items are never purchases. Off by default;
-      restart the add-on after switching it on.
+      restart the add-on after switching it on. With it, the shopping list and the rhythm list are created in
+      Home Assistant if they are missing, and products that are due are put on the shopping list on their own.
   shopping_bought_after_minutes:
     name: Bought after (minutes)
     description: How long an item has to stay checked off to count as bought. Default 60.
+  shopping_rhythm_list:
+    name: Rhythm list
+    description: >-
+      To-do list (entity id) of the products bought again and again, e.g. "Milch (7 days)". BrainCall keeps it up
+      to date and puts a product on the shopping list when it is due. Edit the interval in the name, move the due
+      date, check an entry off to pause it, write (never) to keep it but never add it. Empty = no rhythm list.
   country_code:
     name: Country code
     description: +49 / 0049 count as the same number as a leading 0.

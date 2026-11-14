@@ -36,6 +36,7 @@ import config  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
 import phrases  # noqa: E402
+import rhythm  # noqa: E402
 import shopping  # noqa: E402
 import tasks  # noqa: E402
 from brain import Brain  # noqa: E402
@@ -82,6 +83,8 @@ task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks else None
 brain.tasks = task_store
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
                  if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
+if shopping_list is not None and cfg.shopping_rhythm_list:
+    rhythm.Rhythm(cfg, ha, shopping_list, _LOGDIR / "shopping-products.json", classify=brain.classify_products)
 brain.shopping = shopping_list
 busy = threading.Lock()
 sip_failed: dict = {}
@@ -593,6 +596,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
             return self._shopping_history()
+        if self.path == "/shopping/forecast" and shopping_list is not None and shopping_list.rhythm is not None:
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                products = shopping_list.rhythm.forecast()
+            except Exception as e:  # noqa: BLE001
+                return self._send(503, {"error": f"rhythm list not readable: {e}"})
+            return self._send(200, {"list": shopping_list.rhythm.entity_id, "products": products})
         if task_store is None or not (self.path == "/tasks" or self._task_id()):
             return self._send(404, {"error": "not found"})
         if not self._authorized():

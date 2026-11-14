@@ -3,6 +3,7 @@ the history, the answers of shopping_history and the settings."""
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,12 @@ class FakeHA:
         self.removed = []
         self.events = []
         self._uid = 0
+
+    def core_running(self):
+        return True
+
+    def entity_exists(self, entity_id):
+        return True
 
     def entity_state(self, entity_id):
         if self.fail:
@@ -422,7 +429,7 @@ def test_shopping_history_tool_only_while_watching():
     brain = Brain(make_cfg(anthropic_api_key="test"), HA())
     names = lambda access: {t["name"] for t in brain.tools_for(parse_access(access))}  # noqa: E731
     assert "shopping_history" not in names("admin")
-    brain.shopping = object()
+    brain.shopping = SimpleNamespace(rhythm=None)
     for access in ("admin", "read", "shopping", "shopping, calendar"):
         assert "shopping_history" in names(access)
     for access in ("calendar", "guest"):

@@ -63,6 +63,8 @@ DEFAULTS = {
     # and stored in shopping-history.jsonl in the log folder
     "shopping_auto": False,   # off by default: it removes items from the list on its own
     "shopping_bought_after_minutes": 60,
+    # the products bought again and again with their interval (#70); "" or the shopping list itself = none
+    "shopping_rhythm_list": "todo.shopping_rhythm",
     # control (only for callers with access "admin")
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                         "media_player", "cover", "button", "number", "select", "todo",
@@ -174,6 +176,8 @@ def _shopping(cfg, data: dict):
                             f"not {', '.join(old[1:])}")
     cfg.pop("shopping_lists", None)
     cfg["shopping_list"] = str(cfg.shopping_list or "").strip()
+    rhythm = str(cfg.shopping_rhythm_list or "").strip()
+    cfg["shopping_rhythm_list"] = "" if rhythm == cfg.shopping_list else rhythm
     try:
         minutes = int(cfg.shopping_bought_after_minutes)
     except (TypeError, ValueError):
