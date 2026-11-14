@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.11.0
+
+First part of Brain Assist (#50): BrainCall as the brain behind Home Assistant's own assistant (Assist). The
+integration for Home Assistant follows; this release prepares BrainCall.
+
+- **Changed, check your automations:** every request to the HTTP API needs the API token, also from the Home
+  Assistant host itself (`/call`, `/tasks`, `/shopping/…`; only `/health` stays open). A `rest_command` without
+  token now gets `401 unauthorized`
+  - *API token* empty (default): a token is generated once and kept in `api-token.txt` in the add-on folder; the
+    API stays reachable from this host only. Put it into `secrets.yaml` (`braincall_auth: "Bearer <token>"`) and
+    add `headers: {Authorization: !secret braincall_auth}` to the `rest_command`, see the documentation
+  - *API token* set: as before, that token counts and the API is reachable in the network
+  - Why: other apps on the host reach `127.0.0.1` too, and could plan calls or, with Brain Assist, act as any user
+- New: without a phone. User name and password of the IP phone both empty: BrainCall starts without FRITZ!Box and
+  OpenAI key and only answers the HTTP API (log: `Phone: off`). `/call` answers `503`, planned calls are off, the
+  automatic shopping list keeps running. Until now the add-on stopped with "Configuration incomplete"
+- New: *Callers* for Brain Assist. An entry may have `ha_user` (name or id of the Home Assistant user) and/or
+  `ha_device` (name or id of a device or of its area) instead of or next to the number; `*` = every other user or
+  device. With an entry for the user and one for the device the stricter access wins. An entry without number is
+  never called and matches no phone call
+- New: `POST /api/converse` answers one Assist request with the same brain as a phone call (tools and limits by
+  access) as a stream of JSON lines: text, tool calls and results, and whether the answer asks something back
+  (`continue_conversation`). Two channels: `voice` (short spoken sentences) and `text` (Markdown allowed).
+  Users and devices that are not listed get a fixed sentence without a request to Claude
+- New: `GET /api/version` (API version, BrainCall version) for the compatibility check of Brain Assist
+- `/tasks` and `/shopping/…` are now `/api/tasks` and `/api/shopping/…`; the old paths still work
+- Not yet: the integration itself, memory shared between phone and Assist, limits per person, planned calls from
+  Assist, skills
+
 ## 1.10.1
 
 - Fix: `POST /tasks` without `goal` answered `502 planning failed` with Claude Opus 5.5, Sonnet 5.5 and Fable 5.x

@@ -1,4 +1,4 @@
-"""BrainCall: SIP phone on the FRITZ!Box plus an HTTP trigger for outbound calls."""
+"""BrainCall: SIP phone on the FRITZ!Box plus an HTTP API: call trigger, planned calls and Brain Assist."""
 import hmac
 import json
 import logging
@@ -33,6 +33,7 @@ import pyVoIP  # noqa: E402
 from pyVoIP.VoIP import CallState, PhoneStatus, VoIPPhone  # noqa: E402  (must be imported before pyVoIP.SIP)
 from pyVoIP.SIP import SIPMessageType  # noqa: E402
 
+import assist  # noqa: E402
 import config  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
@@ -75,18 +76,23 @@ sys.excepthook = _excepthook
 threading.excepthook = lambda a: _excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
 console.ASSISTANT = cfg.assistant_name or "Claude"
+# The phone needs the SIP account; without it only the HTTP API runs (Brain Assist, #50)
+PHONE = bool(cfg.sip_user and cfg.sip_password)
+# every request to the HTTP API needs this token; a generated one keeps the API on 127.0.0.1 (config.api_token)
+API_TOKEN, TOKEN_GENERATED = config.api_token(cfg)
 ha = HA(cfg)
 speech = Speech(cfg)
 brain = Brain(cfg, ha)
 phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
-task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks else None
+task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks and PHONE else None
 brain.tasks = task_store
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
                  if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
 if shopping_list is not None and cfg.shopping_rhythm_list:
     rhythm.Rhythm(cfg, ha, shopping_list, _LOGDIR / "shopping-products.json", classify=brain.classify_products)
 brain.shopping = shopping_list
+conversations = assist.Conversations()  # Brain Assist: the running conversations of POST /api/converse
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
@@ -570,10 +576,43 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        if not cfg.api_token:
-            return True  # in that case the server only listens on 127.0.0.1
+        """Every request needs the token, also from 127.0.0.1 (other apps on the host reach that too)."""
         return hmac.compare_digest(self.headers.get("Authorization", "").encode(),
-                                   f"Bearer {cfg.api_token}".encode())
+                                   f"Bearer {API_TOKEN}".encode())
+
+    def _route(self):
+        """/api/tasks and /api/shopping/… are the paths since 1.11; the ones without /api still work."""
+        if self.path.startswith(("/api/tasks", "/api/shopping/")):
+            self.path = self.path[len("/api"):]
+
+    def _converse(self, body: dict):
+        """POST /api/converse (Brain Assist): one Assist request, answered as a stream of JSON lines
+        (assist.converse). No Content-Length: the stream ends when the connection is closed."""
+        try:
+            req = assist.parse(body)
+        except ValueError as e:
+            return self._send(400, {"error": str(e)})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        gone = threading.Event()
+
+        def emit(event: dict):
+            if gone.is_set():
+                return
+            try:
+                self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode())
+                self.wfile.flush()
+            except OSError:  # Brain Assist closed the connection: the turn stops at the next check
+                gone.set()
+
+        try:
+            assist.converse(brain, cfg, conversations, req, emit, gone.is_set, OWNER_FIRST)
+        except Exception as e:  # noqa: BLE001  the headers are out: the reason goes into the stream
+            log.exception("Brain Assist request failed")
+            emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
 
     def _task_id(self) -> str:
         """The id in /tasks/<id>; "" for other paths."""
@@ -592,9 +631,16 @@ class Handler(BaseHTTPRequestHandler):
                          "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/health":
-            return self._send(200, {"sip": sip_status().value, "busy": busy.locked(),
+        self._route()
+        if self.path == "/health":  # the only path without token: nothing but the status
+            return self._send(200, {"sip": sip_status().value, "busy": busy.locked(), "phone": PHONE,
                                     "time": datetime.now().isoformat(timespec="seconds")})
+        if self.path == "/api/version":
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {"api": assist.API_VERSION, "version": config.version(), "phone": PHONE,
+                                    "assistant": cfg.assistant_name or "Claude",
+                                    "home_assistant": bool(ha.enabled)})
         if urlsplit(self.path).path == "/shopping/history" and shopping_list is not None:
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -617,6 +663,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200 if task else 404, task or {"error": "not found"})
 
     def do_DELETE(self):  # noqa: N802
+        self._route()
         if not self._task_id():
             return self._send(404, {"error": "not found"})
         if not self._authorized():
@@ -657,7 +704,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/call" and not (self.path == "/tasks" and task_store is not None):
+        self._route()
+        if self.path not in ("/call", "/api/converse") and not (self.path == "/tasks" and task_store is not None):
             return self._send(404, {"error": "not found"})
         if not self._authorized():
             return self._send(401, {"error": "unauthorized"})
@@ -674,6 +722,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "invalid json"})
         if self.path == "/tasks":
             return self._plan_task(body)
+        if self.path == "/api/converse":
+            return self._converse(body)
+        if not PHONE:
+            return self._send(503, {"error": "no phone: sip_user and sip_password are not set"})
         number = str(body.get("number") or cfg.default_number).strip()
         if not number:
             return self._send(400, {"error": "no number"})
@@ -699,12 +751,22 @@ def check_ha_admin():
                     "use a long-lived token of an administrator, e.g. of a separate user for BrainCall.")
 
 
+def incomplete() -> list:
+    """Settings that are missing to start. Claude is always needed. Without the SIP account (both sip_user and
+    sip_password empty) there is no phone and only the HTTP API runs (Brain Assist); the phone also needs OpenAI
+    for speech."""
+    needed = ["anthropic_api_key"]
+    if cfg.sip_user or cfg.sip_password:
+        needed += ["sip_user", "sip_password", "openai_api_key"]
+    return [key for key in needed if not cfg[key]]
+
+
 def main():
     console.banner(cfg)
-    for key in ("sip_user", "sip_password", "anthropic_api_key", "openai_api_key"):
-        if not cfg[key]:
-            log.error("Configuration incomplete: %s missing (config.json)", key)
-            sys.exit(1)
+    missing = incomplete()
+    if missing:
+        log.error("Configuration incomplete: %s missing (config.json)", ", ".join(missing))
+        sys.exit(1)
     if not OWNER:
         log.warning("owner_name is not set (config.json) - the assistant will speak of \"the owner\"")
 
@@ -712,8 +774,11 @@ def main():
     for w in config.WARNINGS:
         log.warning(w)
     log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
-    log.info("Callers: %s", ", ".join(f"{c['name'] or c['number']} ({','.join(sorted(c['access']))})"
-                                      for c in cfg.callers) or "none, incoming calls are rejected")
+    log.info("Callers: %s", ", ".join(
+        f"{c['name'] or c['number'] or c['ha_user'] or c['ha_device']} ({','.join(sorted(c['access']))})"
+        for c in cfg.callers) or "none, incoming calls and Brain Assist requests are rejected")
+    with_assist = [c["name"] or c["ha_user"] or c["ha_device"] for c in cfg.callers if c["ha_user"] or c["ha_device"]]
+    log.info("Brain Assist: %s", ", ".join(with_assist) or "nobody (no entry in callers with ha_user or ha_device)")
     if task_store is not None:
         span = tasks.hours(cfg)
         log.info("Planned calls: on, %s, at most %s per day, %d open (%s)",
@@ -723,9 +788,10 @@ def main():
         if str(cfg.outbound_hours or "").strip() and span is None:
             log.warning("outbound_hours %r not understood (e.g. 09:00-20:00): no time limit", cfg.outbound_hours)
     else:
-        log.info("Planned calls: off (tasks)")
+        log.info("Planned calls: off (%s)", "tasks" if PHONE else "no phone")
     if cfg.web_access:
-        with_web = [c["name"] or c["number"] for c in cfg.callers if web.allowed(cfg, c["access"], web_for(c))]
+        with_web = [c["name"] or c["number"] or c["ha_user"] or c["ha_device"] for c in cfg.callers
+                    if web.allowed(cfg, c["access"], web_for(c))]
         log.info("Web search: on for %s", ", ".join(with_web) or "nobody (access admin/read or \"web\": true)")
     else:
         log.info("Web search: off (web_access)")
@@ -766,24 +832,28 @@ def main():
             log.warning("Opening the log failed: %s", e)
 
     try:
-        try:
-            connect()
-        except Exception as e:  # noqa: BLE001  e.g. FRITZ!Box or network not up yet after a power cut: the watchdog retries
-            log.warning("SIP start failed: %s", e)
-        for _ in range(50):
-            if sip_status() == PhoneStatus.REGISTERED or stopping.is_set():
-                break
-            time.sleep(0.2)
-        if stopping.is_set():
-            return
-        log.info("SIP status: %s", sip_status().value)
+        if PHONE:
+            try:
+                connect()
+            except Exception as e:  # noqa: BLE001  e.g. FRITZ!Box or network not up yet after a power cut: the watchdog retries
+                log.warning("SIP start failed: %s", e)
+            for _ in range(50):
+                if sip_status() == PhoneStatus.REGISTERED or stopping.is_set():
+                    break
+                time.sleep(0.2)
+            if stopping.is_set():
+                return
+            log.info("SIP status: %s", sip_status().value)
+        else:
+            log.info("Phone: off (sip_user and sip_password not set), only the HTTP API runs (Brain Assist)")
         log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")
         if ha.enabled:  # in the background: Home Assistant may still be starting
             threading.Thread(target=check_ha_admin, name="HA admin check", daemon=True).start()
-        # greetings and fillers synthesized ahead, so the caller hears them without waiting for TTS
-        threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
-                         daemon=True).start()
-        threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
+        if PHONE:
+            # greetings and fillers synthesized ahead, so the caller hears them without waiting for TTS
+            threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
+                             daemon=True).start()
+            threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
         if task_store is not None:
             threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
         if shopping_list is not None:
@@ -792,9 +862,12 @@ def main():
         elif not cfg.shopping_auto:
             log.info("Shopping list: automatic shopping list off (shopping_auto)")
 
-        bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
+        # a token set in the configuration opens the API to the LAN; a generated one keeps it on this host
+        bind = "127.0.0.1" if TOKEN_GENERATED else "0.0.0.0"
         server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)
-        log.info("HTTP trigger on http://%s:%s/call", bind, cfg.http_port)
+        log.info("HTTP API on http://%s:%s, %s", bind, cfg.http_port,
+                 f"only from this host, token in {_LOGDIR / config.TOKEN_FILE}" if TOKEN_GENERATED
+                 else "reachable in the network, token from the configuration (api_token)")
         console.start_keys(quit_, test_call, open_log)
         server.serve_forever()
     except KeyboardInterrupt:

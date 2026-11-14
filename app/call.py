@@ -14,7 +14,7 @@ if len(sys.argv) > 2:
 req = urllib.request.Request(
     f"http://127.0.0.1:{cfg.http_port}/call",
     data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_token}"},
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {config.api_token(cfg)[0]}"},
     method="POST",
 )
 try:

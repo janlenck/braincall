@@ -12,6 +12,7 @@ from pyVoIP.VoIP import CallState
 from audio import FRAME, RATE, encode_g711, rms, u8_to_s16
 from brain import MUTATING
 import phrases as ph
+import rights
 import rtpfix
 from timing import CallTiming
 
@@ -868,41 +869,8 @@ class CallSession:
     # ------------------------------------------------------------------ call flow
     def _rights(self, name: str) -> str:
         """System note on what the caller may do (the tools themselves are limited in Brain.tools_for)."""
-        owner = self.owner_first
-        who = name or "The caller"
-        quiet = (f"Give no information at all about {owner}, the house, whether anyone is at home, or about devices"
-                 + (", except what is allowed above. " if self.access - {"guest"} else ". "))
-        if "admin" in self.access:
-            return ""
-        grants = self.call_info.get("grants") or {}
-        granted = ""
-        if grants and not self.access & {"read", "calendar"}:
-            granted = (f"For this task {who} may hear when {owner} is free or busy from {grants['calendar_from']} to "
-                       f"{grants['calendar_to']} (ha_busy_times: you only see busy times, never guess or reveal what "
-                       "an appointment is). ")
-        if grants.get("book_title") and "calendar" not in self.access and self.cfg.calendar_write:
-            granted += (f"You may book one appointment titled “{grants['book_title']}” into a free time of these "
-                        "days: repeat day and time once, and after a yes call ha_create_event with confirmed=true. ")
-        if self.access == {"guest"}:
-            return (f"You have no access to the house in this call{', except for the task' if granted else ''}. "
-                    + granted + quiet)
-        parts = [granted] if granted else []
-        if "read" in self.access:
-            parts.append(f"{who} may ask about everything in Home Assistant (states, sensors, appointments "
-                         "with details), but must not switch or change anything. ")
-        elif "calendar" in self.access:
-            parts.append(f"{who} may ask whether {owner} is free or busy (ha_busy_times: you only see busy times, "
-                         "never guess or reveal what an appointment is). ")
-        if "calendar" in self.access and self.cfg.calendar_write:
-            parts.append(f"{who} may book an appointment in a free slot of the default calendar without {owner}'s "
-                         "approval: repeat day and time once, and after a yes call ha_create_event with "
-                         "confirmed=true. ")
-        if "shopping" in self.access:
-            parts.append(f"{who} may hear and change the shopping list (shopping_list, shopping_edit)"
-                         + (" and ask what was bought when (shopping_history)"
-                            if getattr(self.brain, "shopping", None) else "")
-                         + ". ")
-        return "".join(parts) + ("" if "read" in self.access else quiet)
+        return rights.note(self.access, name, self.owner_first, bool(self.cfg.calendar_write),
+                           bool(getattr(self.brain, "shopping", None)), self.call_info.get("grants"))
 
     def _greeting(self, outbound: bool, name: str) -> str:
         """Text of the cached greeting for this call, "" = the model greets (no cache, other language)."""

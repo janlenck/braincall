@@ -6,7 +6,8 @@
 
 A phone voice agent built on Claude: it calls you through a FRITZ!Box and talks with you, and you can call it.
 It can read and control Home Assistant (states, lights, lists, calendars) during the call, and look things up on
-the web (opening hours, recipes, train times) if you switch that on.
+the web (opening hours, recipes, train times) if you switch that on. The same brain can answer Home Assistant's
+own assistant (Assist), see [Brain Assist](#brain-assist).
 
 Runs on Windows (Python 3.12) or Linux. Audio is G.711 over SIP using pyVoIP (with fixes for the FRITZ!Box).
 
@@ -40,6 +41,8 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/shopping.py` | automatic shopping list: watches the list, removes what stayed checked, history (`shopping-history.jsonl`), `shopping_history` |
 | `app/rhythm.py` | rhythm list: recurring products with interval, self-repair, automatic adding, forecast, `shopping_rhythm` |
 | `app/tasks.py` | planned calls with a task: task store (`tasks.json`), numbers and hours that may be dialed, plan and result |
+| `app/assist.py` | Brain Assist: who a request of Home Assistant's assistant comes from (`ha_user`, `ha_device`), the conversations, the answer stream of `POST /api/converse` |
+| `app/rights.py` | what a person may do, in words for Claude; the stricter of two access sets |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
@@ -82,7 +85,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 
 ## Callers and permissions
 
-`callers` is the one list of who may call and what they may do, incoming and outgoing:
+`callers` is the one list of who may call and what they may do, incoming and outgoing (and who may use
+[Brain Assist](#brain-assist), with `ha_user` / `ha_device`):
 
 ```json
 "callers": [
@@ -206,7 +210,7 @@ talks to Home Assistant as an administrator); on Windows the user of `ha_token` 
 a separate user for BrainCall. Without them Claudine says that she cannot read the definition, and the log warns
 once at startup.
 
-Triggering a call from HA (set `api_token` so the trigger listens on the LAN):
+Triggering a call from HA (set `api_token` so the API listens on the LAN, see [HTTP API](#http-api)):
 
 ```yaml
 rest_command:
@@ -243,7 +247,7 @@ The history is `logs/shopping-history.jsonl` (in the add-on: its config folder),
 
 - Tool `shopping_history` (access `admin`, `read`, `shopping`): one product (last bought, on how many days, the
   dates, whether it is on the list now) or the purchases of the last days. Dates and counts are computed in code.
-- `GET /shopping/history` (with `api_token` like `/tasks`), optionally `?item=Milch&days=30&event=bought`.
+- `GET /api/shopping/history` (with the API token), optionally `?item=Milch&days=30&event=bought`.
 - Event `braincall_shopping_bought` (`list`, `item`, `key`, `time`) for own automations.
 
 With `shopping_auto: false` nothing is watched, written or removed, and `shopping_history` is not offered.
@@ -295,7 +299,7 @@ added for this due date before. Deleted from the shopping list, it comes back on
 you move its due date.
 
 **Forecast.** `shopping_history` modes `due` (running low or probably out) and `stock` (everything) and
-`GET /shopping/forecast`: `in_stock` (less than 80 % of the interval passed), `running_low`, `probably_out`
+`GET /api/shopping/forecast`: `in_stock` (less than 80 % of the interval passed), `running_low`, `probably_out`
 (past the due date), `on_list`, `paused`, `never`. It is an estimate from the buying rhythm, not an inventory.
 
 A list that cannot be read, or answers without items while it still counts open ones, changes nothing; a new
@@ -356,10 +360,11 @@ the caller said something in reply (a `confirmed=true` from the model alone is n
 the plan that was read back: another number, time window, grant or follow-up tool is read back again.
 One line: the planned call starts after the requester hung up.
 
-Without the phone, `POST /tasks` plans a call (same token as `/call`):
+Without the phone, `POST /api/tasks` plans a call (with the API token, see [HTTP API](#http-api)):
 
 ```bash
-curl -X POST http://127.0.0.1:8099/tasks -H "Content-Type: application/json" -d '{
+curl -X POST http://127.0.0.1:8099/api/tasks -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" -d '{
   "number": "04542 1234", "name": "Restaurant Seeblick",
   "task": "Tisch für 4 für heute Abend reservieren, am liebsten 19 Uhr, sonst 18 bis 21 Uhr. In den Kalender eintragen.",
   "requester": "0151 1234567", "call_back": true, "not_after": "2026-11-10T19:00"}'
@@ -369,7 +374,7 @@ With only `number` and `task` Claude turns the text into a plan. Every field of 
 and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` / `calendar_to` / `book_title`,
 `follow_up` (`[{"step": "…", "tool": "ha_create_event"}]`), `not_before`, `not_after` (local time, default 24 hours),
 `retries` (default 2), `leave_message`, `call_back` (needs `requester`, a number from `callers`), `language`.
-`GET /tasks` lists all tasks, `GET /tasks/<id>` shows one, `DELETE /tasks/<id>` cancels a planned one.
+`GET /api/tasks` lists all tasks, `GET /api/tasks/<id>` shows one, `DELETE /api/tasks/<id>` cancels a planned one.
 
 **The call.** Tasks are called when they are due, the line is free and it is inside `outbound_hours`.
 No answer or busy: the next attempt follows after `task_retry_minutes`, at most `retries` times and only inside the
@@ -425,6 +430,99 @@ ends as `failed` and is reported.
 Not part of this yet: the Brain Assist front end (service action, `todo` entity), phone menus (DTMF) and hold
 queues, opening hours, and a second call while the requester stays on the line.
 
+## HTTP API
+
+One HTTP server on `http_port` (default 8099). Every request needs `Authorization: Bearer <token>`, also from the
+same computer; only `GET /health` is open. Where the token comes from decides who can reach the API:
+
+- `api_token` empty (default): a token is generated once and kept in `api-token.txt` in the log folder (add-on:
+  its config folder). The API listens on `127.0.0.1` only. `test-call.bat` reads the same file.
+- `api_token` set (or `BRAINCALL_API_TOKEN`): that token counts and the API listens on all addresses, i.e. is
+  reachable in the LAN. There is no TLS: use it in a trusted network only.
+
+The token is never written to the log. Until 1.10.x an empty `api_token` meant "no token needed from 127.0.0.1":
+such requests now get `401`, add the header.
+
+| Request | Purpose |
+|---|---|
+| `GET /health` | status without token: `sip`, `busy`, `phone`, `time` |
+| `POST /call` | call a number now: `{"message": "…", "number": "…"}` |
+| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant` |
+| `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |
+| `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
+| `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
+
+`/tasks` and `/shopping/…` without `/api` still work.
+
+## Brain Assist
+
+BrainCall can be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on
+dashboards, voice devices), so phone and Assist share one brain: the same prompt core, tools, access rules and
+limits. The integration **Brain Assist** (`janlenck/brainassist`, in preparation) runs inside Home Assistant and
+forwards each request to `POST /api/converse`; speech recognition and voice stay with Home Assistant.
+
+Without a phone: leave `sip_user` and `sip_password` empty. BrainCall then starts without the FRITZ!Box and
+without an OpenAI key, and only the HTTP API runs (`/call` answers `503`, planned calls are off; the automatic
+shopping list keeps running).
+
+**Who may do what** comes from `callers`. An entry for Assist has `ha_user` and/or `ha_device` instead of or
+next to `number`:
+
+```json
+"callers": [
+  { "number": "0151xxxxxxx", "ha_user": "Jan", "name": "Jan", "access": "admin" },
+  { "ha_user": "dashboard", "access": "shopping" },
+  { "ha_device": "Küche", "access": "read" },
+  { "ha_device": "*", "access": "guest" }
+]
+```
+
+- `ha_user`: name or id of the Home Assistant user. With `number` in the same entry it is one person on the phone
+  and in Assist.
+- `ha_device`: name or id of the device, or of its area. Voice devices have no user: the access applies to
+  whoever speaks there.
+- `*` = every other user or device. Not listed and no `*`: a fixed sentence ("not set up"), no request to Claude
+  and no cost; the log names the user, device and area that asked.
+- An entry for the user and one for the device: the stricter access wins (what both allow; `admin` only if both
+  are `admin`). A hallway tablet with `shopping` stays at the shopping list while an administrator is logged in.
+- An entry without `number` is never called and matches no phone call. `web`, `language` and `instructions`
+  work as on the phone; `web: false` in either entry switches the web off.
+
+BrainCall trusts what Brain Assist sends about user and device: whoever has the API token can act as any user.
+Actions in Home Assistant run with BrainCall's own access; the BrainCall log says who asked for what.
+
+**Channels.** `voice` (a voice device reads the answer out): short spoken sentences without Markdown, like on the
+phone. `text` (chat): the answer as written, lists, tables and links allowed. Neither has a line: no `hang_up`,
+and `plan_call` is not offered yet. An answer that ends with a question keeps a voice device listening
+(`continue_conversation`).
+
+**Request and answer.**
+
+```bash
+curl -N -X POST http://127.0.0.1:8099/api/converse -H "Authorization: Bearer <token>" -d '{
+  "text": "Wie warm ist es im Wohnzimmer?", "channel": "voice", "language": "de",
+  "conversation_id": "", "user_id": "…", "user_name": "Jan",
+  "device_id": "…", "device_name": "Satellite Küche", "area_id": "kueche", "area_name": "Küche"}'
+```
+
+Only `text` is required. The answer is a stream of JSON lines (`application/x-ndjson`) that ends when the
+connection closes:
+
+```json
+{"type": "start", "conversation_id": "…", "access": "admin"}
+{"type": "tool_call", "id": "…", "name": "ha_state", "input": {"entity_id": "sensor.wohnzimmer"}}
+{"type": "tool_result", "id": "…", "name": "ha_state", "result": "…"}
+{"type": "text", "text": "Im Wohnzimmer sind es 21 Grad."}
+{"type": "end", "conversation_id": "…", "continue_conversation": false}
+```
+
+`text` events are joined as they are. A web search or fetch shows as `tool_call` with `"server": true`. On a
+failure `{"type": "error", "message": "…"}` comes instead of `end`. A conversation is continued with its
+`conversation_id` for 15 minutes after the last request, and only by the same user and device.
+
+Not part of this yet (see #50): the integration itself, memory shared between phone and Assist, limits per
+person, planned calls from Assist, and skills.
+
 ## Conversation flow and timing
 
 - **Greeting without waiting:** greetings are synthesized at startup and kept in `cache/` in the log folder
@@ -477,7 +575,8 @@ confirmation after web content), Home Assistant control limits, calendars and re
 planned calls (numbers and hours, plan and confirmation, grants for the callee, retries, mailbox and call backs,
 follow-up, `/tasks`), the automatic shopping list (the hour, mistakes, restarts, errors, history, `/shopping/history`),
 the rhythm list (learning, classes, self-repair, automatic adding, forecast, creating lists, `/shopping/forecast`),
-configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the
+Brain Assist (users and devices, stricter access, conversations, the answer stream, token for every endpoint),
+configuration and pointer files, the HTTP API, the speech recognition filter, audio and the
 SIP fixes, and the conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers,
 mailbox announcements, timing).
 

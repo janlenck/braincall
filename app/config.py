@@ -3,6 +3,7 @@ API keys may also come from environment variables."""
 import json
 import re
 import os
+import secrets
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,9 @@ DEFAULTS = {
     "rtp_port_max": 30100,
     # who to call / who may call
     "default_number": "",      # target of the test call (key A, test-call.bat), grants no rights
-    "callers": [],             # [{"number", "name", "access", …}]; "*" = everyone else, not listed = rejected
+    # [{"number", "name", "access", …}]; "*" = everyone else, not listed = rejected. For Brain Assist an entry may
+    # have "ha_user" and/or "ha_device" (Home Assistant user, device or area) instead of or next to "number"
+    "callers": [],
     "country_code": "49",      # +49 / 0049 count as the same number as a leading 0
     "ring_timeout": 90,        # seconds to ring before an unanswered outbound call is cancelled
     # Claude
@@ -50,9 +53,11 @@ DEFAULTS = {
     "log_dir": "",             # empty = logs\ in the project folder
     "log_level": "info",       # "trace", "debug", "info" or "warning"
     "caller_memory": "none",   # summaries of earlier calls per number as context: "none", days (e.g. 30), "forever"
-    # HTTP trigger
+    # HTTP API (call trigger, planned calls, Brain Assist): every request needs "Authorization: Bearer <token>"
     "http_port": 8099,
-    "api_token": "",           # empty = only reachable from 127.0.0.1
+    # empty = a token is generated (api-token.txt in the log folder) and the API listens on 127.0.0.1 only;
+    # set = this token, and the API is reachable in the LAN
+    "api_token": "",
     # Home Assistant
     "ha_url": "",
     "ha_token": "",
@@ -148,13 +153,19 @@ def parse_access(value) -> frozenset:
 
 
 def _callers(items) -> list:
+    """The entries of callers. One needs a number, or for Brain Assist a Home Assistant user (ha_user: name or id)
+    or device (ha_device: name or id of the device or of its area). An entry without number is never dialed and
+    matches no call."""
     out = []
     for x in items if isinstance(items, list) else []:
-        number = str(x.get("number") or "").strip() if isinstance(x, dict) else ""
-        if not number:
-            WARNINGS.append(f"Caller without number ignored: {x}")
+        number, ha_user, ha_device = (str(x.get(k) or "").strip() if isinstance(x, dict) else ""
+                                      for k in ("number", "ha_user", "ha_device"))
+        if not (number or ha_user or ha_device):
+            WARNINGS.append(f"Caller without number, ha_user or ha_device ignored: {x}")
             continue
         out.append({"number": number,
+                    "ha_user": ha_user,
+                    "ha_device": ha_device,
                     "name": str(x.get("name") or "").strip(),
                     "access": parse_access(x.get("access")),
                     "instructions": str(x.get("instructions") or "").strip(),
@@ -197,6 +208,40 @@ def log_level(cfg) -> int:
         WARNINGS.append(f"Unknown log_level {cfg.log_level!r}: info is used (allowed: {', '.join(LOG_LEVELS)})")
         name = "info"
     return LOG_LEVELS[name]
+
+
+TOKEN_FILE = "api-token.txt"
+
+
+def api_token(cfg) -> tuple[str, bool]:
+    """The token every request to the HTTP API needs, and whether it was generated.
+    api_token from the configuration if set; otherwise one generated once and kept in api-token.txt in the log
+    folder (the add-on's config folder), so it survives a restart and can be copied from there."""
+    token = str(cfg.api_token or "").strip()
+    if token:
+        return token, False
+    path = Path(cfg.log_dir) / TOKEN_FILE
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if not token:
+        token = secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # created for the owner only (no effect on Windows); never world-readable, not even for a moment
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+    return token, True
+
+
+def version() -> str:
+    """The BrainCall version: the add-on version in braincall/config.yaml (releases are tagged with it)."""
+    try:
+        text = (ROOT / "braincall" / "config.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^version: *"?([^"\s]+)"?\s*$', text, re.M)
+    return m.group(1) if m else ""
 
 
 def _strip_jsonc(text: str) -> str:
