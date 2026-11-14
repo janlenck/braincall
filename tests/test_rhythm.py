@@ -37,6 +37,7 @@ class FakeHA:
         self.lists = {e: [] for e in lists}
         self.running = True
         self.fail = set()          # lists that cannot be read
+        self.empty = set()         # lists that answer without items although the entity counts open ones
         self.flow_fail = None
         self.entries = {}
         self.flows, self.renamed, self.events = [], [], []
@@ -56,6 +57,8 @@ class FakeHA:
     def todo_raw(self, entity_id):
         if entity_id in self.fail:
             raise OSError("connection refused")
+        if entity_id in self.empty:
+            return []
         return [dict(i) for i in self.lists[entity_id]]
 
     def find(self, entity_id, ref):
@@ -589,3 +592,103 @@ def test_an_added_item_deleted_before_the_next_poll_does_not_hide_a_later_one(s,
     ha.lists[SHOP].append({"summary": "Milch", "uid": "late", "status": "needs_action"})
     run(s, clock, 1)
     assert history(s, "added")[-1]["uid"] == "late"
+
+
+# ---------------------------------------------------------------- second review of #71
+def test_a_fill_that_failed_is_done_later(bare, clock):
+    s, ha = bare
+    for days_ago in (14, 7):
+        s.history.add({"time": (clock.t - timedelta(days=days_ago)).isoformat(), "list": SHOP,
+                       "event": "bought", "item": "Milch", "key": "milch"})
+    ha.fail = {RHYTHM}               # created, but not readable right after
+    s.poll()
+    assert RHYTHM in ha.lists and ha.summaries(RHYTHM) == [] and s.rhythm.unfilled
+    ha.fail = set()
+    run(s, clock, 1)
+    assert ha.summaries(RHYTHM) == ["Milch (7 days)"] and not s.rhythm.unfilled
+    run(s, clock, 3)
+    assert ha.summaries(RHYTHM) == ["Milch (7 days)"]
+
+
+@pytest.mark.parametrize("problem", ["error", "empty"])
+def test_a_purchase_update_that_failed_is_done_later_without_duplicates(s, ha, clock, problem):
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    if problem == "error":
+        ha.fail = {RHYTHM}
+    else:
+        ha.empty = {RHYTHM}          # an answer that would make the entry look missing
+    buy(s, ha, clock, "Milch", days_later=7)
+    assert s.rhythm.pending == {"milch": "Milch"}
+    ha.fail, ha.empty = set(), set()
+    run(s, clock, 1)
+    assert ha.summaries(RHYTHM) == ["Milch (7 days)"] and s.rhythm.pending == {}
+    assert ha.entry("Milch")["description"].endswith("3 purchases")
+    assert ha.entry("Milch")["due"] == (clock.t.date() + timedelta(days=7)).isoformat()
+
+
+def test_a_purchase_leaves_an_unreadable_entry_alone(s, ha, clock):
+    ha.lists[RHYTHM].append({"summary": "Milch (10 Tg)", "uid": "m", "status": "completed"})
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    assert ha.lists[RHYTHM] == [{"summary": "Milch (10 Tg)", "uid": "m", "status": "completed"}]
+
+
+def test_the_users_interval_stays_when_the_learned_one_catches_up(s, ha, clock):
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    ha.entry("Milch")["summary"] = "Milch (10 days)"
+    buy(s, ha, clock, "Milch", days_later=13)        # learned: median of 7 and 13 = 10, like the user's
+    assert ha.entry("Milch")["description"].startswith("staple · learned: 10 days · set by hand")
+    buy(s, ha, clock, "Milch", days_later=7)         # learned 7 again
+    assert ha.entry("Milch")["summary"] == "Milch (10 days)"
+    ha.entry("Milch")["summary"] = "Milch"           # given back to BrainCall
+    run(s, clock, 6)
+    assert ha.entry("Milch")["summary"] == "Milch (7 days)" and "set by hand" not in ha.entry("Milch")["description"]
+    buy(s, ha, clock, "Milch", days_later=9)
+    assert ha.entry("Milch")["summary"] == "Milch (8 days)"   # follows what is learned again
+
+
+def test_german_and_asked_for_intervals_are_the_users(s, ha, clock):
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    ha.entry("Milch")["summary"] = "Milch (1 Woche)"  # the same value as learned
+    run(s, clock, 6)
+    assert "set by hand" in ha.entry("Milch")["description"]
+    buy(s, ha, clock, "Butter")
+    buy(s, ha, clock, "Butter", days_later=10)
+    s.rhythm.edit("interval", "Butter", interval="10")
+    assert "set by hand" in ha.entry("Butter")["description"]
+
+
+def test_an_untrusted_shopping_list_answer_adds_nothing(s, ha, clock):
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    ha.lists[SHOP].append({"summary": "Milch", "uid": "m", "status": "needs_action"})
+    clock.t += timedelta(days=8)
+    ha.empty = {SHOP}
+    s.rhythm.sync(clock.t)
+    assert ha.summaries(SHOP) == ["Milch"]
+
+
+def test_an_added_product_whose_line_cannot_be_written_is_not_added_twice(s, ha, clock, monkeypatch):
+    buy(s, ha, clock, "Milch")
+    buy(s, ha, clock, "Milch", days_later=7)
+    real = s.history.add
+
+    def broken(entry):
+        if entry.get("by") == "rhythm":
+            raise OSError("disk full")
+        real(entry)
+    monkeypatch.setattr(s.history, "add", broken)
+    clock.t += timedelta(days=8)
+    run(s, clock, 6)
+    assert ha.summaries(SHOP) == ["Milch"]
+    ha.lists[SHOP].clear()                            # "not needed right now"
+    run(s, clock, 30)
+    assert ha.summaries(SHOP) == []
+    monkeypatch.setattr(s.history, "add", real)
+    run(s, clock, 1)
+    assert len([e for e in history(s, "added") if e.get("by") == "rhythm"]) == 1
+    run(s, clock, 30)
+    assert ha.summaries(SHOP) == []

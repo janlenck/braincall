@@ -502,7 +502,7 @@ def test_a_purchase_that_cannot_be_written_is_kept_and_announced_after_writing(s
     with caplog.at_level(logging.WARNING, "shopping"):
         run(s, clock, 65)
     assert ha.items == [] and events(s, "bought") == [] and ha.events == []
-    assert sum("writing a purchase failed" in r.getMessage() for r in caplog.records) == 1
+    assert sum("writing failed" in r.getMessage() for r in caplog.records) == 1
     monkeypatch.setattr(s.history, "add", real)
     run(s, clock, 1)
     bought, = events(s, "bought")

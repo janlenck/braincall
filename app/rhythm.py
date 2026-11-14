@@ -44,6 +44,7 @@ _NAME = re.compile(r"^(.*\S)\s*\(([^()]*)\)\s*$")
 _INTERVALISH = re.compile(r"\d|\b(?:" + "|".join(sorted(set(_UNIT_DAYS) | set(_WORD_DAYS))) + r")\b", re.I)
 _LEARNED = re.compile(r"\b(learned|estimated):\s*(\d+)\s*days?\b")
 _CLASS = re.compile(r"^\s*(staple|consumable|one_off)\b")
+MANUAL = "set by hand"     # in the description: the interval in the name is the user's, whatever is learned
 
 
 def parse_interval(text: str) -> tuple[int | None, bool]:
@@ -82,6 +83,8 @@ class Entry:
     due: date | None = None
     learned: int | None = None  # what BrainCall wrote into the description last time
     cls: str = ""
+    description: str = ""
+    manual: bool = False      # the interval is the user's (MANUAL in the description)
 
     @property
     def ref(self) -> str:
@@ -103,7 +106,15 @@ def parse_entry(item: dict) -> Entry:
     return Entry(uid=str(item.get("uid") or ""), summary=summary, product=product, key=shop.split(product)[0],
                  interval=interval, readable=readable, german=german, paused=item.get("status") == "completed",
                  due=_date(item.get("due")), learned=int(learned.group(2)) if learned else None,
-                 cls=cls.group(1) if cls else "")
+                 cls=cls.group(1) if cls else "", description=description, manual=MANUAL in description)
+
+
+def _manual(description: str, on: bool) -> str:
+    """The description with or without the mark that the interval is the user's."""
+    parts = [p for p in description.split(" · ") if p.strip() and p.strip() != MANUAL]
+    if on:
+        parts.insert(min(2, len(parts)), MANUAL)
+    return " · ".join(parts)
 
 
 @dataclass
@@ -122,10 +133,12 @@ class Info:
     def qualifies(self) -> bool:
         return self.cls in NEEDED and len(self.dates) >= NEEDED[self.cls] and bool(self.learned)
 
-    def describe(self) -> str:
+    def describe(self, manual: bool = False) -> str:
         out = [self.cls]
         if self.learned:
             out.append(f"{'estimated' if self.estimated else 'learned'}: {interval_text(self.learned)}")
+        if manual:
+            out.append(MANUAL)
         if self.last:
             out.append(f"last: {self.last.isoformat()}")
         out.append(f"{len(self.dates)} purchase{'' if len(self.dates) == 1 else 's'}")
@@ -173,6 +186,8 @@ class Rhythm:
         self.last_sync: datetime | None = None
         self.failing = False
         self.warned: set = set()   # entries with an interval that cannot be read, warned once each
+        self.unfilled = False      # created, but not filled from the history yet (tried again every poll)
+        self.pending: dict = {}    # key -> name: purchases whose entry could not be updated yet
         shopping.rhythm = self
 
     # ------------------------------------------------------------------ the list
@@ -184,14 +199,27 @@ class Rhythm:
             return
         if not shop.create_list(self.ha, self.entity_id, "rhythm list", DISPLAY_NAME):
             return
-        self.on = True
-        self.fill()
+        self.on, self.unfilled = True, True  # filled by retry(), until it worked
+
+    def retry(self):
+        """Every poll: fills a new list and updates the entries of purchases that failed before, until it works.
+        Entries made by an earlier attempt are found by their key and only updated."""
+        if not self.on or not (self.unfilled or self.pending):
+            return
+        try:
+            if self.unfilled:
+                self.fill()
+                self.unfilled = False
+            for key, name in list(self.pending.items()):
+                self._classify({key: name})
+                self._apply(key, name, self._read())
+                del self.pending[key]
+            self._ok()
+        except Exception as e:  # noqa: BLE001
+            self._failed(e)
 
     def _read(self) -> list[Entry]:
-        state = self.ha.entity_state(self.entity_id)
-        if state in ("unavailable", "unknown", "None", ""):
-            raise ValueError(f"the rhythm list is {state or 'empty'}")
-        return [parse_entry(i) for i in self.ha.todo_raw(self.entity_id)]
+        return [parse_entry(i) for i in shop.read_list(self.ha, self.entity_id)]
 
     def _update(self, entry: Entry, **data):
         self.ha.todo_call("update_item", self.entity_id, item=entry.ref, **data)
@@ -264,8 +292,10 @@ class Rhythm:
         try:
             self._classify({key: shop.parts(name)[0]})
             self._apply(key, shop.parts(name)[0], self._read())
+            self.pending.pop(key, None)
             self._ok()
         except Exception as e:  # noqa: BLE001
+            self.pending[key] = shop.parts(name)[0]  # tried again with every poll
             self._failed(e)
 
     def fill(self):
@@ -284,6 +314,8 @@ class Rhythm:
     def _apply(self, key: str, name: str, entries: list[Entry]):
         info = self.info(key)
         entry = next((e for e in entries if e.key == key), None)
+        if entry is not None and not entry.readable:
+            return  # an interval that cannot be read: left alone, sync() warns once
         if entry is None:
             if not info.qualifies:
                 return
@@ -295,12 +327,12 @@ class Rhythm:
                                        "event": "listed", "item": summary, "key": key})
             log.debug("Rhythm list: %s added", summary)
             return
-        data = {"description": info.describe()}
+        user_set = entry.interval is not None and (entry.manual or entry.interval != entry.learned)
+        data = {"description": info.describe(manual=user_set)}
         if entry.interval == NEVER:  # stays as it is, only the description goes on
             return self._update(entry, **data)
         if entry.paused:
             data["status"] = "needs_action"
-        user_set = entry.interval is not None and entry.interval != entry.learned
         days = entry.interval if user_set else (info.learned or entry.interval)
         if days:
             if not user_set and (days != entry.interval or entry.german):
@@ -333,9 +365,13 @@ class Rhythm:
             data = {}
             if e.german and e.interval is not None:
                 data["rename"] = f"{e.product} ({interval_text(e.interval)})"
+                if e.description and not e.manual:  # typed by the user: theirs from now on
+                    data["description"] = _manual(e.description, True)
             elif e.interval is None and e.learned:
                 e.interval = e.learned
                 data["rename"] = f"{e.product} ({interval_text(e.learned)})"
+                if e.manual:  # the user gave the interval back to BrainCall
+                    data["description"] = _manual(e.description, False)
             if e.interval and e.due is None:
                 e.due = today + timedelta(days=e.interval)
                 data["due_date"] = e.due.isoformat()
@@ -351,12 +387,12 @@ class Rhythm:
         if not due:
             return
         try:
-            on_list = {shop.split(i.get("summary"))[0] for i in self.ha.todo_raw(self.shopping.entity_id)}
+            on_list = {shop.split(i.get("summary"))[0] for i in shop.read_list(self.ha, self.shopping.entity_id)}
         except Exception as e:  # noqa: BLE001
             log.log(shop.TRACE, "Rhythm list: shopping list not readable, nothing added: %s", e)
             return
-        done = {(e["key"], e.get("due")) for e in self.shopping.history.entries()
-                if e["event"] == "added" and e.get("by") == "rhythm"}
+        written = self.shopping.history.entries() + [entry for entry, _ in self.shopping.pending]
+        done = {(e["key"], e.get("due")) for e in written if e["event"] == "added" and e.get("by") == "rhythm"}
         for e in due:
             if e.key in on_list or (e.key, e.due.isoformat()) in done:
                 continue
@@ -423,6 +459,8 @@ class Rhythm:
             if value is None:
                 return "Error: interval must be a number of days or never."
             data = {"rename": f"{e.product} ({interval_text(value)})"}
+            if e.description:  # asked for by the caller: the user's interval from now on
+                data["description"] = _manual(e.description, True)
             last = self.info(e.key).last
             if value != NEVER and last:
                 data["due_date"] = (last + timedelta(days=value)).isoformat()

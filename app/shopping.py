@@ -108,6 +108,18 @@ class History:
         return out
 
 
+def read_list(ha, entity_id: str) -> list:
+    """The items of a to-do list, only from an answer that can be trusted: raises if the list is unavailable or
+    the answer has no items while the entity still counts open ones (a broken integration, not an empty list)."""
+    state = ha.entity_state(entity_id)
+    if state in ("unavailable", "unknown", "None", ""):
+        raise ValueError(f"{entity_id} is {state or 'empty'}")
+    raw = ha.todo_raw(entity_id)
+    if not raw and state.isdigit() and int(state) > 0:
+        raise ValueError(f"no items of {entity_id} in the answer, but {state} open")
+    return raw
+
+
 def list_title(entity_id: str) -> str:
     """The name a Local To-do list needs to get this entity id: todo.shopping_rhythm -> "Shopping rhythm"."""
     return entity_id.split(".", 1)[-1].replace("_", " ").capitalize()
@@ -176,7 +188,7 @@ class Shopping:
         self.lists_checked = False  # missing lists were looked for (and created) after the start
         self.expected: list[str] = []  # names just added by the rhythm list: not logged again as added
         self.view: dict = {}        # {key: "open" | "checked"} as last seen, for answers without waiting for a poll
-        self.pending: list = []     # purchases whose history line could not be written yet
+        self.pending: list = []     # history lines that could not be written yet: (entry, item name)
         self.write_failing = False
 
     def describe(self) -> str:
@@ -207,18 +219,15 @@ class Shopping:
             try:
                 if not self.lists_checked and not self._ensure_lists():
                     return
-                state = self.ha.entity_state(self.entity_id)
-                if state in ("unavailable", "unknown", "None", ""):
-                    raise ValueError(f"the list is {state or 'empty'}")
-                raw = self.ha.todo_raw(self.entity_id)
-                if not raw and state.isdigit() and int(state) > 0:
-                    raise ValueError(f"no items in the answer, but {state} open")
+                raw = read_list(self.ha, self.entity_id)
             except Exception as e:  # noqa: BLE001  an answer that cannot be trusted changes nothing
                 self._failed(e)
                 return
             if self.failing:
                 self.failing = False
                 log.warning("Shopping list %s can be read again", self.entity_id)
+            if self.rhythm is not None:
+                self.rhythm.retry()  # a new rhythm list is filled, failed updates are done again
             seen = self._read(raw)
             log.log(TRACE, "Shopping list %s: %d items, %d checked", self.entity_id, len(seen),
                     sum(1 for i in seen.values() if i.checked))
@@ -348,12 +357,14 @@ class Shopping:
             except OSError as e:
                 if not self.write_failing:
                     self.write_failing = True
-                    log.warning("Shopping history: writing a purchase failed, tried again in a minute: %s", e)
+                    log.warning("Shopping history: writing failed, tried again in a minute: %s", e)
                 return
             self.pending.pop(0)
             if self.write_failing:
                 self.write_failing = False
-                log.warning("Shopping history: purchases written again")
+                log.warning("Shopping history: written again")
+            if entry["event"] != "bought":
+                continue
             self.ha.fire_event(BOUGHT_EVENT, {"list": self.entity_id, "item": name, "key": entry["key"],
                                               "time": entry["time"]})
             if self.rhythm is not None:
@@ -363,8 +374,9 @@ class Shopping:
         """Puts a product that is due on the shopping list (rhythm list, #70); the history says so once."""
         self.ha.todo_call("add_item", self.entity_id, item=name)
         self.expected.append(fold(name))
-        self.history.add({"time": _iso(self.now()), "list": self.entity_id, "event": "added", "item": name,
-                          "key": split(name)[0], "by": "rhythm", "due": due.isoformat()})
+        self.pending.append(({"time": _iso(self.now()), "list": self.entity_id, "event": "added", "item": name,
+                              "key": split(name)[0], "by": "rhythm", "due": due.isoformat()}, name))
+        self._flush()  # if it cannot be written, the line waits in pending, which also counts as added
         log.debug("Shopping list: %s added, it was due on %s", name, due.isoformat())
 
     def _entry(self, event: str, item: Item, when: datetime) -> dict:
