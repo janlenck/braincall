@@ -603,6 +603,16 @@ def test_tasks_api_plans_free_text_with_claude(server, planned, main, monkeypatc
     assert task["goal"] == "Reserve a table for 4" and task["may_share"] == ["Name Jan Lenck"] and task["retries"] == 1
 
 
+def test_tasks_api_says_why_planning_failed(server, planned, main, monkeypatch):
+    """#72: an answer without a usable plan is a 502 with the reason, not an empty plan."""
+    def refuse(text, number, name):
+        raise ValueError("no plan (refusal)")
+    monkeypatch.setattr(main.brain, "plan", refuse)
+    status, body = server("POST", "/tasks", {"number": "04542 1234", "task": "Reservier einen Tisch"})
+    assert status == 502 and body["error"] == "planning failed: no plan (refusal)"
+    assert planned.store.all() == []
+
+
 def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch):
     task = planned.add(number="0888777", name="Mark")  # not in callers, and no "*" entry
     monkeypatch.setitem(main.cfg, "callers", [c for c in main.cfg.callers if c["number"] != "*"])

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.1
+
+- Fix: `POST /tasks` without `goal` answered `502 planning failed` with Claude Opus 5.5, Sonnet 5.5 and Fable 5.x
+  as *Claude model* (#72): the plan from the task text was asked for with a forced tool call, which these models
+  refuse. It now comes as structured output (JSON schema), which works with every model. An answer without a
+  usable plan (refused, cut off, no valid JSON) is a `502` with the reason instead of an empty plan that was then
+  refused for lack of a goal. Planned calls made by phone are unchanged
+
 ## 1.10.0
 
 - New: automatic shopping list (#69), off by default: switch on *Automatic shopping list* (`shopping_auto`) and

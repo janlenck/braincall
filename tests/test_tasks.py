@@ -627,13 +627,58 @@ def test_follow_up_without_a_result_is_partial(brain):
     assert "task_result" in fake.requests[1]["messages"][-1]["content"]  # reminded once
 
 
-def test_plan_from_free_text_uses_the_forced_tool(brain):
-    brain.client = SimpleNamespace(messages=Fake(message(plan_call(number="0999", task="x", goal="Reserve"))))
+def test_plan_from_free_text_uses_structured_output(brain):
+    """#72: no forced tool call (refused by some models), the plan comes as JSON; "" / [] / null are not given."""
+    answer = {"number": "0999", "name": "Seeblick", "task": "x", "goal": "Reserve", "questions": [],
+              "may_share": ["Name Jan Lenck"], "may_accept": "", "calendar_from": "", "calendar_to": "",
+              "book_title": "", "follow_up": [{"step": "Termin eintragen", "tool": "ha_create_event"}],
+              "not_before": "", "not_after": "", "retries": None, "leave_message": True, "call_back": False,
+              "language": ""}
+    brain.client = SimpleNamespace(messages=Fake(message(json.dumps(answer))))
     out = brain.plan("Reservier einen Tisch", "04542 1234", "Seeblick")
-    assert out["goal"] == "Reserve"
+    assert out == {"number": "0999", "name": "Seeblick", "task": "x", "goal": "Reserve",
+                   "may_share": ["Name Jan Lenck"], "follow_up": [{"step": "Termin eintragen",
+                                                                   "tool": "ha_create_event"}],
+                   "leave_message": True, "call_back": False}
     request = brain.client.messages.requests[0]
-    assert request["tool_choice"] == {"type": "tool", "name": "plan_call"}
+    assert "tool_choice" not in request and "tools" not in request
+    assert request["output_config"]["format"] == {"type": "json_schema", "schema": tasks.PLAN_SCHEMA}
     assert "04542 1234" in request["messages"][0]["content"]
+    task, error = tasks.build(cfg(), {**out, "number": "04542 1234", "task": "Reservier einen Tisch"},
+                              {"number": "", "name": "Jan"}, datetime.now().astimezone())
+    assert error == "" and task["goal"] == "Reserve" and task["follow_up"][0]["tool"] == "ha_create_event"
+
+
+def test_plan_schema_fits_structured_outputs():
+    """Every object closed and fully required; the phone-only fields are left out."""
+    def objects(schema):
+        if isinstance(schema, dict):
+            if schema.get("type") == "object":
+                yield schema
+            for v in schema.values():
+                yield from objects(v)
+        elif isinstance(schema, list):
+            for v in schema:
+                yield from objects(v)
+    found = list(objects(tasks.PLAN_SCHEMA))
+    assert len(found) == 2
+    for o in found:
+        assert o["additionalProperties"] is False and set(o["required"]) == set(o["properties"])
+    props = tasks.PLAN_SCHEMA["properties"]
+    assert "confirmed" not in props and "override_do_not_call" not in props
+    assert "confirmed" in tasks.TOOL_PLAN_CALL["input_schema"]["properties"]  # the phone tool is unchanged
+
+
+@pytest.mark.parametrize("answer, reason", [
+    (message("I can't help with that.", stop="refusal"), "refusal"),
+    (message('{"number": "0999", "ta', stop="max_tokens"), "max_tokens"),
+    (message("Gern, hier ist der Plan."), "no valid JSON"),
+    (message("[]"), "not an object"),
+])
+def test_plan_without_a_usable_answer_raises(brain, answer, reason):
+    brain.client = SimpleNamespace(messages=Fake(answer))
+    with pytest.raises(ValueError, match=reason):
+        brain.plan("Reservier einen Tisch", "04542 1234")
 
 
 # ---------------------------------------------------------------- the call itself
