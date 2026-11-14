@@ -381,7 +381,7 @@ def test_shopping_edit_can_be_confirmed(brain, ha):
     msgs.append({"role": "user", "content": "Ja, bitte."})
     run(brain, message(tool("shopping_edit", action="add", item="Grünkohl", confirmed=True), stop="tool_use"),
         message("Steht drauf."), messages=msgs, counters=counters)
-    assert ha.calls == [("shopping_edit", ("add", "Grünkohl", ""), {})]
+    assert ha.calls == [("shopping_edit", ("add", "Grünkohl"), {})]
 
 
 def test_web_results_count_when_the_stream_breaks_off(brain):

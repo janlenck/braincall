@@ -39,9 +39,30 @@ configuration:
   notify_services:
     name: Benachrichtigung nach Anrufen
     description: 'Notify-Entitäten oder -Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.handy, notify.mobile_app_handy oder ein E-Mail-Notifier.'
-  shopping_lists:
-    name: Einkaufslisten
-    description: Nur diese To-do-Listen dürfen Anrufer mit access „shopping“ benutzen.
+  shopping_list:
+    name: Einkaufsliste
+    description: >-
+      Die To-do-Liste (Entity-ID), die die Einkaufsliste ist: Anrufer mit access „shopping“ benutzen nur diese, und
+      die automatische Einkaufsliste beobachtet sie.
+  shopping_auto:
+    name: Automatische Einkaufsliste
+    description: >-
+      Beobachtet die Einkaufsliste. Ein Eintrag, der so lange abgehakt bleibt wie unten eingestellt, gilt als
+      gekauft: Er wird von der Liste entfernt und mit Datum in shopping-history.jsonl im Add-on-Ordner gespeichert.
+      Versehentlich abgehakt und innerhalb dieser Zeit wieder aufgemacht: Es wird nichts gespeichert. Gelöschte
+      Einträge sind nie Käufe. Standardmäßig aus; nach dem Einschalten das Add-on neu starten. Dann werden
+      Einkaufsliste und Rhythmus-Liste in Home Assistant angelegt, falls sie fehlen, und fällige Produkte kommen
+      von selbst auf die Einkaufsliste.
+  shopping_bought_after_minutes:
+    name: Gekauft nach (Minuten)
+    description: Wie lange ein Eintrag abgehakt bleiben muss, um als gekauft zu gelten. Standard 60.
+  shopping_rhythm_list:
+    name: Rhythmus-Liste
+    description: >-
+      To-do-Liste (Entity-ID) der Produkte, die immer wieder gekauft werden, z. B. „Milch (7 days)“. BrainCall
+      pflegt sie und setzt ein Produkt auf die Einkaufsliste, wenn es fällig ist. Intervall im Namen ändern,
+      Fälligkeit verschieben, abhaken = pausieren, (never) = bleibt stehen, wird aber nie gesetzt. Leer = keine
+      Rhythmus-Liste.
   country_code:
     name: Ländervorwahl
     description: +49 / 0049 gelten als dieselbe Nummer wie eine führende 0.
@@ -54,6 +75,11 @@ configuration:
       Die Zusammenfassung jedes Anrufs pro Nummer merken und die letzten drei beim nächsten Anruf mit dieser
       Nummer der Assistentin mitgeben. none: kein Gedächtnis (Standard). Eine Zahl an Tagen, z. B. 30: nur
       Anrufe der letzten 30 Tage. forever: ohne Altersgrenze. Gespeichert in calls.jsonl im Add-on-Ordner.
+  log_level:
+    name: Log-Level
+    description: >-
+      Wie viel das Log zeigt. info (Standard): Anrufe und Änderungen. debug: auch Details, z. B. jede Änderung auf
+      der Einkaufsliste. trace: auch jeder Blick auf die Einkaufsliste (einmal pro Minute). warning: nur Probleme.
   anthropic_api_key:
     name: Anthropic-API-Key
     description: Für Claude.

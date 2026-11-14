@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -682,3 +683,38 @@ def test_warns_once_if_the_token_is_no_admin(main, monkeypatch, caplog, admin, w
     with caplog.at_level("WARNING"):
         main.check_ha_admin()
     assert any("not belong to an administrator" in r.message for r in caplog.records) is warned
+
+
+# ---------------------------------------------------------------- shopping history
+def test_shopping_history_api(server, main, monkeypatch, tmp_path):
+    import shopping
+    assert server("GET", "/shopping/history")[0] == 404   # automatic shopping list off (no Home Assistant)
+    watcher = shopping.Shopping(main.cfg, main.ha, tmp_path / "shopping-history.jsonl")
+    for days_ago, name in ((40, "Milch"), (3, "2 Milch"), (2, "Brot")):
+        t = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        watcher.history.add({"time": t.isoformat(timespec="seconds"), "list": "todo.shopping_list",
+                             "event": "bought", "item": name, "key": shopping.split(name)[0]})
+    monkeypatch.setattr(main, "shopping_list", watcher)
+    assert server("GET", "/shopping/history", token=None)[0] == 401
+    status, body = server("GET", "/shopping/history")
+    assert status == 200 and body["list"] == "todo.shopping_list" and len(body["events"]) == 3
+    assert [e["item"] for e in server("GET", "/shopping/history?item=milch&days=30")[1]["events"]] == ["2 Milch"]
+    for days in ("many", "nan", "inf", "-inf", "1e400", "-5", "0"):
+        assert server("GET", f"/shopping/history?days={days}")[0] == 400, days
+
+
+def test_shopping_forecast_api(server, main, monkeypatch, tmp_path):
+    import shopping
+    assert server("GET", "/shopping/forecast")[0] == 404
+    watcher = shopping.Shopping(main.cfg, main.ha, tmp_path / "shopping-history.jsonl")
+    monkeypatch.setattr(main, "shopping_list", watcher)
+    assert server("GET", "/shopping/forecast")[0] == 404          # no rhythm list
+    products = [{"product": "Milch", "class": "staple", "interval": "7 days", "status": "probably_out"}]
+    watcher.rhythm = SimpleNamespace(entity_id="todo.shopping_rhythm", forecast=lambda: products)
+    assert server("GET", "/shopping/forecast", token=None)[0] == 401
+    assert server("GET", "/shopping/forecast") == (200, {"list": "todo.shopping_rhythm", "products": products})
+
+    def broken():
+        raise OSError("down")
+    watcher.rhythm = SimpleNamespace(entity_id="todo.shopping_rhythm", forecast=broken)
+    assert server("GET", "/shopping/forecast")[0] == 503

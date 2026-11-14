@@ -115,9 +115,9 @@ def tool_key(name: str, data: dict, cfg) -> str:
         return "calendar"
     if name == "ha_create_event":
         return "write" if data.get("confirmed") else "calendar"
-    if name == "shopping_list":
+    if name in ("shopping_list", "shopping_history"):
         return "list"
-    if name == "shopping_edit":
+    if name in ("shopping_edit", "shopping_rhythm"):
         return "write"
     if name == "ha_control":
         entity = str(data.get("entity_id") or "")

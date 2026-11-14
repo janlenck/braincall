@@ -898,7 +898,10 @@ class CallSession:
                          "approval: repeat day and time once, and after a yes call ha_create_event with "
                          "confirmed=true. ")
         if "shopping" in self.access:
-            parts.append(f"{who} may hear and change the shopping list (shopping_list, shopping_edit). ")
+            parts.append(f"{who} may hear and change the shopping list (shopping_list, shopping_edit)"
+                         + (" and ask what was bought when (shopping_history)"
+                            if getattr(self.brain, "shopping", None) else "")
+                         + ". ")
         return "".join(parts) + ("" if "read" in self.access else quiet)
 
     def _greeting(self, outbound: bool, name: str) -> str:

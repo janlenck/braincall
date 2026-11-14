@@ -315,27 +315,46 @@ def test_notify_legacy_service(make_ha):
     assert h.http.posted("/services/notify/mobile_app_pixel") == [{"title": "Anruf", "message": "Text"}]
 
 
-# ---------------------------------------------------------------- shopping lists
-def test_shopping_reads_the_first_allowed_list(make_ha):
+# ---------------------------------------------------------------- shopping list
+def test_shopping_reads_the_list(make_ha):
     out = json.loads(make_ha().shopping())
     assert out["list"] == "todo.shopping_list"
     assert [i["item"] for i in out["items"]] == ["Milch", "Eier"]
 
 
-def test_shopping_other_lists_are_not_allowed(make_ha):
-    h = make_ha()
-    assert h.shopping("Baumarkt").startswith("Not allowed")
-    assert h.shopping_edit("add", "Schrauben", "todo.baumarkt").startswith("Not allowed")
-    assert h.http.posted("/services/todo/add_item") == []
-
-
-def test_shopping_list_by_friendly_name(make_ha):
-    h = make_ha(shopping_lists=["todo.shopping_list", "todo.baumarkt"])
-    assert json.loads(h.shopping("baumarkt"))["list"] == "todo.baumarkt"
+def test_shopping_uses_only_the_configured_list(make_ha):
+    h = make_ha(shopping_list="todo.baumarkt")
+    h.http.routes[("POST", "/services/todo/get_items")] = lambda url, kw: FakeResponse({"service_response": {
+        kw["json"]["entity_id"]: {"items": [{"summary": "Dübel", "status": "needs_action"}]}}})
+    assert json.loads(h.shopping()) == {"list": "todo.baumarkt", "items": [{"item": "Dübel", "status": "open"}]}
+    h.shopping_edit("add", "Schrauben")
+    assert h.http.posted("/services/todo/add_item") == [{"entity_id": "todo.baumarkt", "item": "Schrauben"}]
 
 
 def test_shopping_no_list_configured(make_ha):
-    assert make_ha(shopping_lists=["todo.gone"]).shopping().startswith("No shopping list available")
+    h = make_ha(shopping_list="todo.gone")
+    assert h.shopping().startswith("No shopping list available")
+    assert h.shopping_edit("add", "Milch").startswith("No shopping list available")
+    assert h.http.posted("/services/todo/add_item") == []
+
+
+def test_todo_raw_keeps_uid_and_refuses_unreadable_answers(make_ha):
+    h = make_ha()
+    h.http.routes[("POST", "/services/todo/get_items")] = FakeResponse({"service_response": {
+        "todo.shopping_list": {"items": [{"summary": "Milch", "uid": "u1", "status": "needs_action"}]}}})
+    assert h.todo_raw("todo.shopping_list") == [{"summary": "Milch", "uid": "u1", "status": "needs_action"}]
+    h.http.routes[("POST", "/services/todo/get_items")] = FakeResponse({"service_response": {}})
+    with pytest.raises(ValueError):
+        h.todo_raw("todo.shopping_list")
+
+
+def test_remove_todo(make_ha):
+    h = make_ha()
+    h.remove_todo("todo.shopping_list", "u1")
+    assert h.http.posted("/services/todo/remove_item") == [{"entity_id": "todo.shopping_list", "item": "u1"}]
+    h.http.routes[("POST", "/services/todo/remove_item")] = FakeResponse({"message": "no"}, 400)
+    with pytest.raises(ValueError):
+        h.remove_todo("todo.shopping_list", "u1")
 
 
 @pytest.mark.parametrize("action, service, extra", [
@@ -566,3 +585,46 @@ def test_restricted_booking_is_checked_before_asking(make_ha):
 def test_admin_booking_has_no_limits(make_ha):
     h = make_ha(default_calendars=["calendar.family"], calendar_max_days_ahead=90)
     assert h.create_event("", "x", in_days(-1), in_days(400), confirmed=True, booked=5) == "Added to Familie: x."
+
+
+# ---------------------------------------------------------------- lists for the rhythm list (#70)
+def test_entity_exists(make_ha):
+    h = make_ha()
+    assert h.entity_exists("todo.shopping_list") and not h.entity_exists("sensor.missing")
+    h.http.routes[("GET", "/states/todo.x")] = FakeResponse({}, 500)
+    with pytest.raises(Exception):  # noqa: B017  an error is not "missing"
+        h.entity_exists("todo.x")
+
+
+@pytest.mark.parametrize("config, running", [({"state": "RUNNING"}, True), ({"state": "STARTING"}, False),
+                                             ({}, True)])
+def test_core_running(make_ha, config, running):
+    h = make_ha()
+    h.http.routes[("GET", "/config")] = FakeResponse(config)
+    assert h.core_running() is running
+
+
+def test_config_flow_answers_the_form(make_ha):
+    h = make_ha()
+    h.http.routes[("POST", "/config/config_entries/flow")] = FakeResponse({"type": "form", "flow_id": "f1"})
+    h.http.routes[("POST", "/config/config_entries/flow/f1")] = FakeResponse({"type": "create_entry"})
+    assert h.config_flow("local_todo", {"todo_list_name": "Shopping rhythm"})["type"] == "create_entry"
+    assert h.http.posted("/config/config_entries/flow") == [{"handler": "local_todo"},
+                                                             {"todo_list_name": "Shopping rhythm"}]
+
+
+@pytest.mark.parametrize("answer", [FakeResponse({"type": "abort", "reason": "single_instance_allowed"}),
+                                    FakeResponse({"message": "Unauthorized"}, 401)])
+def test_config_flow_failures_raise(make_ha, answer):
+    h = make_ha()
+    h.http.routes[("POST", "/config/config_entries/flow")] = answer
+    with pytest.raises(ValueError):
+        h.config_flow("shopping_list", {})
+
+
+def test_todo_call_drops_unset_fields(make_ha):
+    h = make_ha()
+    h.todo_call("update_item", "todo.shopping_rhythm", item="u1", rename="Milch (7 days)", status=None,
+                due_date="2026-11-20")
+    assert h.http.posted("/services/todo/update_item") == [
+        {"entity_id": "todo.shopping_rhythm", "item": "u1", "rename": "Milch (7 days)", "due_date": "2026-11-20"}]

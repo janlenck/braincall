@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import logging.handlers
+import math
 import os
 import signal
 import socket
@@ -12,6 +13,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -35,6 +37,8 @@ import config  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
 import phrases  # noqa: E402
+import rhythm  # noqa: E402
+import shopping  # noqa: E402
 import tasks  # noqa: E402
 from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
@@ -51,7 +55,12 @@ _con.setFormatter(console.ColorFormatter())
 _file = logging.handlers.RotatingFileHandler(_LOGDIR / "braincall.log", maxBytes=2_000_000,
                                              backupCount=5, encoding="utf-8")
 _file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_con, _file])
+LOG_LEVEL = config.log_level(cfg)
+logging.basicConfig(level=LOG_LEVEL, handlers=[_con, _file])
+# other libraries stay at info at most: their debug output would bury BrainCall's own
+for _name in ("urllib3", "requests", "httpx", "httpcore", "anthropic", "openai", "websocket", "hpack",
+              "charset_normalizer", "asyncio"):
+    logging.getLogger(_name).setLevel(max(LOG_LEVEL, logging.INFO))
 log = logging.getLogger("main")
 pyVoIP.DEBUG = False
 
@@ -73,6 +82,11 @@ phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
 task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks else None
 brain.tasks = task_store
+shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
+                 if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
+if shopping_list is not None and cfg.shopping_rhythm_list:
+    rhythm.Rhythm(cfg, ha, shopping_list, _LOGDIR / "shopping-products.json", classify=brain.classify_products)
+brain.shopping = shopping_list
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
@@ -389,6 +403,17 @@ def task_loop():
             log.exception("Planned calls: error")
 
 
+def shopping_loop():
+    """Looks at the shopping list once a minute (shopping.py), the first time right at the start."""
+    while True:
+        try:
+            shopping_list.poll()
+        except Exception:  # noqa: BLE001
+            log.exception("Shopping list: error")
+        if stopping.wait(shopping.POLL_SECONDS):
+            return
+
+
 def on_incoming(call):
     try:
         number = call.request.headers["From"]["number"] or ""
@@ -554,10 +579,34 @@ class Handler(BaseHTTPRequestHandler):
         """The id in /tasks/<id>; "" for other paths."""
         return self.path[len("/tasks/"):] if self.path.startswith("/tasks/") and task_store is not None else ""
 
+    def _shopping_history(self):
+        """GET /shopping/history?item=Milch&days=30&event=bought: events of the shopping history."""
+        query = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        try:
+            days = float(query["days"]) if query.get("days") else None
+        except ValueError:
+            days = -1.0
+        if days is not None and not (math.isfinite(days) and 0 < days <= 36500):
+            return self._send(400, {"error": "days must be a number from 0 to 36500"})
+        self._send(200, {"list": shopping_list.entity_id,
+                         "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
+
     def do_GET(self):  # noqa: N802
         if self.path == "/health":
             return self._send(200, {"sip": sip_status().value, "busy": busy.locked(),
                                     "time": datetime.now().isoformat(timespec="seconds")})
+        if urlsplit(self.path).path == "/shopping/history" and shopping_list is not None:
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            return self._shopping_history()
+        if self.path == "/shopping/forecast" and shopping_list is not None and shopping_list.rhythm is not None:
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                products = shopping_list.rhythm.forecast()
+            except Exception as e:  # noqa: BLE001
+                return self._send(503, {"error": f"rhythm list not readable: {e}"})
+            return self._send(200, {"list": shopping_list.rhythm.entity_id, "products": products})
         if task_store is None or not (self.path == "/tasks" or self._task_id()):
             return self._send(404, {"error": "not found"})
         if not self._authorized():
@@ -737,6 +786,11 @@ def main():
         threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
         if task_store is not None:
             threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
+        if shopping_list is not None:
+            log.info("Shopping list: %s", shopping_list.describe())
+            threading.Thread(target=shopping_loop, name="shopping list", daemon=True).start()
+        elif not cfg.shopping_auto:
+            log.info("Shopping list: automatic shopping list off (shopping_auto)")
 
         bind = "0.0.0.0" if cfg.api_token else "127.0.0.1"
         server = ThreadingHTTPServer((bind, int(cfg.http_port)), Handler)

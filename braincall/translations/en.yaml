@@ -39,9 +39,28 @@ configuration:
   notify_services:
     name: Notify after calls
     description: 'Notify entities or services that get a summary after each incoming call, e.g. notify.phone, notify.mobile_app_phone or an e-mail notifier.'
-  shopping_lists:
-    name: Shopping lists
-    description: The only to-do lists callers with access "shopping" may use.
+  shopping_list:
+    name: Shopping list
+    description: >-
+      The to-do list (entity id) that is the shopping list: callers with access "shopping" use only this one, and
+      the automatic shopping list watches it.
+  shopping_auto:
+    name: Automatic shopping list
+    description: >-
+      Watches the shopping list. An item that stays checked off for the time below counts as bought: it is removed
+      from the list and stored with its date in shopping-history.jsonl in the add-on folder. Checked by mistake and
+      unchecked again within that time: nothing is stored. Deleted items are never purchases. Off by default;
+      restart the add-on after switching it on. With it, the shopping list and the rhythm list are created in
+      Home Assistant if they are missing, and products that are due are put on the shopping list on their own.
+  shopping_bought_after_minutes:
+    name: Bought after (minutes)
+    description: How long an item has to stay checked off to count as bought. Default 60.
+  shopping_rhythm_list:
+    name: Rhythm list
+    description: >-
+      To-do list (entity id) of the products bought again and again, e.g. "Milch (7 days)". BrainCall keeps it up
+      to date and puts a product on the shopping list when it is due. Edit the interval in the name, move the due
+      date, check an entry off to pause it, write (never) to keep it but never add it. Empty = no rhythm list.
   country_code:
     name: Country code
     description: +49 / 0049 count as the same number as a leading 0.
@@ -54,6 +73,11 @@ configuration:
       Remember the summary of each call per number and give the last three to the assistant in the next call
       with that number. none: no memory (default). A number of days, e.g. 30: only calls of the last 30 days.
       forever: no age limit. Stored in calls.jsonl in the add-on folder.
+  log_level:
+    name: Log level
+    description: >-
+      How much the log shows. info (default): calls and changes. debug: also details, e.g. every change seen on the
+      shopping list. trace: also every look at the shopping list (once a minute). warning: only problems.
   anthropic_api_key:
     name: Anthropic API key
     description: For Claude.
