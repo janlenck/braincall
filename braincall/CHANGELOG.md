@@ -1,21 +1,5 @@
 # Changelog
 
-## 1.11.0
-
-- New: rhythm list (#70), part of the automatic shopping list (`shopping_auto`, still off by default). A second
-  to-do list `todo.shopping_rhythm` (*Rhythm list*, `shopping_rhythm_list`) holds the products bought again and
-  again with their interval, `Milch (7 days)`, and the next purchase as due date
-  - Claude classifies each product once: staples (milk, butter, rolls) get an entry after 2 purchases, consumables
-    after 3, one-off things never. Interval = median of the gaps; English in the list whatever the language
-  - Products that are due are put on the shopping list, once per due date
-  - Repairable: change the interval in the name, move the due date, check an entry off to pause it, `(never)` to
-    keep it but never add it. A deleted or paused entry comes back with the next purchase (self-repair)
-  - Missing lists are created in Home Assistant when the add-on starts (shopping list and rhythm list) and a new
-    rhythm list is filled from the history
-  - `shopping_history` answers what is probably running out (`due`) and the estimated stock (`stock`);
-    `GET /shopping/forecast`; new tool `shopping_rhythm` (access `admin`): "Stell Pfeffer auf 60 Tage",
-    "Milch pausieren"
-
 ## 1.10.0
 
 - New: automatic shopping list (#69), off by default: switch on *Automatic shopping list* (`shopping_auto`) and
@@ -33,6 +17,19 @@
   is not set to something else; further lists are no longer used, the log says which
 - New: *Log level* (`log_level`): `warning`, `info` (default, as before), `debug` (also every change seen on the
   shopping list) or `trace` (also every look at it). Other libraries never log below `info`
+- New: rhythm list (#70), part of the automatic shopping list (`shopping_auto`). A second
+  to-do list `todo.shopping_rhythm` (*Rhythm list*, `shopping_rhythm_list`) holds the products bought again and
+  again with their interval, `Milch (7 days)`, and the next purchase as due date
+  - Claude classifies each product once: staples (milk, butter, rolls) get an entry after 2 purchases, consumables
+    after 3, one-off things never. Interval = median of the gaps; English in the list whatever the language
+  - Products that are due are put on the shopping list, once per due date
+  - Repairable: change the interval in the name, move the due date, check an entry off to pause it, `(never)` to
+    keep it but never add it. A deleted or paused entry comes back with the next purchase (self-repair)
+  - Missing lists are created in Home Assistant when the add-on starts (shopping list and rhythm list) and a new
+    rhythm list is filled from the history
+  - `shopping_history` answers what is probably running out (`due`) and the estimated stock (`stock`);
+    `GET /shopping/forecast`; new tool `shopping_rhythm` (access `admin`): "Stell Pfeffer auf 60 Tage",
+    "Milch pausieren"
 
 ## 1.9.6
 
