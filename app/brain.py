@@ -282,8 +282,8 @@ TOOL_BUSY = {
 }
 TOOL_SHOPPING = {
     "name": "shopping_list",
-    "description": "Returns the items of the shopping list. 'list' only if there are several lists.",
-    "input_schema": {"type": "object", "properties": {"list": {"type": "string"}}},
+    "description": "Returns the items of the shopping list.",
+    "input_schema": {"type": "object", "properties": {}},
 }
 TOOL_SHOPPING_EDIT = {
     "name": "shopping_edit",
@@ -294,11 +294,26 @@ TOOL_SHOPPING_EDIT = {
         "properties": {
             "action": {"type": "string", "enum": ["add", "check", "uncheck", "remove"]},
             "item": {"type": "string"},
-            "list": {"type": "string"},
             "confirmed": {"type": "boolean",
                           "description": "only true if the caller explicitly agreed when asked"},
         },
         "required": ["action", "item"],
+    },
+}
+TOOL_SHOPPING_HISTORY = {
+    "name": "shopping_history",
+    "description": "What was bought and when, from the history of the shopping list: an item counts as bought "
+                   "once it stayed checked off for a while, then it is removed from the list. mode item: one "
+                   "product (last bought, how often, the dates); mode recent: the purchases of the last days. "
+                   "Dates and counts are computed: use them as they are.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "mode": {"type": "string", "enum": ["item", "recent"]},
+            "item": {"type": "string", "description": "mode item: the product, e.g. Milch"},
+            "days": {"type": "integer", "description": "mode recent: how many days back (default 14)"},
+        },
+        "required": ["mode"],
     },
 }
 READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_HISTORY,
@@ -464,6 +479,7 @@ class Brain:
         self.tool_busy = {**TOOL_BUSY, "description": TOOL_BUSY["description"].replace("{owner}", owner)}
         self.web_budget = web_mod.Budget(cfg)
         self.tasks = None  # tasks.TaskStore while planned calls are on (set by main)
+        self.shopping = None  # shopping.Shopping while the automatic shopping list is on (set by main)
 
     def tools_for(self, access, web=None, messages=None, limits=None, grants=None) -> list:
         """The tools a caller gets: the code decides what is allowed, not the prompt.
@@ -471,6 +487,8 @@ class Brain:
         for the web limits of this turn (limits: precomputed web.turn_limits); grants: what the task of a
         planned call adds for the callee (tasks.build), limited again in _run_tool."""
         tools = self._ha_tools_for(access)
+        if self.shopping is not None and access & {"admin", "read", "shopping"}:
+            tools.append(TOOL_SHOPPING_HISTORY)
         have = {t["name"] for t in tools}
         if grants and self.ha.enabled:
             if not have & {"ha_busy_times", "ha_events"}:
@@ -578,9 +596,13 @@ class Brain:
                     counters["bookings"] = counters.get("bookings", 0) + 1
                 return out
             if block.name == "shopping_list":
-                return self.ha.shopping(i.get("list", ""))
+                return self.ha.shopping()
             if block.name == "shopping_edit":
-                return self.ha.shopping_edit(i.get("action", ""), i.get("item", ""), i.get("list", ""))
+                return self.ha.shopping_edit(i.get("action", ""), i.get("item", ""))
+            if block.name == "shopping_history":
+                if self.shopping is None:
+                    return "Not allowed in this call."
+                return self.shopping.answer(i.get("mode", ""), i.get("item") or "", i.get("days"))
             if block.name == "ha_control":
                 return self.ha.call_service(i.get("entity_id", ""), i.get("service", ""),
                                             i.get("data") or {}, bool(i.get("confirmed")))

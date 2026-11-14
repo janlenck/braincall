@@ -37,6 +37,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/timing.py` | timing log per turn and per call |
 | `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
 | `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
+| `app/shopping.py` | automatic shopping list: watches the list, removes what stayed checked, history (`shopping-history.jsonl`), `shopping_history` |
 | `app/tasks.py` | planned calls with a task: task store (`tasks.json`), numbers and hours that may be dialed, plan and result |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
@@ -104,7 +105,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
     than `calendar_max_bookings` per call (default 2); 0 switches a limit off. All-day entries count as busy unless their title contains one of the
     `all_day_free_words` (e.g. `["gelber", "sack", "abfall"]`); Home Assistant does not pass on Google's
     "free"/"busy".
-  - `shopping`: only the to-do lists in `shopping_lists` (read, add, check off, remove).
+  - `shopping`: only the shopping list `shopping_list` (read, add, check off, remove) and, with the automatic
+    shopping list, what was bought when (`shopping_history`).
   - `guest`: no access; asks for name and reason. The note goes to `logs/call-notes.txt`.
 - `web` (`true`/`false`) overrides who may search the web (see [Web search](#web-search)); default: `admin` and
   `read`. Guests and the `"*"` entry never get it.
@@ -218,6 +220,39 @@ rest_command:
 
 After each call the agent fires the HA event `braincall_call`
 (`number`, `answered`, `reason`, `duration_s`, `transcript`, `caller_name`, `access`, `summary`).
+
+## Automatic shopping list
+
+`shopping_list` (default `todo.shopping_list`) is the one shopping list: callers with access `shopping` use only
+this one. With `shopping_auto` (default `true`) BrainCall looks at it once a minute and keeps a history of what
+was bought, so Claudine can answer "When did we last buy milk?" or "What did we buy last week?".
+
+- An item that stays checked off for `shopping_bought_after_minutes` (default 60) counts as **bought**: it is
+  removed from the list and stored with the time it was checked.
+- Checked by mistake in the shop and unchecked again within that time: nothing is stored, the item stays.
+- An item that is deleted before its time is over (by hand, "clear completed" in the app, removed by Claudine)
+  is never a purchase, checked or not. Whoever wants the history leaves checked items alone.
+- After a restart the time starts anew for every checked item; the start counts as its time of purchase.
+  Items added or deleted while BrainCall was not running are not in the history.
+- A list that cannot be read, or is `unavailable`, changes nothing: no events, nothing removed.
+
+The history is `logs/shopping-history.jsonl` (in the add-on: its config folder), one JSON line per event
+(`added`, `bought`, `removed`), never pruned. `key` is the name folded for counting, without the amount:
+"2 Milch", "milch" and "Milch (2)" are the same product, "H-Milch" is another one.
+
+- Tool `shopping_history` (access `admin`, `read`, `shopping`): one product (last bought, on how many days, the
+  dates, whether it is on the list now) or the purchases of the last days. Dates and counts are computed in code.
+- `GET /shopping/history` (with `api_token` like `/tasks`), optionally `?item=Milch&days=30&event=bought`.
+- Event `braincall_shopping_bought` (`list`, `item`, `key`, `time`) for own automations.
+
+`shopping_auto: false` switches it off: nothing is watched, written or removed. Until 1.9.x the setting was the
+list `shopping_lists`; its first entry is taken over as long as `shopping_list` is not set to something else.
+
+## Logging
+
+`log_level` (default `"info"`) decides how much `braincall.log` and the console show: `"warning"` only problems,
+`"info"` calls and changes, `"debug"` also details (every change seen on the shopping list, every removal),
+`"trace"` also every look at the shopping list. Other libraries never log below `info`.
 
 ## Web search
 
@@ -380,7 +415,8 @@ The tests in `tests/` run without a FRITZ!Box, Home Assistant or API keys: netwo
 They cover access rights and tools per caller, web search (tools by access, limits, server tool blocks, `pause_turn`,
 confirmation after web content), Home Assistant control limits, calendars and restricted bookings,
 planned calls (numbers and hours, plan and confirmation, grants for the callee, retries, mailbox and call backs,
-follow-up, `/tasks`), configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the
+follow-up, `/tasks`), the automatic shopping list (the hour, mistakes, restarts, errors, history, `/shopping/history`),
+configuration and pointer files, the HTTP trigger, the speech recognition filter, audio and the
 SIP fixes, and the conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers,
 mailbox announcements, timing).
 

@@ -48,6 +48,7 @@ DEFAULTS = {
     "still_working_s": 5,      # "Ich bin noch dran" after this many seconds without anything said; 0 = off
     # logs and call notes
     "log_dir": "",             # empty = logs\ in the project folder
+    "log_level": "info",       # "trace", "debug", "info" or "warning"
     "caller_memory": "none",   # summaries of earlier calls per number as context: "none", days (e.g. 30), "forever"
     # HTTP trigger
     "http_port": 8099,
@@ -57,7 +58,11 @@ DEFAULTS = {
     "ha_token": "",
     "ha_verify_ssl": True,     # true/false or path to the CA certificate (.crt/.pem)
     "notify_services": [],     # e.g. ["notify.mobile_app_phone"]: summary after a call goes there
-    "shopping_lists": ["todo.shopping_list"],  # the only lists callers with access "shopping" may use
+    "shopping_list": "todo.shopping_list",  # the one shopping list: callers with access "shopping", history
+    # automatic shopping list: an item that stays checked this long counts as bought, is removed from the list
+    # and stored in shopping-history.jsonl in the log folder
+    "shopping_auto": True,
+    "shopping_bought_after_minutes": 60,
     # control (only for callers with access "admin")
     "control_domains": ["light", "switch", "fan", "input_boolean", "scene", "script", "climate",
                         "media_player", "cover", "button", "number", "select", "todo",
@@ -97,6 +102,7 @@ DEFAULTS = {
 }
 
 ACCESS = ("admin", "read", "calendar", "shopping", "guest")
+LOG_LEVELS = {"trace": 5, "debug": 10, "info": 20, "warning": 30}
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = [""]  # file actually loaded (for the log)
@@ -154,6 +160,39 @@ def _callers(items) -> list:
                     "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None,
                     "web": x.get("web") if isinstance(x.get("web"), bool) else None})
     return out
+
+
+def _shopping(cfg, data: dict):
+    """shopping_list from the old list shopping_lists (until 1.9.x): its first entry, as long as shopping_list
+    is not set to something else. A form that still shows the old setting must not override the new one."""
+    old = data.get("shopping_lists")
+    old = [str(x).strip() for x in (old if isinstance(old, list) else [old]) if str(x or "").strip()]
+    if old and str(cfg.shopping_list or "").strip() in ("", DEFAULTS["shopping_list"]):
+        cfg["shopping_list"] = old[0]
+        if len(old) > 1:
+            WARNINGS.append(f"shopping_lists is replaced by shopping_list: only {old[0]} is used now, "
+                            f"not {', '.join(old[1:])}")
+    cfg.pop("shopping_lists", None)
+    cfg["shopping_list"] = str(cfg.shopping_list or "").strip()
+    try:
+        minutes = int(cfg.shopping_bought_after_minutes)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes < 1:
+        WARNINGS.append(f"shopping_bought_after_minutes {cfg.shopping_bought_after_minutes!r} is not valid: "
+                        f"{DEFAULTS['shopping_bought_after_minutes']} is used")
+        minutes = DEFAULTS["shopping_bought_after_minutes"]
+    cfg["shopping_bought_after_minutes"] = minutes
+    cfg["shopping_auto"] = cfg.shopping_auto is not False
+
+
+def log_level(cfg) -> int:
+    """The configured log level as a number; an unknown name counts as info (with a warning)."""
+    name = str(cfg.log_level or "info").strip().lower()
+    if name not in LOG_LEVELS:
+        WARNINGS.append(f"Unknown log_level {cfg.log_level!r}: info is used (allowed: {', '.join(LOG_LEVELS)})")
+        name = "info"
+    return LOG_LEVELS[name]
 
 
 def _strip_jsonc(text: str) -> str:
@@ -252,6 +291,7 @@ def load() -> Config:
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
     cfg["callers"] = _callers(cfg.callers)
+    _shopping(cfg, data)
     if cfg.web_allowed_domains and cfg.web_blocked_domains:
         WARNINGS.append("web_allowed_domains and web_blocked_domains are both set: only web_allowed_domains is used")
     # Home Assistant add-on: the Supervisor passes Home Assistant's timezone as TZ

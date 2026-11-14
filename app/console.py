@@ -56,6 +56,8 @@ class ColorFormatter(logging.Formatter):
         if record.levelno >= logging.WARNING:
             c = self.LEVEL.get(record.levelno, YELLOW)
             return f"{GREY}{t}{RESET}  {c}{BOLD}{record.levelname:<7}{RESET} {c}{msg}{RESET}"
+        if record.levelno < logging.INFO:
+            return f"{GREY}{t}  {DIM}{record.levelname:<7} {record.name}: {msg}{RESET}"
         if record.name == "session" and msg.startswith(ASSISTANT + ":"):
             return (f"{GREY}{t}{RESET}  {CYAN}{BOLD}🤖 {ASSISTANT} {RESET}"
                     f"{CYAN}{msg[len(ASSISTANT) + 1:].strip()}{RESET}")

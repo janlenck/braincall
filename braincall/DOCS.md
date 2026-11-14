@@ -28,7 +28,7 @@ installation the list is empty: add `*` with access `guest` so unknown callers c
 | `admin` | everything: read and control Home Assistant, appointments |
 | `read` | read everything (also history, energy statistics, automations and appointments with details), change nothing |
 | `calendar` | only free/busy times, no details; books an appointment in a free slot without asking you |
-| `shopping` | only the lists in *Shopping lists* |
+| `shopping` | only the *Shopping list*, and what was bought when |
 | `guest` | nothing, takes a message |
 
 Several at once separated by commas, e.g. `shopping, calendar`. The access decides which tools the assistant
@@ -49,8 +49,8 @@ repeat themselves. A number of days (e.g. `30`) keeps only that recent calls, `f
 A caller only gets summaries of calls with at most their current access. With `none` the file is neither read
 nor written; delete it to forget earlier calls.
 
-Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`) and the web
-usage of the day (`web-usage.json`) are in the add-on's own folder
+Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), the
+shopping history (`shopping-history.jsonl`) and the web usage of the day (`web-usage.json`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
 
 ## Web search
@@ -174,6 +174,24 @@ On a mailbox it leaves a short message after the beep and does not call again: t
 - From Home Assistant: `POST http://127.0.0.1:8099/tasks` with `{"number": "…", "task": "…"}` plans a call,
   `GET /tasks` lists the tasks with their status and result, `DELETE /tasks/<id>` cancels one. Tasks are kept in
   `tasks.json` in the add-on's config folder and survive a restart.
+
+## Automatic shopping list
+
+*Shopping list* (default `todo.shopping_list`) is the one list callers with access `shopping` use. With
+*Automatic shopping list* on (default) BrainCall looks at it once a minute:
+
+- An item that stays checked off for *Bought after* (default 60 minutes) counts as bought: it disappears from the
+  list and is stored with the time it was checked.
+- Checked by mistake and unchecked again before: nothing is stored, the item stays on the list.
+- Deleted items (by hand, "clear completed", removed by the assistant) are never purchases, checked or not.
+- After a restart of the add-on the time starts anew for checked items.
+
+The assistant answers "When did we last buy milk?" and "What did we buy last week?" from it. The history is
+`shopping-history.jsonl` in the add-on's folder; `GET /shopping/history?item=Milch&days=30` returns it, and every
+purchase fires the event `braincall_shopping_bought` (`list`, `item`, `key`, `time`). Switch *Automatic shopping
+list* off and nothing is watched, written or removed.
+
+*Log level* `debug` shows every change seen on the list and every removal, `trace` also each look at it.
 
 ## Updates
 

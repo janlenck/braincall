@@ -315,27 +315,46 @@ def test_notify_legacy_service(make_ha):
     assert h.http.posted("/services/notify/mobile_app_pixel") == [{"title": "Anruf", "message": "Text"}]
 
 
-# ---------------------------------------------------------------- shopping lists
-def test_shopping_reads_the_first_allowed_list(make_ha):
+# ---------------------------------------------------------------- shopping list
+def test_shopping_reads_the_list(make_ha):
     out = json.loads(make_ha().shopping())
     assert out["list"] == "todo.shopping_list"
     assert [i["item"] for i in out["items"]] == ["Milch", "Eier"]
 
 
-def test_shopping_other_lists_are_not_allowed(make_ha):
-    h = make_ha()
-    assert h.shopping("Baumarkt").startswith("Not allowed")
-    assert h.shopping_edit("add", "Schrauben", "todo.baumarkt").startswith("Not allowed")
-    assert h.http.posted("/services/todo/add_item") == []
-
-
-def test_shopping_list_by_friendly_name(make_ha):
-    h = make_ha(shopping_lists=["todo.shopping_list", "todo.baumarkt"])
-    assert json.loads(h.shopping("baumarkt"))["list"] == "todo.baumarkt"
+def test_shopping_uses_only_the_configured_list(make_ha):
+    h = make_ha(shopping_list="todo.baumarkt")
+    h.http.routes[("POST", "/services/todo/get_items")] = lambda url, kw: FakeResponse({"service_response": {
+        kw["json"]["entity_id"]: {"items": [{"summary": "Dübel", "status": "needs_action"}]}}})
+    assert json.loads(h.shopping()) == {"list": "todo.baumarkt", "items": [{"item": "Dübel", "status": "open"}]}
+    h.shopping_edit("add", "Schrauben")
+    assert h.http.posted("/services/todo/add_item") == [{"entity_id": "todo.baumarkt", "item": "Schrauben"}]
 
 
 def test_shopping_no_list_configured(make_ha):
-    assert make_ha(shopping_lists=["todo.gone"]).shopping().startswith("No shopping list available")
+    h = make_ha(shopping_list="todo.gone")
+    assert h.shopping().startswith("No shopping list available")
+    assert h.shopping_edit("add", "Milch").startswith("No shopping list available")
+    assert h.http.posted("/services/todo/add_item") == []
+
+
+def test_todo_raw_keeps_uid_and_refuses_unreadable_answers(make_ha):
+    h = make_ha()
+    h.http.routes[("POST", "/services/todo/get_items")] = FakeResponse({"service_response": {
+        "todo.shopping_list": {"items": [{"summary": "Milch", "uid": "u1", "status": "needs_action"}]}}})
+    assert h.todo_raw("todo.shopping_list") == [{"summary": "Milch", "uid": "u1", "status": "needs_action"}]
+    h.http.routes[("POST", "/services/todo/get_items")] = FakeResponse({"service_response": {}})
+    with pytest.raises(ValueError):
+        h.todo_raw("todo.shopping_list")
+
+
+def test_remove_todo(make_ha):
+    h = make_ha()
+    h.remove_todo("todo.shopping_list", "u1")
+    assert h.http.posted("/services/todo/remove_item") == [{"entity_id": "todo.shopping_list", "item": "u1"}]
+    h.http.routes[("POST", "/services/todo/remove_item")] = FakeResponse({"message": "no"}, 400)
+    with pytest.raises(ValueError):
+        h.remove_todo("todo.shopping_list", "u1")
 
 
 @pytest.mark.parametrize("action, service, extra", [

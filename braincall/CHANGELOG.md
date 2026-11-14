@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.10.0
+
+- New: automatic shopping list (#69), **on by default**. BrainCall looks at the shopping list once a minute. An
+  item that stays checked off for an hour counts as bought: it disappears from the list and is stored with the
+  time it was checked in `shopping-history.jsonl` (add-on folder). Checked by mistake in the shop and unchecked
+  again within the hour: nothing is stored. Deleted items are never purchases. After a restart the hour starts
+  anew. *Automatic shopping list* off (`shopping_auto: false`) keeps the old behaviour; *Bought after*
+  (`shopping_bought_after_minutes`) changes the hour
+  - Claudine answers "Wann haben wir zuletzt Milch gekauft?" and "Was haben wir letzte Woche gekauft?" with the new
+    tool `shopping_history` (access `admin`, `read`, `shopping`), dates and counts computed in code
+  - `GET /shopping/history` (`item`, `days`, `event`) and the event `braincall_shopping_bought` (`list`, `item`,
+    `key`, `time`)
+- Changed: one shopping list. *Shopping lists* (`shopping_lists`) became *Shopping list* (`shopping_list`, one
+  entity id, default `todo.shopping_list`). An old setting is taken over (its first list) as long as the new one
+  is not set to something else; further lists are no longer used, the log says which
+- New: *Log level* (`log_level`): `warning`, `info` (default, as before), `debug` (also every change seen on the
+  shopping list) or `trace` (also every look at it). Other libraries never log below `info`
+
 ## 1.9.6
 
 - Fix: dates were spoken as two sentences with a pause in the middle, "Der Termin ist am 14." – "November um

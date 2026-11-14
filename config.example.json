@@ -53,7 +53,7 @@
   //   admin    everything: read and control Home Assistant, appointments
   //   read     read everything (states, sensors, appointments with details), change nothing
   //   calendar only free/busy times (no details), books appointments in free slots without asking you
-  //   shopping only the shopping list(s) from shopping_lists
+  //   shopping only the shopping list (shopping_list)
   //   guest    no access at all, takes a message
   // instructions: extra instructions for the assistant for this caller (optional)
   // language: fixed language for this caller (optional, otherwise "language")
@@ -69,7 +69,12 @@
     { "number": "*", "name": "Unknown", "access": "guest" }
   ],
   "notify_services": [],              // summary after incoming calls, e.g. ["notify.mobile_app_phone", "notify.email"]
-  "shopping_lists": ["todo.shopping_list"],  // the only lists callers with access "shopping" may use
+  "shopping_list": "todo.shopping_list",  // the one shopping list: callers with access "shopping", automatic list
+  // Automatic shopping list: an item that stays checked off this long counts as bought, is removed from the
+  // list and stored with its date in shopping-history.jsonl in the log folder. Unchecked again before: nothing
+  // is stored. Deleted items are never purchases.
+  "shopping_auto": true,
+  "shopping_bought_after_minutes": 60,
   "country_code": "49",               // +49 / 0049 count as the same number as a leading 0
   "ring_timeout": 90,                 // seconds to ring before an unanswered outbound call is cancelled
 
@@ -103,6 +108,7 @@
 
   // --- Logs and call notes ---
   "log_dir": "",                      // empty = logs\ in the project folder; environment variables allowed
+  "log_level": "info",                // "trace" (also every look at the shopping list), "debug", "info", "warning"
   "caller_memory": "none",            // summaries of earlier calls per number as context in the next call:
                                       // "none" (off), days like 30 (only that recent) or "forever"; in calls.jsonl
 
