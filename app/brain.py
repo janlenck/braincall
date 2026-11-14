@@ -1015,15 +1015,28 @@ class Brain:
         """A plan (the plan_call fields) from a free-text task, for tasks that come in without one (POST /tasks)."""
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
         owner = (self.cfg.owner_name or "").strip() or "the owner"
-        prompt = (f"{owner} gave this task for a phone call that the assistant makes on its own. Turn it into a plan "
-                  "with plan_call. Keep to the task: grant and share only what it clearly calls for, and list as "
-                  "follow_up only what it asks to be done after the call. Times are local; now is "
+        prompt = (f"{owner} gave this task for a phone call that the assistant makes on its own. Turn it into a plan: "
+                  "the fields of the answer schema, with \"\" or [] for what the task does not give (retries null "
+                  "for the default). Keep to the task: grant and share only what it clearly calls for, and list as "
+                  "follow_up only what it asks to be done after the call. leave_message is true unless the task "
+                  "says otherwise. Times are local; now is "
                   f"{now}.\n\nNumber: {number}\nName: {name or 'unknown'}\nTask: {text}")
+        # structured output, not a forced tool call: tool_choice "tool"/"any" is refused by some models (#72)
         msg = self.client.messages.create(model=self.cfg.claude_model, max_tokens=1500,
-                                          tools=[tasks_mod.TOOL_PLAN_CALL],
-                                          tool_choice={"type": "tool", "name": "plan_call"},
-                                          messages=[{"role": "user", "content": prompt}])
-        return next((dict(b.input) for b in msg.content if b.type == "tool_use"), {})
+                                          messages=[{"role": "user", "content": prompt}],
+                                          output_config={"format": {"type": "json_schema",
+                                                                    "schema": tasks_mod.PLAN_SCHEMA}})
+        if msg.stop_reason not in ("end_turn", "stop_sequence"):
+            raise ValueError(f"no plan ({msg.stop_reason})")
+        raw = "".join(b.text for b in msg.content if b.type == "text")
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            raise ValueError(f"no plan (no valid JSON: {raw[:80]!r})") from None
+        if not isinstance(data, dict):
+            raise ValueError("no plan (the answer is not an object)")
+        # "" / [] / null mean "not given": dropped, so tasks.build applies its defaults
+        return {k: v for k, v in data.items() if v not in ("", [], None)}
 
     def follow_up_tools(self, task: dict) -> list:
         """The tools of the follow-up: only what the steps of the confirmed plan name, plus task_result."""

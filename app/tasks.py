@@ -80,6 +80,24 @@ TOOL_PLAN_CALL = {
     },
 }
 
+def _plan_schema() -> dict:
+    """The answer schema of Brain.plan (POST /tasks without a plan, #72): the plan_call fields as structured output,
+    which every model accepts (a forced tool call is refused by some). Without confirmed and override_do_not_call,
+    which belong to the phone flow. Structured outputs want every field required and no extra ones: "" and []
+    stand for "not given" (dropped again by Brain.plan), retries may be null for the default."""
+    props = {k: dict(v) for k, v in TOOL_PLAN_CALL["input_schema"]["properties"].items()
+             if k not in ("confirmed", "override_do_not_call")}
+    props["language"]["enum"] = props["language"]["enum"] + [""]
+    props["retries"]["type"] = ["integer", "null"]
+    props["follow_up"]["items"] = {"type": "object",
+                                   "properties": {"step": {"type": "string"},
+                                                  "tool": {"type": "string", "enum": list(FOLLOW_TOOLS) + [""]}},
+                                   "required": ["step", "tool"], "additionalProperties": False}
+    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+PLAN_SCHEMA = _plan_schema()
+
 TOOL_TASK_RESULT = {
     "name": "task_result",
     "description": "Reports the final result of the task. Call it exactly once, as the last step.",
