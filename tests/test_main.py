@@ -265,13 +265,15 @@ def test_an_assist_conversation_is_remembered_on_the_phone(people, events):
     assert (line["number"], line["ha_user"], line["channel"], line["device"]) == (
         "0151111", "jan", "assist-text", "Tablet")
     assert "direction" not in line
-    assert events["notify"] == []  # Assist conversations are not announced unless the entry asks for it
+    assert events["notify"] == []
 
 
-def test_assist_summary_is_announced_only_if_the_entry_asks(people, events):
+def test_assist_conversations_are_never_announced(people, events):
+    """Notifications are for calls only, also for an entry with notify: true (#50)."""
     people.after_assist(conversation(people, "Hat Jan Freitag Zeit?", channel="voice", user_id="maryna-id",
                                      user_name="Maryna K"))
-    assert events["notify"] == [("notify.phone", "Gespräch mit Maryna in Home Assistant", "Summary of Maryna")]
+    assert events["summarized"] == {"channel": "voice"}
+    assert events["notify"] == []
 
 
 def test_a_voice_device_has_its_own_memory(people, after):
@@ -306,17 +308,13 @@ def test_closed_conversation_is_summarized_in_the_background(people, monkeypatch
     assert done == [conv]
 
 
-def test_nothing_is_summarized_without_memory_or_notification(main, monkeypatch):
-    """No request to Claude for a summary nobody would use."""
+def test_nothing_is_summarized_without_memory(main, monkeypatch):
+    """No request to Claude for a summary nobody would use: without the memory, not even for notify: true."""
     monkeypatch.setitem(main.cfg, "callers", config._callers(PEOPLE))
     monkeypatch.setattr(main, "after_assist", lambda conv: pytest.fail("must not be summarized"))
     assert not main.calls.enabled
     main.assist_closed(conversation(main, user_name="Jan"))            # memory off, no notify
-    empty = conversation(main, user_id="maryna-id")
-    empty.transcript = []
-    main.assist_closed(empty)                                           # nothing was said
-    monkeypatch.setitem(main.cfg, "notify_services", [])
-    main.assist_closed(conversation(main, user_id="maryna-id"))       # notify wanted, but nowhere to send it
+    main.assist_closed(conversation(main, user_id="maryna-id"))       # memory off, notify: true
     time.sleep(0.05)
 
 

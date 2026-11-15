@@ -35,6 +35,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 
 import assist  # noqa: E402
 import config  # noqa: E402
+import discovery  # noqa: E402
 import fritz_sip  # noqa: E402
 import memory  # noqa: E402
 import phrases  # noqa: E402
@@ -199,23 +200,16 @@ def recall(person: dict) -> str:
                        calls.enabled, subject=assist.subject(person))
 
 
-ASSIST_TITLE = {"de": "Gespräch mit {who} in Home Assistant", "en": "Conversation with {who} in Home Assistant",
-                "uk": "Розмова з {who} у Home Assistant"}
-
-
 def after_assist(conv):
-    """Summary of an Assist conversation that is over: into the memory of the person, and to the notify services
-    if the person's entry asks for it (notify: true; off by default, unlike calls)."""
+    """Summary of an Assist conversation that is over, into the memory of the person. Never a notification: those
+    are for calls, which may go unnoticed; an Assist conversation was seen by whoever had it (#50)."""
     try:
         person = conv.person
-        lang = cfg.language if cfg.language in ASSIST_TITLE else "de"
+        lang = cfg.language if cfg.language in SUMMARY_TITLE else "de"
         summary = brain.summarize(conv.transcript, conv.label, conv.actions, lang, channel=conv.channel)
         if not summary:
             return
         log.info("Summary (Assist, %s): %s", conv.label, summary)
-        if person["notify"]:
-            for service in cfg.notify_services or []:
-                ha.notify(str(service), ASSIST_TITLE[lang].format(who=conv.label), summary)
         calls.add(person["who"], summary, person["access"], when=datetime.fromtimestamp(conv.ended, timezone.utc),
                   channel=f"assist-{conv.channel}", device=conv.device)
     except Exception:  # noqa: BLE001
@@ -224,9 +218,8 @@ def after_assist(conv):
 
 def assist_closed(conv):
     """An Assist conversation is over (assist.Conversations.on_close). Summarized in the background, and only if
-    someone will use the summary: the memory is on, or the entry wants a notification."""
-    person = conv.person
-    if not conv.transcript or person is None or not (calls.enabled or (person["notify"] and cfg.notify_services)):
+    the memory is on: nobody else uses the summary."""
+    if not conv.transcript or conv.person is None or not calls.enabled:
         return
     threading.Thread(target=after_assist, args=(conv,), name="after assist", daemon=True).start()
 
@@ -952,6 +945,8 @@ def main():
         log.info("HTTP API on http://%s:%s, %s", bind, cfg.http_port,
                  f"only from this host, token in {_LOGDIR / config.TOKEN_FILE}" if TOKEN_GENERATED
                  else "reachable in the network, token from the configuration (api_token)")
+        # as an app: tell Home Assistant where the API is, so Brain Assist needs no address or token typed
+        threading.Thread(target=discovery.announce, args=(cfg, API_TOKEN), name="discovery", daemon=True).start()
         console.start_keys(quit_, test_call, open_log)
         server.serve_forever()
     except KeyboardInterrupt:

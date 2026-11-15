@@ -42,6 +42,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/rhythm.py` | rhythm list: recurring products with interval, self-repair, automatic adding, forecast, `shopping_rhythm` |
 | `app/tasks.py` | planned calls with a task: task store (`tasks.json`), numbers and hours that may be dialed, plan and result |
 | `app/assist.py` | Brain Assist: who a request of Home Assistant's assistant comes from (`ha_user`, `ha_device`), the conversations, the answer stream of `POST /api/converse` |
+| `app/discovery.py` | as an add-on: tells Home Assistant where the API is and its token, so Brain Assist needs nothing typed |
 | `app/rights.py` | what a person may do, in words for Claude; the stricter of two access sets |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
@@ -133,7 +134,7 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
     its own memory. Lines from before 1.12 have only the number and are found the same way; nothing is migrated.
   - An Assist conversation is summarized when it is over: 15 minutes after its last request, or as soon as the
     same user starts a new one on the same device (one more short request to Claude each). Conversations still
-    open at a restart are lost. `"notify": true` per entry also sends that summary to `notify_services`.
+    open at a restart are lost. Assist conversations are never sent to `notify_services`, whatever `notify` says.
   - Only calls with a summary count, withheld numbers never. Nobody gets summaries recorded with more access
     than they have now: after lowering a number from `admin` to `guest`, the old `admin` calls are no longer
     used, and what an administrator typed does not reach the same person on a restricted tablet.
@@ -469,6 +470,10 @@ BrainCall can be the conversation agent of Home Assistant's own assistant (Assis
 dashboards, voice devices), so phone and Assist share one brain: the same prompt core, tools, access rules and
 limits. The integration **Brain Assist** ([janlenck/brainassist](https://github.com/janlenck/brainassist)) runs inside Home Assistant and
 forwards each request to `POST /api/converse`; speech recognition and voice stay with Home Assistant.
+
+As an add-on BrainCall tells Home Assistant at every start where the API is and which token it needs (Supervisor
+discovery, service `brainassist`, `app/discovery.py`): Brain Assist shows up as discovered and connects without an
+address or token typed. Standalone (Windows, Docker) the integration needs both entered by hand.
 
 Without a phone: leave `sip_user` and `sip_password` empty. BrainCall then starts without the FRITZ!Box and
 without an OpenAI key, and only the HTTP API runs (`/call` answers `503`, planned calls are off; the automatic

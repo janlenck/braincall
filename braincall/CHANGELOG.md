@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.0
+
+- New: Home Assistant finds BrainCall by itself (#50). At every start the add-on tells Home Assistant where its API
+  is and which token it needs. With Brain Assist 0.2.0 or newer installed, Settings → Devices & services shows
+  *Brain Assist* as discovered: confirm, nothing to type. A changed *API token* reaches the integration at the next
+  start of the add-on. The token never appears in the log
+- Changed: Assist conversations are never announced, also not for callers with *notify* `true` (decided in #50).
+  Notifications are for calls, which may go unnoticed; an Assist conversation was seen by whoever had it. Without
+  *Memory per person* an Assist conversation is no longer summarized at all, so it costs no extra request
+
 ## 1.12.0
 
 - New: one memory per person on the phone and in Brain Assist (#50). *Caller memory* is now *Memory per person*
