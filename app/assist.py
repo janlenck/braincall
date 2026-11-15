@@ -307,6 +307,14 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
         store.release(conv)
 
 
+def requester(person: dict, req: dict) -> dict:
+    """Who plans a call in this conversation (plan_call): the person, with their number for a call back if their
+    entry has one; a voice device without a user plans as the device."""
+    who = person["who"]
+    return {"number": who.get("number", ""), "ha_user": who.get("ha_user", ""), "channel": req["channel"],
+            "name": person["name"] or req.get("user_name") or req.get("device_name") or req.get("area_name") or ""}
+
+
 def subject(person: dict) -> str:
     """Whom the notes of a memory are about, for memory.note."""
     return "the people who used this device" if "ha_device" in person["who"] else "this person"
@@ -366,7 +374,7 @@ def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, wh
         try:
             brain.turn(conv.messages, on_text, aborted, access=person["access"], language=lang,
                        actions=conv.actions, counters=conv.counters, before_tool=before_tool,
-                       web=person["web"], who=f"{who} (assist {channel})",
+                       web=person["web"], who=f"{who} (assist {channel})", call=requester(person, req),
                        on_server_tool=lambda name: emit({"type": "tool_call", "name": name, "server": True}),
                        channel=channel, on_tool_result=on_tool_result)
         except Exception as e:  # noqa: BLE001  the client gets the reason instead of a stream that just ends

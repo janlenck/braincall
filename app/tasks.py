@@ -38,8 +38,11 @@ TOOL_PLAN_CALL = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "number": {"type": "string", "description": "phone number to call, complete with area code"},
-            "name": {"type": "string", "description": "person or business to call"},
+            "number": {"type": "string", "description": "phone number to call, complete with area code; leave it "
+                                                        "out for a person from the callers list, their number is "
+                                                        "taken from there"},
+            "name": {"type": "string", "description": "person or business to call; for a person from the callers "
+                                                      "list their name as listed"},
             "task": {"type": "string", "description": "the whole task in the requester's words"},
             "goal": {"type": "string", "description": "what the call should achieve, one sentence"},
             "questions": {"type": "array", "items": {"type": "string"}, "description": "what to ask the callee"},
@@ -76,9 +79,10 @@ TOOL_PLAN_CALL = {
                                                                        "call a number that asked not to be called"},
             "confirmed": {"type": "boolean", "description": "only true after the caller said yes to the plan"},
         },
-        "required": ["number", "task"],
+        "required": ["task"],
     },
 }
+
 
 def _plan_schema() -> dict:
     """The answer schema of Brain.plan (POST /tasks without a plan, #72): the plan_call fields as structured output,
@@ -188,9 +192,56 @@ def _texts(value) -> list:
     return [str(x).strip()[:MAX_TEXT] for x in items if str(x).strip()][:MAX_ITEMS]
 
 
+def person(cfg, name) -> dict | None:
+    """The callers entry with this name and a number to dial ("Ruf Mark an"); None if there is none, or if the
+    name is not unique among the entries with a number."""
+    key = str(name or "").strip().casefold()
+    if not key:
+        return None
+    found = [c for c in cfg.callers or [] if c["number"] and c["number"] != "*" and c["name"].casefold() == key]
+    return found[0] if len(found) == 1 else None
+
+
+def callee(cfg, data: dict) -> tuple[str, str, str]:
+    """Whom to call: (number, name, why not). Without a number the name must be a person from callers."""
+    number = str(data.get("number") or "").strip()
+    name = str(data.get("name") or "").strip()
+    if number:
+        return number, name, ""
+    if not name:
+        return "", "", "Not planned: the number is missing."
+    entry = person(cfg, name)
+    if entry is None:
+        return "", name, (f"Not planned: {name} is not a person with a number in the callers list. Ask for the "
+                          "number.")
+    return entry["number"], entry["name"], ""
+
+
+def requester_entry(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict:
+    """Who plans a call, as a person: their callers entry, found by phone number or Home Assistant user (id before
+    name). {"number", "name", "ha_user"}; number is "" for someone who can only be reached in Home Assistant, so
+    the result reaches them by notification and event, never by a call back."""
+    number = str(number or "").strip()
+    folded = [str(v or "").strip().casefold() for v in (user_id, user_name)]
+    for c in cfg.callers or []:
+        if number and c["number"] and c["number"] != "*" and config.norm_number(c["number"], cfg.country_code) \
+                == config.norm_number(number, cfg.country_code):
+            return {"number": c["number"], "name": c["name"], "ha_user": c["ha_user"]}
+    for value in folded:
+        for c in cfg.callers or []:
+            if value and c["ha_user"] and c["ha_user"] != "*" and c["ha_user"].casefold() == value:
+                return {"number": c["number"] if c["number"] != "*" else "", "name": c["name"] or user_name,
+                        "ha_user": c["ha_user"]}
+    return {"number": "", "name": str(user_name or "").strip(), "ha_user": str(user_id or user_name or "").strip()}
+
+
 def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") -> tuple[dict | None, str]:
-    """A task from the tool input or the API body. Returns (task, "") or (None, why it is refused)."""
-    number = config.dial_form(data.get("number"))  # stored and dialed exactly like this, no spaces
+    """A task from the tool input or the API body. Returns (task, "") or (None, why it is refused).
+    The callee is a number, or a person from callers by name (callee); requester is a person (requester_entry)."""
+    number, name, refusal = callee(cfg, data)
+    if refusal:
+        return None, refusal
+    number = config.dial_form(number)  # stored and dialed exactly like this, no spaces
     refusal = number_refusal(cfg, number)
     if refusal:
         return None, f"Not planned: {refusal}."
@@ -227,9 +278,10 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
         "id": uuid.uuid4().hex[:8],
         "created": now.isoformat(timespec="seconds"),
         "source": source,
-        "requester": {"number": str(requester.get("number") or ""), "name": str(requester.get("name") or "")},
+        "requester": {"number": str(requester.get("number") or ""), "name": str(requester.get("name") or ""),
+                      "ha_user": str(requester.get("ha_user") or "")},
         "number": number,
-        "name": str(data.get("name") or "").strip()[:80],
+        "name": name[:80],
         "language": language if language in ("de", "uk", "en", "auto") else "",
         "task": text[:2000],
         "goal": str(data.get("goal") or "").strip()[:MAX_TEXT] or text[:MAX_TEXT],
@@ -289,7 +341,9 @@ def read_back(task: dict, cfg, known: bool) -> str:
     parts.append(f"Not reached: {task['retries']} more attempt(s)"
                  + ("; on a mailbox you leave a message and do not call again." if task["leave_message"]
                     else ", no message on a mailbox."))
-    parts.append("The result comes as a notification" + (" and you call back." if task["call_back"] else "."))
+    parts.append("The result comes as a notification" + (" and you call back." if task["call_back"] else
+                                                         " (no call back: there is no number to call)."
+                                                         if not task["requester"]["number"] else "."))
     parts.append("Ask whether that is right. Only after a yes call plan_call again with the same values and "
                  "confirmed=true.")
     return " ".join(parts)
@@ -376,7 +430,17 @@ class TaskStore:
         self.lock = threading.RLock()
         self.tasks: list[dict] = []
         self.do_not_call: list[dict] = []
+        # called with a copy of a task whenever its status changes (planned, running, planned again, final), so
+        # Home Assistant can follow without asking (event braincall_task_updated, set by main.py)
+        self.on_change = None
         self._load()
+
+    def _changed(self, t: dict):
+        if self.on_change is not None:
+            try:
+                self.on_change(dict(t))
+            except Exception:  # noqa: BLE001  telling others must never break the task itself
+                log.exception("Announcing task %s failed", t.get("id"))
 
     def _key(self, number: str) -> str:
         return config.norm_number(number, self.cfg.country_code)
@@ -410,6 +474,8 @@ class TaskStore:
                                             "open_points": ["Check what happened and plan the call again."]})
             if out:
                 self._save()
+            for t in out:
+                self._changed(t)
             return [dict(t) for t in out]
 
     def blocked(self, number: str) -> bool:
@@ -437,6 +503,7 @@ class TaskStore:
                           or now - datetime.fromisoformat(t["finished"]) <= timedelta(days=KEEP_DAYS)]
             self.tasks.append(task)
             self._save()
+        self._changed(task)
         log.info("Task %s planned: call %s (%s) %s; goal: %s", task["id"], task["name"] or "?", task["number"],
                  when(task, self.cfg), task["goal"])
         return task
@@ -524,6 +591,7 @@ class TaskStore:
         t["attempts"].append({"time": now.astimezone(_tz(self.cfg)).isoformat(timespec="seconds"), "kind": kind,
                               "outcome": ""})
         self._save()
+        self._changed(t)
         return dict(t)
 
     def not_reached(self, task_id: str, outcome: str, now: datetime) -> dict:
@@ -535,6 +603,7 @@ class TaskStore:
             if left:  # a call back after the message came to nothing: the task stays as it ended, no new attempt
                 t["status"] = LEFT
                 self._save()
+                self._changed(t)
                 return dict(t)
             calls = sum(a["kind"] == "call" for a in t["attempts"])
             again = now + timedelta(minutes=max(1, int(self.cfg.task_retry_minutes or 15)))
@@ -542,6 +611,7 @@ class TaskStore:
                 t["status"] = PLANNED
                 t["next_try"] = again.astimezone(_tz(self.cfg)).isoformat(timespec="minutes")
                 self._save()
+                self._changed(t)
                 log.info("Task %s: %s, next attempt at %s", t["id"], outcome, t["next_try"])
             else:
                 self._finish(t, {"status": "not_reached",
@@ -562,4 +632,5 @@ class TaskStore:
         t["result"] = clean_result(result) | {"status": status}
         t["finished"] = datetime.now(_tz(self.cfg)).isoformat(timespec="seconds")
         self._save()
+        self._changed(t)
         log.info("Task %s finished: %s - %s", t["id"], status, t["result"]["summary"])

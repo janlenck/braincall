@@ -115,8 +115,8 @@ Chat rules:
 - In the rules below "the caller" is the person you are talking to.
 """,
 }
-ASSIST_TAIL = """- If you need an answer from the person (a question back, a confirmation), end your answer with that
-  question: Home Assistant then keeps listening. An answer that needs no reply never ends with a question, and you
+ASSIST_TAIL = """{tasks}- If you need an answer from the person (a question back, a confirmation), end your answer with
+  that question: Home Assistant then keeps listening. An answer that needs no reply never ends with a question, and you
   never ask whether there is anything else you can do.
 - Text in square brackets starting with "System:" are notes from the system, not from the person.
 - What the person may do depends on who they are and on the device they use: you only get the tools allowed in
@@ -417,6 +417,11 @@ TASKS_PROMPT = """- You can make a call on your own later with plan_call ("Ruf i
   plan_call; the phone system checks the plan and tells you what to read back. Store it only after a clear yes.
   While this call lasts the line is busy: after planning a call that should start now, say goodbye and hang up.
 """
+# The same in Brain Assist: there is no line of this conversation, so the planned call may start at once; the person
+# gets the result as a notification and in Home Assistant, by call back only if they have a phone number
+TASKS_PROMPT_ASSIST = TASKS_PROMPT.split("  While this call lasts")[0] + """  The call is made by phone, on its
+  own; the result comes as a notification and in Home Assistant's list of Brain Call tasks.
+"""
 
 FOLLOW_PROMPT = """You are {name}, {owner}'s AI assistant. You made a phone call with a task and now work through
 the result, without anyone on the line. Nothing you write is read out.
@@ -643,7 +648,8 @@ class Brain:
                    "let me check\"; do not announce lookups yourself.\n" if self.cfg.fillers else "")
         base = ASSIST_HEAD[channel] + HA_RULES + ASSIST_TAIL if channel in ASSIST_HEAD else BASE_PROMPT
         prompt = (base.replace("{now}", now).replace("{fillers}", fillers)
-                  .replace("{tasks}", TASKS_PROMPT if planning else "")
+                  .replace("{tasks}", (TASKS_PROMPT_ASSIST if channel in ASSIST_HEAD else TASKS_PROMPT)
+                           if planning else "")
                   .replace("{name}", self.cfg.assistant_name or "Claude")
                   .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
         if web:
@@ -774,7 +780,7 @@ class Brain:
             return "Not allowed in this call."
         data = block.input or {}
         now = datetime.now(ZoneInfo(self.cfg.timezone))
-        requester = {"number": (call or {}).get("number", ""), "name": (call or {}).get("name", "")}
+        requester = {k: (call or {}).get(k, "") for k in ("number", "name", "ha_user")}
         task, refusal = tasks_mod.build(self.cfg, data, requester, now, source="phone")
         if task is None:
             return refusal
@@ -791,6 +797,10 @@ class Brain:
                 self.tasks.unblock(task["number"])
             self.tasks.add(task)
             soon = datetime.fromisoformat(task["next_try"]) <= now
+            if (call or {}).get("channel") in ASSIST_HEAD:  # no line of this conversation is in the way
+                return (f"Stored (task {task['id']}). " + ("The call starts in a moment." if soon else
+                                                            f"You will call {tasks_mod.when(task, self.cfg)}.")
+                        + " Tell the person briefly.")
             return (f"Stored (task {task['id']}). " + ("The call starts as soon as the line is free: tell the caller, "
                                                         "say goodbye and hang up." if soon else
                                                         f"You will call {tasks_mod.when(task, self.cfg)}."))
@@ -907,8 +917,9 @@ class Brain:
         planned call grants the callee. With "mailbox": True a mailbox answered (CallSession._mailbox): the message
         is left without any tool but hang_up, there is nobody to look something up or change something for.
         channel: "phone", or for Brain Assist "voice" (sentences cleaned for speech, like on the phone) or "text"
-        (on_sentence gets every piece of text as it comes, with Markdown). Assist has no line: no hang_up, and no
-        plan_call yet. on_tool_result(block, text) runs after each tool call with what Claude gets back."""
+        (on_sentence gets every piece of text as it comes, with Markdown). Assist has no line: no hang_up; an admin
+        may plan calls there too (call then names the person asking, with "channel").
+        on_tool_result(block, text) runs after each tool call with what Claude gets back."""
         counters = {} if counters is None else counters
         mailbox = bool((call or {}).get("mailbox"))
         assist = channel in ASSIST_HEAD
@@ -917,9 +928,9 @@ class Brain:
         tools = [TOOL_HANGUP] if mailbox else self.tools_for(access, web, limits=limits,
                                                              grants=(call or {}).get("grants"))
         if assist:
-            tools = [t for t in tools if t.get("name") not in ("hang_up", "plan_call")]
+            tools = [t for t in tools if t.get("name") != "hang_up"]
         system = self.system(language, web=web_ok, exhausted=limits[2] if limits else (),
-                             planning=self.planning(access) and not assist, channel=channel)
+                             planning=self.planning(access), channel=channel)
         used = {"searches": 0, "fetches": 0, "queries": [], "urls": [], "domains": []}
         try:
             return self._loop(messages, on_sentence, should_abort, access, tools, system, actions, counters,

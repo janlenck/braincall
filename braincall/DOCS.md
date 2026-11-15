@@ -203,8 +203,8 @@ number:
   stays at the shopping list even while an administrator is logged in on it.
 
 An entry without number is never called and matches no phone call. With *Memory per person* on, phone and Assist share
-what they remember of a person. Assist has no line: nothing is hung up there,
-and planned calls are still made by phone or through `/api/tasks`. Spoken answers are short and without Markdown,
+what they remember of a person. Assist has no line: nothing is hung up there. An `admin` may plan calls there like on
+the phone (see below). Spoken answers are short and without Markdown,
 written ones may use lists and tables.
 
 ## Planned calls with a task
@@ -227,6 +227,12 @@ On a mailbox it leaves a short message after the beep and does not call again: t
   `GET /api/tasks` lists the tasks with their status and result, `DELETE /api/tasks/<id>` cancels one (all with the
   API token, see above; the paths without `/api` still work). Tasks are kept in `tasks.json` in the add-on's
   config folder and survive a restart.
+- Whom to call: a number, or a person from *Callers* by name ("Ruf Mark an", `{"name": "Mark", "task": "…"}`), whose
+  number is taken from there. The requester is a person too: on the phone by their number, in Assist by their Home
+  Assistant user. Without a number in their entry there is no call back, the result comes as notification and event.
+- In Brain Assist an administrator plans calls by voice or in the chat, with the same read-back and yes. Brain Assist
+  0.3.0 or newer also has the action `brainassist.call` and a to-do list of the tasks (deleting an item cancels the
+  task). Every change of a task fires the event `braincall_task_updated`.
 
 ## Automatic shopping list
 

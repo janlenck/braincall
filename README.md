@@ -369,6 +369,16 @@ the caller said something in reply (a `confirmed=true` from the model alone is n
 the plan that was read back: another number, time window, grant or follow-up tool is read back again.
 One line: the planned call starts after the requester hung up.
 
+The callee is any number the rules below allow, or a person from `callers` by name ("Ruf Mark an"): their number is
+taken from the entry. A name that is not unique among the entries with a number, or a person without a number, is
+refused and Claudine asks for the number. The requester is always a person: their `callers` entry, found by the phone
+number or, in [Brain Assist](#brain-assist), by the Home Assistant user. Someone without a number in their entry (a
+dashboard user) gets the result as notification and event, never by call back.
+
+In Brain Assist an `admin` plans calls the same way, by voice or in the chat, with the same read-back and yes; a voice
+device keeps listening for the yes. There is no line of the conversation in the way, so a call that is due starts at
+once.
+
 Without the phone, `POST /api/tasks` plans a call (with the API token, see [HTTP API](#http-api)):
 
 ```bash
@@ -379,11 +389,18 @@ curl -X POST http://127.0.0.1:8099/api/tasks -H "Authorization: Bearer <token>" 
   "requester": "0151 1234567", "call_back": true, "not_after": "2026-11-10T19:00"}'
 ```
 
+Instead of `number`, `name` alone calls a person from `callers`. The requester is `requester` (a number from
+`callers`) or `requester_user_id` / `requester_user_name` (a Home Assistant user, as Brain Assist sends it); without
+any of them it is the owner.
+
 With only `number` and `task` Claude turns the text into a plan. Every field of the plan can also be given directly
 and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` / `calendar_to` / `book_title`,
 `follow_up` (`[{"step": "…", "tool": "ha_create_event"}]`), `not_before`, `not_after` (local time, default 24 hours),
-`retries` (default 2), `leave_message`, `call_back` (needs `requester`, a number from `callers`), `language`.
+`retries` (default 2), `leave_message`, `call_back` (needs a requester with a number), `language`.
 `GET /api/tasks` lists all tasks, `GET /api/tasks/<id>` shows one, `DELETE /api/tasks/<id>` cancels a planned one.
+Every change of a task's status (planned, running, planned again after an attempt, final) fires the event
+`braincall_task_updated` (`id`, `status`, `number`, `name`, `goal`, `requester`, `requester_ha_user`, `next_try`,
+`attempts`): Brain Assist's to-do list follows it without asking all the time.
 
 **The call.** Tasks are called when they are due, the line is free and it is inside `outbound_hours`.
 No answer or busy: the next attempt follows after `task_retry_minutes`, at most `retries` times and only inside the
@@ -416,7 +433,7 @@ Claude as before.
 **Result.** Status `done`, `partial`, `failed`, `not_reached`, `message_left` or `cancelled`, a summary, the
 collected answers, each follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks
 for 30 days), sent to `notify_services`, fired as event `braincall_task_finished` (`id`, `status`, `number`, `name`,
-`task`, `requester`, `attempts`, `summary`, `answers`, `steps`, `open_points`) and, with `call_back`, reported in a
+`task`, `requester`, `requester_ha_user`, `attempts`, `summary`, `answers`, `steps`, `open_points`) and, with `call_back`, reported in a
 call to the requester as soon as the line is free. The call itself is summarized like every call (`braincall_call`,
 [caller memory](#callers-and-permissions)). A task that was running when BrainCall stopped is not dialed again: it
 ends as `failed` and is reported.
@@ -436,8 +453,11 @@ ends as `failed` and is reported.
 - A callee who asks not to be called again is stored (`do_not_call` in `tasks.json`); a new task for that number is
   refused unless the requester explicitly overrides it (`override_do_not_call`).
 
-Not part of this yet: the Brain Assist front end (service action, `todo` entity), phone menus (DTMF) and hold
-queues, opening hours, and a second call while the requester stays on the line.
+In Home Assistant, Brain Assist (0.3.0 or newer) offers the action `brainassist.call` and a to-do list of the tasks;
+deleting an item there cancels the planned task.
+
+Not part of this yet: phone menus (DTMF) and hold queues, opening hours, and a second call while the requester stays
+on the line.
 
 ## HTTP API
 
@@ -506,8 +526,8 @@ BrainCall trusts what Brain Assist sends about user and device: whoever has the 
 Actions in Home Assistant run with BrainCall's own access; the BrainCall log says who asked for what.
 
 **Channels.** `voice` (a voice device reads the answer out): short spoken sentences without Markdown, like on the
-phone. `text` (chat): the answer as written, lists, tables and links allowed. Neither has a line: no `hang_up`,
-and `plan_call` is not offered yet. An answer that ends with a question keeps a voice device listening
+phone. `text` (chat): the answer as written, lists, tables and links allowed. Neither has a line: no `hang_up`.
+An `admin` may [plan calls](#planned-calls-with-a-task) in both. An answer that ends with a question keeps a voice device listening
 (`continue_conversation`).
 
 **Request and answer.**
@@ -537,7 +557,7 @@ failure `{"type": "error", "message": "…"}` comes instead of `end`. A conversa
 The integration is [janlenck/brainassist](https://github.com/janlenck/brainassist). With `caller_memory` on,
 phone and Assist share what is remembered of a person (see [Callers and permissions](#callers-and-permissions)).
 
-Not part of this yet (see #50): limits per person, planned calls from Assist, and skills.
+Not part of this yet (see #50): limits per person, and skills.
 
 ## Conversation flow and timing
 

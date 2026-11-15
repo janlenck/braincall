@@ -88,6 +88,25 @@ phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
 task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks and PHONE else None
 brain.tasks = task_store
+
+
+def task_event(task: dict) -> dict:
+    """What Home Assistant gets on every status change of a task (braincall_task_updated); the full task with its
+    result comes from GET /api/tasks/<id>, the result also with braincall_task_finished."""
+    return {"id": task["id"], "status": task["status"], "number": task["number"], "name": task["name"],
+            "goal": task["goal"], "requester": task["requester"]["name"],
+            "requester_ha_user": task["requester"].get("ha_user", ""), "next_try": task.get("next_try", ""),
+            "attempts": len(task["attempts"])}
+
+
+def announce_task(task: dict):
+    """TaskStore.on_change: the event in the background, Home Assistant may be slow and a task must not wait."""
+    threading.Thread(target=ha.fire_event, args=("braincall_task_updated", task_event(task)), name="task event",
+                     daemon=True).start()
+
+
+if task_store is not None:
+    task_store.on_change = announce_task
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
                  if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
 if shopping_list is not None and cfg.shopping_rhythm_list:
@@ -376,7 +395,8 @@ def report_task(task: dict):
             ha.notify(str(service), title, text)
         ha.fire_event("braincall_task_finished", {
             "id": task["id"], "status": task["status"], "number": task["number"], "name": task["name"],
-            "task": task["task"], "requester": task["requester"]["name"], "attempts": len(task["attempts"]),
+            "task": task["task"], "requester": task["requester"]["name"],
+            "requester_ha_user": task["requester"].get("ha_user", ""), "attempts": len(task["attempts"]),
             **{k: (task["result"] or {}).get(k) for k in ("summary", "answers", "steps", "open_points")}})
         if task["call_back"] and task["status"] != "cancelled":
             call_back(task, text)
@@ -701,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "unauthorized"})
             return self._send(200, {"api": assist.API_VERSION, "version": config.version(), "phone": PHONE,
                                     "assistant": cfg.assistant_name or "Claude",
-                                    "home_assistant": bool(ha.enabled)})
+                                    "home_assistant": bool(ha.enabled), "tasks": task_store is not None})
         if urlsplit(self.path).path == "/shopping/history" and shopping_list is not None:
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -752,8 +772,13 @@ class Handler(BaseHTTPRequestHandler):
         report_task(task_store.get(task_id))  # notification and event like every finished task, no call back
 
     def _plan_task(self, body: dict):
-        """POST /tasks: plans a call with a task. Without a plan (goal) Claude makes one from the task text."""
-        number = str(body.get("number") or "").strip()
+        """POST /tasks: plans a call with a task. Without a plan (goal) Claude makes one from the task text.
+        The callee is "number", or "name" alone for a person from callers. The requester is a person: "requester"
+        (a phone number), or "requester_user_id" / "requester_user_name" (Brain Assist: the Home Assistant user
+        who asked); without any of them the owner."""
+        number, name, refusal = tasks.callee(cfg, body)
+        if refusal:
+            return self._send(400, {"error": refusal.removeprefix("Not planned: ")})
         refusal = tasks.number_refusal(cfg, number)
         if refusal:
             return self._send(400, {"error": refusal})
@@ -762,17 +787,21 @@ class Handler(BaseHTTPRequestHandler):
         if not str(body.get("task") or "").strip():
             return self._send(400, {"error": "no task"})
         caller = find_caller(number, wildcard=False)
-        fixed = {**body, "number": number, "name": str(body.get("name") or "") or caller_name(caller)}
+        fixed = {**body, "number": number, "name": name or caller_name(caller)}
         if not body.get("goal"):
             try:
                 fixed = {**brain.plan(fixed["task"], number, fixed["name"]), **fixed}  # what was given wins
             except Exception as e:  # noqa: BLE001
                 log.warning("Planning the task failed: %s", e)
                 return self._send(502, {"error": f"planning failed: {e}"})
-        requester = find_caller(str(body.get("requester") or ""), wildcard=False)
-        task, error = tasks.build(cfg, fixed, {"number": requester["number"] if requester else "",
-                                               "name": caller_name(requester) or OWNER},
-                                  datetime.now().astimezone())
+        asked = {k: str(body.get(k) or "").strip() for k in ("requester", "requester_user_id", "requester_user_name")}
+        requester = tasks.requester_entry(cfg, asked["requester"], asked["requester_user_id"],
+                                          asked["requester_user_name"])
+        if not any(asked.values()):  # an automation or script: the owner asks
+            requester = {"number": "", "name": OWNER, "ha_user": ""}
+        elif asked["requester"] and not requester["number"]:  # a phone number that is not listed
+            requester = {"number": "", "name": OWNER, "ha_user": ""}
+        task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
             return self._send(400, {"error": error})
         if body.get("override_do_not_call"):
