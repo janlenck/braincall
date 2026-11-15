@@ -38,6 +38,7 @@
   // --- FRITZ!Box / SIP (Telephony -> Telephony Devices -> new IP phone) ---
   "sip_server": "192.168.178.1",      // IP address of the FRITZ!Box
   "sip_port": 5060,
+  // sip_user and sip_password both empty = no phone: only the HTTP API runs (Brain Assist), no OpenAI key needed
   "sip_user": "IP_PHONE_USERNAME",    // user name of the IP phone in the FRITZ!Box
   "sip_password": "",                 // or environment variable BRAINCALL_SIP_PASSWORD
   "local_ip": "",                     // IP of this computer; empty = detect automatically
@@ -59,8 +60,15 @@
   // language: fixed language for this caller (optional, otherwise "language")
   // notify: send the summary after the call (optional; default: everyone except admin)
   // web: may search the web (optional; default: admin and read when web_access is on; never for "*")
+  // For Brain Assist (the assistant of Home Assistant), instead of or next to "number":
+  //   ha_user   name or id of the Home Assistant user; "*" = every other user
+  //   ha_device name or id of a device or of its area (voice devices have no user); "*" = every other device
+  //   With an entry for the user and one for the device the stricter access wins. Not listed = refused.
+  //   An entry without number is never called and matches no phone call.
   "callers": [
     { "number": "0151xxxxxxx", "name": "Jan Mobile", "access": "admin" },  // first word of name = address
+    // { "number": "0151xxxxxxx", "ha_user": "Jan", "name": "Jan", "access": "admin" },  // phone and Brain Assist
+    // { "ha_device": "Flur Tablet", "access": "shopping" },                           // Brain Assist only
     { "number": "**611", "name": "Jan Internal", "access": "admin" },     // internal FRITZ!Box numbers work too
     { "number": "0171xxxxxxx", "name": "Walter", "access": "read" },
     { "number": "0170xxxxxxx", "name": "Maryna", "access": "calendar", "language": "uk",
@@ -115,10 +123,12 @@
   "caller_memory": "none",            // summaries of earlier calls per number as context in the next call:
                                       // "none" (off), days like 30 (only that recent) or "forever"; in calls.jsonl
 
-  // --- HTTP trigger for outbound calls ---
+  // --- HTTP API: call trigger, planned calls, shopping history, Brain Assist ---
+  // Every request needs "Authorization: Bearer <token>", also from this computer (only /health is open).
   "http_port": 8099,                  // if changed: adjust firewall.ps1 as well
-  "api_token": "",                    // empty = only reachable from 127.0.0.1; set = reachable in the LAN
-                                      // with "Authorization: Bearer <api_token>" (env BRAINCALL_API_TOKEN)
+  "api_token": "",                    // empty = a token is generated (api-token.txt in the log folder) and the
+                                      // API listens on 127.0.0.1 only; set = this token, reachable in the LAN
+                                      // (env BRAINCALL_API_TOKEN)
 
   // --- Home Assistant (empty ha_url/ha_token = no Home Assistant) ---
   "ha_url": "https://homeassistant:8123",

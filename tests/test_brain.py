@@ -413,6 +413,48 @@ def run_turn(brain, *msgs, access="admin", abort=lambda: False):
     return hang, said, messages, actions, fake
 
 
+# ---------------------------------------------------------------- channels (Brain Assist, #50)
+def test_phone_prompt_is_head_rules_and_tail():
+    assert brain_mod.BASE_PROMPT == brain_mod.PHONE_HEAD + brain_mod.HA_RULES + brain_mod.PHONE_TAIL
+    assert brain_mod.BASE_PROMPT.startswith("You are {name}, {owner}'s AI assistant")
+    assert "you are on a phone call right now" in brain_mod.PHONE_HEAD
+    assert 'call the tool "hang_up"' in brain_mod.PHONE_TAIL and "{tasks}" in brain_mod.PHONE_TAIL
+
+
+@pytest.mark.parametrize("channel, has, lacks", [
+    ("phone", ["phone call", "hang_up", "Phone rules"], ["Markdown is fine"]),
+    ("voice", ["voice assistant of Home Assistant", "no markdown", "keeps listening"], ["hang_up", "phone call"]),
+    ("text", ["chat of Home Assistant", "Markdown is fine", "a list or a table"], ["hang_up", "read out loud"]),
+])
+def test_system_prompt_per_channel(brain, channel, has, lacks):
+    system = brain.system("de", channel=channel)
+    assert "use ha_automation" in system and "Current time:" in system  # the tool rules are shared
+    assert "{" not in system.replace("{\"", "")  # every placeholder filled (the rules quote JSON like {"item": …})
+    for text in has:
+        assert text in system, text
+    for text in lacks:
+        assert text not in system, text
+
+
+def test_turn_in_a_chat_passes_text_through(brain):
+    fake = FakeMessages(message("**Küche:** 19 °C, siehe [Doku](https://example.org/a)."))
+    brain.client = SimpleNamespace(messages=fake)
+    said = []
+    brain.turn([{"role": "user", "content": "[System: test]"}], said.append, lambda: False,
+               access=parse_access("admin"), channel="text")
+    assert "".join(said) == "**Küche:** 19 °C, siehe [Doku](https://example.org/a)."
+    assert "hang_up" not in names(fake.requests[0]["tools"])
+
+
+def test_turn_reports_tool_results(brain):
+    fake = FakeMessages(message(tool("ha_state", entity_id="sensor.temp"), stop="tool_use"), message("21 Grad."))
+    brain.client = SimpleNamespace(messages=fake)
+    results = []
+    brain.turn([{"role": "user", "content": "[System: test]"}], lambda s: None, lambda: False,
+               access=parse_access("admin"), on_tool_result=lambda block, out: results.append((block.name, out)))
+    assert results == [("ha_state", "get_state ok")]
+
+
 def test_turn_plain_answer(brain):
     hang, said, messages, _, fake = run_turn(brain, message("Hallo Jan, wie kann ich helfen?"))
     assert hang is False

@@ -7,7 +7,9 @@ configuration:
     description: Usually 5060.
   sip_user:
     name: IP phone user name
-    description: User name of the IP phone in the FRITZ!Box (Telephony → Telephony Devices).
+    description: >-
+      User name of the IP phone in the FRITZ!Box (Telephony → Telephony Devices). User name and password both
+      empty = no phone, only Brain Assist.
   sip_password:
     name: IP phone password
     description: Password of the IP phone in the FRITZ!Box.
@@ -30,7 +32,9 @@ configuration:
     name: Callers
     description: >-
       Who may call and what they may do. number: phone number or * (everyone else; without * unknown numbers are
-      rejected, withheld numbers always). name: the first word is used to address the person.
+      rejected, withheld numbers always). For Brain Assist instead of or next to the number: ha_user (name or id
+      of the Home Assistant user) and ha_device (name or id of a device or of its area); * = everyone else, with a
+      user and a device entry the stricter access wins. name: the first word is used to address the person.
       access, several separated by commas: admin (everything), read (read everything, change nothing),
       calendar (free/busy only, book appointments without asking you), shopping (shopping list only),
       guest (take a message only). instructions: extra instructions for the assistant for this caller.
@@ -97,7 +101,7 @@ configuration:
     description: Appended to the system prompt.
   openai_api_key:
     name: OpenAI API key
-    description: For speech recognition and voice.
+    description: For speech recognition and voice on the phone; not needed for Brain Assist alone.
   stt_model:
     name: Speech recognition model
   tts_model:
@@ -139,8 +143,8 @@ configuration:
     name: Call trigger port
     description: HTTP port for outbound calls (/call).
   api_token:
-    name: Call trigger token
-    description: 'Empty = only reachable from this host (enough for Home Assistant). Set = reachable in the network with "Authorization: Bearer <token>".'
+    name: API token
+    description: 'Every request to the HTTP API needs "Authorization: Bearer <token>", also from this host. Empty = a token is generated (api-token.txt in the add-on folder) and the API is only reachable from this host. Set = this token counts and the API is reachable in the network.'
   default_calendars:
     name: Default calendars
     description: entity_ids or name parts; empty = all calendars.

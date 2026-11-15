@@ -1,5 +1,6 @@
 """Configuration: number normalisation, access rights, callers, migration, JSONC and pointer files, load()."""
 import json
+import os
 
 import pytest
 
@@ -69,8 +70,9 @@ def test_callers_are_normalised():
         {"number": " 0151 ", "name": " Jan ", "access": "admin", "language": "uk", "notify": True, "web": False},
         {"number": "*", "access": "nonsense", "notify": "yes", "web": "yes"},
     ])
-    assert out[0] == {"number": "0151", "name": "Jan", "access": frozenset({"admin"}), "instructions": "",
-                      "language": "uk", "notify": True, "web": False}
+    assert out[0] == {"number": "0151", "ha_user": "", "ha_device": "", "name": "Jan",
+                      "access": frozenset({"admin"}), "instructions": "", "language": "uk", "notify": True,
+                      "web": False}
     assert out[1]["access"] == frozenset({"guest"})
     assert out[1]["notify"] is None  # only real booleans count
     assert out[1]["web"] is None
@@ -79,6 +81,70 @@ def test_callers_are_normalised():
 def test_callers_without_number_are_dropped():
     assert config._callers([{"name": "Nobody"}, "junk", {"number": ""}]) == []
     assert len([w for w in config.WARNINGS if "without number" in w]) == 3
+
+
+def test_callers_for_brain_assist_need_no_number():
+    """#50: a Home Assistant user or device instead of or next to a number."""
+    out = config._callers([
+        {"ha_user": " Jan ", "number": "0151", "name": "Jan", "access": "admin"},
+        {"ha_user": "guest", "access": "shopping"},
+        {"ha_device": "Küche", "access": "read"},
+    ])
+    assert [(c["number"], c["ha_user"], c["ha_device"]) for c in out] == [
+        ("0151", "Jan", ""), ("", "guest", ""), ("", "", "Küche")]
+    assert config.WARNINGS == []
+
+
+# ---------------------------------------------------------------- API token, version
+def test_api_token_from_the_configuration(tmp_path):
+    cfg = config.Config(api_token=" secret ", log_dir=str(tmp_path))
+    assert config.api_token(cfg) == ("secret", False)
+    assert not (tmp_path / config.TOKEN_FILE).exists()
+
+
+def test_api_token_is_generated_once_and_kept(tmp_path):
+    cfg = config.Config(api_token="", log_dir=str(tmp_path / "logs"))
+    token, generated = config.api_token(cfg)
+    file = tmp_path / "logs" / config.TOKEN_FILE
+    assert generated and len(token) >= 40
+    assert file.read_text(encoding="utf-8").strip() == token
+    assert config.api_token(cfg) == (token, True)  # the same after a restart
+    if os.name != "nt":
+        assert file.stat().st_mode & 0o077 == 0  # only for the owner
+
+
+def test_api_token_file_can_be_replaced_by_hand(tmp_path):
+    (tmp_path / config.TOKEN_FILE).write_text("my-own\n", encoding="utf-8")
+    assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are a Unix thing")
+def test_api_token_file_put_there_by_hand_is_restricted_to_the_owner(tmp_path):
+    file = tmp_path / config.TOKEN_FILE
+    file.write_text("my-own\n", encoding="utf-8")
+    file.chmod(0o644)
+    assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
+    assert file.stat().st_mode & 0o777 == 0o600
+    assert config.WARNINGS == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are a Unix thing")
+def test_api_token_file_that_cannot_be_restricted_is_reported(tmp_path, monkeypatch):
+    file = tmp_path / config.TOKEN_FILE
+    file.write_text("my-own\n", encoding="utf-8")
+    file.chmod(0o644)
+
+    def refuse(self, mode):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(type(file), "chmod", refuse)
+    assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
+    assert len(config.WARNINGS) == 1 and "readable by other users" in config.WARNINGS[0]
+
+
+def test_version_is_the_add_on_version():
+    text = (config.ROOT / "braincall" / "config.yaml").read_text(encoding="utf-8")
+    assert config.version() and f'version: "{config.version()}"' in text
 
 
 def test_callers_not_a_list():

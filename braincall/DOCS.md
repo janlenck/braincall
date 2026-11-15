@@ -17,6 +17,9 @@ Home Assistant during the call. The add-on is the same program as the Windows ve
    Home Assistant access needs no token, the add-on gets it automatically.
 3. **Info tab:** enable *Start on boot* and *Watchdog*, then *Start*. The log must show `SIP status: REGISTERED`.
 
+Without a phone: leave user name and password of the IP phone empty. BrainCall then only answers
+[Brain Assist](#brain-assist) and needs no OpenAI key; the log shows `Phone: off`.
+
 ## Callers
 
 One entry per number: number (or `*` for everyone else), name, access, optional instructions, language,
@@ -140,20 +143,53 @@ Switching on takes a few seconds until the agent is registered at the FRITZ!Box 
 
 ## Calls from Home Assistant
 
-The call trigger listens on `http://127.0.0.1:8099/call` on the Home Assistant host (no token needed there):
+The HTTP API listens on `http://127.0.0.1:8099` on the Home Assistant host. Every request needs the API token,
+also from the host itself (since 1.11.0; other apps on the host reach that address too):
+
+- *API token* empty (default): a token is generated once and kept in `api-token.txt` in the add-on's folder
+  (`/app_configs/98055a04_braincall`, Samba or File editor). The API stays reachable from this host only.
+- *API token* set: that token counts, and the API is also reachable in the network.
+
+Put the token into `secrets.yaml` as `braincall_auth: "Bearer <token>"`, then:
 
 ```yaml
 rest_command:
   braincall:
     url: "http://127.0.0.1:8099/call"
     method: post
+    headers:
+      Authorization: !secret braincall_auth
     content_type: "application/json"
     payload: '{"message": {{ message | tojson }}{% if number is defined %}, "number": {{ number | tojson }}{% endif %}}'
 ```
 
 Then e.g. `action: rest_command.braincall` with `data: {message: "The washing machine is done."}`.
+A `rest_command` from before 1.11.0 without the `headers` lines gets `401 unauthorized`: add them.
 After each call the event `braincall_call` is fired (`number`, `answered`, `reason`, `duration_s`,
 `transcript`, `caller_name`, `access`, `summary`).
+
+## Brain Assist
+
+BrainCall can also be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on
+dashboards, voice devices). Phone and Assist then share one brain: the same assistant, tools and access rules.
+This needs the integration **Brain Assist** in Home Assistant, which forwards the requests to BrainCall
+(`janlenck/brainassist`, in preparation). The BrainCall side is ready since 1.11.0.
+
+Who may do what is decided in *Callers*, like on the phone. An entry for Assist has, instead of or next to the
+number:
+
+- `ha_user`: the name or id of the Home Assistant user (app, dashboard). An entry with number and `ha_user` is
+  the same person on the phone and in Assist.
+- `ha_device`: the name or id of a device, or of its area. Voice devices have no user: the access of the entry
+  applies to whoever speaks there.
+- `*` stands for every other user or device. Without it, users and devices that are not listed get a fixed
+  sentence ("not set up") and cause no API costs. The log names the user and device that asked.
+- With an entry for the user and one for the device the stricter access wins: a hallway tablet with `shopping`
+  stays at the shopping list even while an administrator is logged in on it.
+
+An entry without number is never called and matches no phone call. Assist has no line: nothing is hung up there,
+and planned calls are still made by phone or through `/api/tasks`. Spoken answers are short and without Markdown,
+written ones may use lists and tables.
 
 ## Planned calls with a task
 
@@ -171,9 +207,10 @@ On a mailbox it leaves a short message after the beep and does not call again: t
 - *Never dial*, *Only dial numbers matching*, *Hours for planned calls* and *Planned calls per day* limit what is
   dialed and when. The assistant says that it is an AI calling on your behalf; a callee who does not want to be
   called again is remembered.
-- From Home Assistant: `POST http://127.0.0.1:8099/tasks` with `{"number": "…", "task": "…"}` plans a call,
-  `GET /tasks` lists the tasks with their status and result, `DELETE /tasks/<id>` cancels one. Tasks are kept in
-  `tasks.json` in the add-on's config folder and survive a restart.
+- From Home Assistant: `POST http://127.0.0.1:8099/api/tasks` with `{"number": "…", "task": "…"}` plans a call,
+  `GET /api/tasks` lists the tasks with their status and result, `DELETE /api/tasks/<id>` cancels one (all with the
+  API token, see above; the paths without `/api` still work). Tasks are kept in `tasks.json` in the add-on's
+  config folder and survive a restart.
 
 ## Automatic shopping list
 
@@ -188,7 +225,7 @@ a minute:
 - After a restart of the add-on the time starts anew for checked items.
 
 The assistant answers "When did we last buy milk?" and "What did we buy last week?" from it. The history is
-`shopping-history.jsonl` in the add-on's folder; `GET /shopping/history?item=Milch&days=30` returns it, and every
+`shopping-history.jsonl` in the add-on's folder; `GET /api/shopping/history?item=Milch&days=30` returns it, and every
 purchase fires the event `braincall_shopping_bought` (`list`, `item`, `key`, `time`). Switch *Automatic shopping
 list* off and nothing is watched, written or removed.
 
@@ -204,7 +241,7 @@ shopping list) as a *Local To-do* list "Recurring purchases" and fills it from w
 - Change the interval in the name, move the due date, check an entry off to pause it, write `(never)` to keep it but
   never have it added. A deleted or paused entry comes back with the next purchase of the product.
 - "What is probably running out?" and "What do we still have?" are answered from it, as an estimate.
-  `GET /shopping/forecast` returns the same.
+  `GET /api/shopping/forecast` returns the same.
 
 Everything the add-on writes into the rhythm list is English. Empty *Rhythm list* = none.
 

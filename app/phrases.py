@@ -154,7 +154,7 @@ def wanted(cfg) -> list:
     for c in cfg.callers or []:
         name = first_name(c.get("name") or owner or c["number"])  # like main.caller_name
         lang = lang_of(c.get("language") or cfg.language or "de")
-        if c["number"] == "*" or not name or not lang:
+        if c["number"] in ("*", "") or not name or not lang:  # "" = only in Brain Assist, never on the phone
             continue
         if c["access"] != frozenset({"guest"}):
             out.append(greeting(lang, assistant, owner, name))

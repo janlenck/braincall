@@ -7,7 +7,9 @@ configuration:
     description: Normalerweise 5060.
   sip_user:
     name: Benutzername IP-Telefon
-    description: Benutzername des IP-Telefons aus der FRITZ!Box (Telefonie → Telefoniegeräte).
+    description: >-
+      Benutzername des IP-Telefons aus der FRITZ!Box (Telefonie → Telefoniegeräte). Benutzername und Passwort
+      beide leer = kein Telefon, nur Brain Assist.
   sip_password:
     name: Passwort IP-Telefon
     description: Passwort des IP-Telefons aus der FRITZ!Box.
@@ -30,7 +32,10 @@ configuration:
     name: Anrufer
     description: >-
       Wer anrufen darf und was er darf. number: Rufnummer oder * (alle anderen; ohne * werden unbekannte Nummern
-      abgewiesen, unterdrückte immer). name: das erste Wort dient als Anrede.
+      abgewiesen, unterdrückte immer). Für Brain Assist statt oder neben der Nummer: ha_user (Name oder ID des
+      Home-Assistant-Benutzers) und ha_device (Name oder ID eines Geräts oder seines Bereichs); * = alle anderen,
+      bei einem Eintrag für Benutzer und einem für das Gerät gilt das strengere Recht. name: das erste Wort dient
+      als Anrede.
       access, mehrere mit Komma getrennt: admin (alles), read (alles lesen, nichts ändern),
       calendar (nur frei/belegt, Termine ohne Rückfrage bei dir eintragen), shopping (nur Einkaufsliste),
       guest (nur Nachricht aufnehmen). instructions: zusätzliche Anweisung an den Assistenten für diesen Anrufer.
@@ -99,7 +104,7 @@ configuration:
     description: Wird an den Systemprompt angehängt.
   openai_api_key:
     name: OpenAI-API-Key
-    description: Für Spracherkennung und Stimme.
+    description: Für Spracherkennung und Stimme am Telefon; für Brain Assist allein nicht nötig.
   stt_model:
     name: Spracherkennungs-Modell
   tts_model:
@@ -141,8 +146,8 @@ configuration:
     name: Port des Anruf-Triggers
     description: HTTP-Port für ausgehende Anrufe (/call).
   api_token:
-    name: Token des Anruf-Triggers
-    description: 'Leer = nur von diesem Rechner erreichbar (reicht für Home Assistant). Gesetzt = im Netz erreichbar mit „Authorization: Bearer <Token>“.'
+    name: API-Token
+    description: 'Jeder Aufruf der HTTP-API braucht „Authorization: Bearer <Token>“, auch von diesem Rechner. Leer = ein Token wird erzeugt (api-token.txt im Ordner des Add-ons) und die API ist nur von diesem Rechner erreichbar. Gesetzt = dieser Token gilt und die API ist im Netz erreichbar.'
   default_calendars:
     name: Standard-Kalender
     description: entity_ids oder Namensteile; leer = alle Kalender.

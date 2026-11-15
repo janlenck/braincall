@@ -274,6 +274,7 @@ def server(main, monkeypatch):
         return out
 
     request.dialed = dialed
+    request.port = srv.server_address[1]
     yield request
     srv.shutdown()
     srv.server_close()
@@ -340,6 +341,110 @@ def test_call_when_line_busy(server, main):
 def test_unknown_paths(server):
     assert server("GET", "/call")[0] == 404
     assert server("POST", "/health")[0] == 404
+
+
+# ---------------------------------------------------------------- token for everything, Brain Assist (#50)
+@pytest.mark.parametrize("method, path", [
+    ("POST", "/call"), ("GET", "/tasks"), ("POST", "/tasks"), ("DELETE", "/tasks/abc"), ("GET", "/api/tasks"),
+    ("POST", "/api/tasks"), ("DELETE", "/api/tasks/abc"), ("GET", "/api/version"), ("POST", "/api/converse"),
+])
+@pytest.mark.parametrize("token", [None, "wrong"])
+def test_every_endpoint_needs_the_token(server, method, path, token):
+    """Also from 127.0.0.1: other apps on the host reach the port too."""
+    assert server(method, path, {"text": "Licht an", "number": "0151111"}, token=token)[0] == 401
+    assert server.dialed == []
+
+
+def test_only_health_is_open(server, main):
+    status, body = server("GET", "/health", token=None)
+    assert status == 200 and body["phone"] is True
+
+
+def test_version(server, main):
+    status, body = server("GET", "/api/version")
+    assert status == 200
+    assert body == {"api": 1, "version": config.version(), "phone": True, "assistant": "Claudine",
+                    "home_assistant": False}
+    assert body["version"].count(".") == 2
+
+
+def test_tasks_are_also_under_api(server, main):
+    assert server("GET", "/api/tasks") == server("GET", "/tasks")
+    assert server("GET", "/api/tasks")[0] == 200
+    assert server("GET", "/api/nothing")[0] == 404
+
+
+def test_call_without_a_phone(server, main, monkeypatch):
+    monkeypatch.setattr(main, "PHONE", False)
+    status, body = server("POST", "/call", {"number": "0151111"})
+    assert status == 503 and "no phone" in body["error"]
+    assert server("GET", "/health", token=None)[1]["phone"] is False
+
+
+def test_start_needs_the_phone_settings_only_for_the_phone(main, monkeypatch):
+    assert main.incomplete() == []
+    monkeypatch.setitem(main.cfg, "openai_api_key", "")
+    assert main.incomplete() == ["openai_api_key"]
+    monkeypatch.setitem(main.cfg, "sip_password", "")
+    assert main.incomplete() == ["sip_password", "openai_api_key"]  # half a SIP account is a mistake
+    monkeypatch.setitem(main.cfg, "sip_user", "")
+    assert main.incomplete() == []  # no phone: Brain Assist only
+    monkeypatch.setitem(main.cfg, "anthropic_api_key", "")
+    assert main.incomplete() == ["anthropic_api_key"]
+
+
+def converse(server, body, token="secret"):
+    """POST /api/converse: the status and the events of the stream."""
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    conn.request("POST", "/api/converse", body=json.dumps(body).encode(),
+                 headers={"Authorization": f"Bearer {token}"})
+    r = conn.getresponse()
+    raw = r.read().decode()
+    conn.close()
+    return r.status, r.getheader("Content-Type"), [json.loads(line) for line in raw.splitlines() if line]
+
+
+def test_converse_streams_the_answer(server, main, monkeypatch):
+    monkeypatch.setitem(main.cfg, "callers", config._callers([{"ha_user": "Jan", "name": "Jan", "access": "admin"}]))
+    seen = {}
+
+    def turn(messages, on_text, aborted, **kw):
+        seen.update(kw, messages=list(messages))
+        for piece in ("Es sind ", "**21 Grad**."):
+            on_text(piece)
+        return False
+
+    monkeypatch.setattr(main.brain, "turn", turn)
+    status, kind, events = converse(server, {"text": "Wie warm ist es?", "user_name": "jan", "language": "de"})
+    assert status == 200 and kind == "application/x-ndjson; charset=utf-8"
+    assert [e["type"] for e in events] == ["start", "text", "text", "end"]
+    assert "".join(e["text"] for e in events if e["type"] == "text") == "Es sind **21 Grad**."
+    assert events[0]["access"] == "admin" and events[-1]["continue_conversation"] is False
+    assert seen["channel"] == "text" and seen["access"] == {"admin"} and seen["language"] == "de"
+    assert seen["messages"][0]["content"].endswith("\nWie warm ist es?")
+    assert len(main.conversations) == 1
+
+
+def test_converse_refuses_unlisted_users_without_claude(server, main, monkeypatch):
+    monkeypatch.setattr(main.brain, "turn", lambda *a, **kw: pytest.fail("Claude must not be asked"))
+    status, _, events = converse(server, {"text": "Licht an", "user_name": "Fremder", "channel": "voice"})
+    assert status == 200 and [e["type"] for e in events] == ["start", "text", "end"]
+    assert "nicht freigeschaltet" in events[1]["text"]
+
+
+def test_converse_failure_ends_the_stream_with_the_reason(server, main, monkeypatch):
+    def boom(*a, **kw):
+        raise KeyError("callers")
+
+    monkeypatch.setattr(main.assist, "converse", boom)
+    status, _, events = converse(server, {"text": "Licht an"})
+    assert status == 200 and events == [{"type": "error", "message": "KeyError: 'callers'"}]
+
+
+@pytest.mark.parametrize("body, error", [({}, "no text"), ({"text": "x", "channel": "fax"}, "channel")])
+def test_converse_invalid_request(server, body, error):
+    status, body = server("POST", "/api/converse", body)
+    assert status == 400 and error in body["error"]
 
 
 def test_config_was_loaded_from_the_test_file(main):

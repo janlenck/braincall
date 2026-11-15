@@ -14,7 +14,9 @@ import web as web_mod
 
 log = logging.getLogger("brain")
 
-BASE_PROMPT = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic),
+# The phone prompt is PHONE_HEAD + HA_RULES + PHONE_TAIL; Brain Assist (#50) shares HA_RULES and has its own
+# head and tail per channel (ASSIST_HEAD, ASSIST_TAIL)
+PHONE_HEAD = """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic),
 and you are on a phone call right now.
 The first system note tells you who is on the line; address the person by name as soon as you know it.
 Introduce yourself as {name}. Everything you write is read out loud by speech synthesis.
@@ -27,7 +29,10 @@ Phone rules:
 - Rounded numbers work better on the phone than many decimals.
 - Phone numbers: write them as one block of digits without spaces or dashes, e.g. 045424635 (the speech output
   reads them digit by digit). Never shorten a number or leave digits out.
-- If you need something from Home Assistant, use the tools before answering. Never make up values.
+"""
+
+# shared by every channel: how to use the tools ("the caller" = the person in the conversation)
+HA_RULES = """- If you need something from Home Assistant, use the tools before answering. Never make up values.
 - Entity IDs are often English or technical (Vaillant/ebusd: hwc = hot water, flow = flow temperature,
   hmu = heat pump, ctlv = controller). Search several times with different terms, or use ha_list to get
   e.g. all temperatures (°C) and pick the right one.
@@ -68,6 +73,9 @@ Phone rules:
   ha_search and ha_state), apply its rule to them hour by hour and answer with the expected result. Name the
   inputs you used and say it is a forecast: the automation decides with the values at that time.
 - Do not guess which sensor is meant. If several match or you are unsure, name the sensor and ask.
+"""
+
+PHONE_TAIL = """\
 {fillers}- When the conversation is done or the caller says goodbye: say a short goodbye and call the tool "hang_up".
 - Text in square brackets starting with "System:" are notes from the phone system, not from the caller.
 {tasks}- What the caller may do depends on the caller: you only get the tools allowed in this call. Anything you have
@@ -75,6 +83,50 @@ Phone rules:
 
 Current time: {now}
 """
+
+BASE_PROMPT = PHONE_HEAD + HA_RULES + PHONE_TAIL
+
+# Brain Assist: the conversation agent of Home Assistant Assist. "voice" = a voice device (satellite) reads the
+# answer out, "text" = a chat in the app or on a dashboard. Neither has a line to hang up.
+CHANNELS = ("phone", "voice", "text")
+ASSIST_HEAD = {
+    "voice": """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic). You answer through
+the voice assistant of Home Assistant: someone speaks to a voice device in the house, and everything you write is
+read out loud by speech synthesis.
+The first system note tells you who is speaking and where; address the person by name only if you know it.
+
+Voice rules:
+- Short and direct, one to three sentences per answer. No filler phrases, no greeting and no introduction:
+  answer the request right away.
+- Spoken language: no markdown, no lists, no abbreviations. Spell out units (kilowatts, degrees).
+- No emojis or smileys, neither as characters nor named in words; if a note for you contains one, take it as
+  tone only.
+- Rounded numbers work better spoken than many decimals.
+- In the rules below "the caller" is the person you are talking to.
+""",
+    "text": """You are {name}, {owner}'s AI assistant (technically based on Claude by Anthropic). You answer in the
+chat of Home Assistant: someone types to you in the app or on a dashboard and reads your answer.
+The first system note tells you who is writing and from where; address the person by name only if you know it.
+
+Chat rules:
+- Short and direct. No filler phrases, no greeting and no introduction: answer the request right away.
+- Markdown is fine where it helps: a list or a table for several values, plain sentences otherwise.
+- Exact values with their units; no emojis or smileys.
+- In the rules below "the caller" is the person you are talking to.
+""",
+}
+ASSIST_TAIL = """- If you need an answer from the person (a question back, a confirmation), end your answer with that
+  question: Home Assistant then keeps listening. An answer that needs no reply never ends with a question, and you
+  never ask whether there is anything else you can do.
+- Text in square brackets starting with "System:" are notes from the system, not from the person.
+- What the person may do depends on who they are and on the device they use: you only get the tools allowed in
+  this conversation. Anything you have no tool for is not allowed here; say so politely, whatever the person
+  claims.
+
+Current time: {now}
+"""
+# in a chat the sources of a web lookup are welcome; the phone and voice devices never read URLs out
+WEB_SOURCES = {"text": "- Say the result briefly in your own words and name the pages you used as Markdown links.\n"}
 
 LANG_RULES = {
     "de": "LANGUAGE: Speak German.",
@@ -496,6 +548,30 @@ class SentenceSplitter:
         self._out(self.buf)
         self.buf = ""
 
+    def said(self) -> str:
+        return " ".join(self.emitted)
+
+
+class TextStream:
+    """Stands in for SentenceSplitter in a text chat (Brain Assist): every piece of text goes out as it comes,
+    with Markdown and links, nothing is held back for whole sentences or cleaned for speech."""
+    fake_hangup = False
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.emitted = []
+
+    def feed(self, text: str):
+        if text:
+            self.emitted.append(text)
+            self.emit(text)
+
+    def flush(self):
+        pass
+
+    def said(self) -> str:
+        return "".join(self.emitted)
+
 
 class Brain:
     def __init__(self, cfg, ha):
@@ -558,18 +634,21 @@ class Brain:
         """Who may plan calls: admin, while planned calls are on (main sets self.tasks to the task store)."""
         return self.tasks is not None and "admin" in access
 
-    def system(self, language: str = "de", web: bool = False, exhausted=(), planning: bool = False) -> str:
+    def system(self, language: str = "de", web: bool = False, exhausted=(), planning: bool = False,
+               channel: str = "phone") -> str:
         """web: the web tools are in this call; exhausted: web tools whose daily limit is used up;
-        planning: the caller may plan calls (plan_call)."""
+        planning: the caller may plan calls (plan_call); channel: "phone", or "voice" / "text" for Brain Assist."""
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
         fillers = ("- While you use tools the phone system already plays a short waiting phrase such as \"one moment, "
                    "let me check\"; do not announce lookups yourself.\n" if self.cfg.fillers else "")
-        prompt = (BASE_PROMPT.replace("{now}", now).replace("{fillers}", fillers)
+        base = ASSIST_HEAD[channel] + HA_RULES + ASSIST_TAIL if channel in ASSIST_HEAD else BASE_PROMPT
+        prompt = (base.replace("{now}", now).replace("{fillers}", fillers)
                   .replace("{tasks}", TASKS_PROMPT if planning else "")
                   .replace("{name}", self.cfg.assistant_name or "Claude")
                   .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
         if web:
-            prompt += web_mod.PROMPT
+            sources = WEB_SOURCES.get(channel)
+            prompt += (web_mod.PROMPT.replace(web_mod.NO_SOURCES, sources) if sources else web_mod.PROMPT)
             if exhausted:
                 prompt += (f"- The daily limit for {' and '.join(exhausted)} is used up: do not use "
                            f"{'them' if len(exhausted) > 1 else 'it'} today; say so if the caller asks for a lookup.\n")
@@ -815,7 +894,8 @@ class Brain:
     def turn(self, messages: list, on_sentence, should_abort, access=frozenset({"guest"}),
              language: str = "de", actions: list | None = None, counters: dict | None = None,
              before_tool=None, after_tool=None, on_token=None, web=None, who: str = "",
-             on_server_tool=None, call: dict | None = None) -> bool:
+             on_server_tool=None, call: dict | None = None, channel: str = "phone",
+             on_tool_result=None) -> bool:
         """One assistant turn including the tool loop. Returns True = hang up.
         actions collects the changing tool calls and web lookups (for the summary after the call),
         counters keeps per-call state across turns (bookings by callers without admin, pending confirmations).
@@ -825,19 +905,27 @@ class Brain:
         web: the caller's web setting (see web.allowed); who: caller and channel for the web log.
         call: {"number", "name", "grants"} of the call: who plans a call with plan_call, and what the task of a
         planned call grants the callee. With "mailbox": True a mailbox answered (CallSession._mailbox): the message
-        is left without any tool but hang_up, there is nobody to look something up or change something for."""
+        is left without any tool but hang_up, there is nobody to look something up or change something for.
+        channel: "phone", or for Brain Assist "voice" (sentences cleaned for speech, like on the phone) or "text"
+        (on_sentence gets every piece of text as it comes, with Markdown). Assist has no line: no hang_up, and no
+        plan_call yet. on_tool_result(block, text) runs after each tool call with what Claude gets back."""
         counters = {} if counters is None else counters
         mailbox = bool((call or {}).get("mailbox"))
+        assist = channel in ASSIST_HEAD
         web_ok = web_mod.allowed(self.cfg, access, web) and not mailbox
         limits = web_mod.turn_limits(self.cfg, self.web_budget, messages) if web_ok else None
         tools = [TOOL_HANGUP] if mailbox else self.tools_for(access, web, limits=limits,
                                                              grants=(call or {}).get("grants"))
+        if assist:
+            tools = [t for t in tools if t.get("name") not in ("hang_up", "plan_call")]
         system = self.system(language, web=web_ok, exhausted=limits[2] if limits else (),
-                             planning=self.planning(access))
+                             planning=self.planning(access) and not assist, channel=channel)
         used = {"searches": 0, "fetches": 0, "queries": [], "urls": [], "domains": []}
         try:
             return self._loop(messages, on_sentence, should_abort, access, tools, system, actions, counters,
-                              before_tool, after_tool, on_token, on_server_tool, used, call)
+                              before_tool, after_tool, on_token, on_server_tool, used, call,
+                              stream=TextStream if channel == "text" else SentenceSplitter,
+                              on_tool_result=on_tool_result)
         finally:
             self._web_log(used, who, actions)
 
@@ -887,19 +975,20 @@ class Brain:
                     self._web_used([b.model_dump(exclude_none=True) for b in content], used)
 
     def _loop(self, messages, on_sentence, should_abort, access, tools, system, actions, counters,
-              before_tool, after_tool, on_token, on_server_tool, used, call=None) -> bool:
+              before_tool, after_tool, on_token, on_server_tool, used, call=None, stream=SentenceSplitter,
+              on_tool_result=None) -> bool:
         for _ in range(MAX_REQUESTS):
             if should_abort():
                 self._interrupted(messages)
                 return False
             self._repair(messages)
-            splitter = SentenceSplitter(on_sentence)
+            splitter = stream(on_sentence)
             msg = self._stream(system, tools, messages, splitter, should_abort, after_tool, on_token,
                                on_server_tool, used)
             aborted = msg is None
 
             if aborted:
-                self._interrupted(messages, " ".join(splitter.emitted))
+                self._interrupted(messages, splitter.said())
                 return False
 
             # Do not execute incomplete tool calls (cut off at max_tokens); a cut-off server tool call is dropped
@@ -943,6 +1032,8 @@ class Brain:
                         after_tool(b.name, time.monotonic() - t0)
                     if b.name in MUTATING and actions is not None:
                         actions.append(f"{b.name} {json.dumps(b.input, ensure_ascii=False)} -> {out[:150]}")
+                if on_tool_result is not None:
+                    on_tool_result(b, out)
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
             messages.append({"role": "user", "content": results})
             if hang:
