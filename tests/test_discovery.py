@@ -1,4 +1,5 @@
 """discovery.py: the message to the Supervisor that lets Brain Assist connect without a token typed (#50)."""
+import json
 import logging
 
 import requests
@@ -93,6 +94,19 @@ def test_a_token_at_the_cut_of_a_long_answer_is_not_logged_in_part(monkeypatch, 
     with caplog.at_level(logging.WARNING, logger="discovery"):
         discovery.announce(cfg, token, sleep=lambda s: None)
     assert "T0KEN" not in caplog.text and "***" in caplog.text
+
+
+def test_a_token_with_quotes_echoed_as_json_is_not_logged(monkeypatch, caplog):
+    """api_token is free text: in a JSON echo its quotes, backslashes and umlauts are escaped."""
+    cfg = make_cfg()
+    cfg["supervisor_token"] = "sup"
+    token = 'my"secret\\tökenX'
+    echo = json.dumps({"config": {"token": token}})
+    assert token not in echo  # the plain form is not there
+    fake_post(monkeypatch, Resp(400, f"invalid {echo} / {json.dumps(token, ensure_ascii=False)} / {token!r}"))
+    with caplog.at_level(logging.WARNING, logger="discovery"):
+        discovery.announce(cfg, token, sleep=lambda s: None)
+    assert "secret" not in caplog.text and "kenX" not in caplog.text and "***" in caplog.text
 
 
 def test_an_exception_that_names_the_tokens_is_logged_without_them(monkeypatch, caplog):

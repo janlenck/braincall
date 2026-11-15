@@ -3,6 +3,7 @@ which token it needs. Home Assistant then offers Brain Assist without an address
 
 The Supervisor accepts the message only for services listed under `discovery` in braincall/config.yaml.
 """
+import json
 import logging
 import time
 
@@ -23,11 +24,18 @@ def message(cfg, token: str) -> dict:
     return {"service": SERVICE, "config": {"host": HOST, "port": int(cfg.http_port), "token": token}}
 
 
+def _forms(secret: str) -> list[str]:
+    """How a secret may appear in an echo: as it is, escaped in JSON (with or without \\u escapes), as repr()."""
+    forms = {secret, json.dumps(secret)[1:-1], json.dumps(secret, ensure_ascii=False)[1:-1], repr(secret)[1:-1]}
+    return sorted(forms, key=len, reverse=True)  # the longest first: an escaped form contains the plain parts
+
+
 def _redact(text: str, *secrets: str) -> str:
     """The text without the secrets: an error answer or exception may echo what was sent, the token included."""
     for secret in secrets:
         if secret:
-            text = text.replace(secret, "***")
+            for form in _forms(secret):
+                text = text.replace(form, "***")
     return text
 
 
