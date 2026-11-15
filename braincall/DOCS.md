@@ -61,8 +61,7 @@ last three Assist conversations are given to the assistant the next time, so nob
 - With `none` the file is neither read nor written. To forget one person:
   `DELETE http://127.0.0.1:8099/api/memory?ha_user=Jan` (or `number=…`, `ha_device=…`) with the API token; to
   forget everything, delete the file.
-- *notify* per caller also applies to Assist: with `true` the summary of each Assist conversation goes to
-  *Notify after calls*. Without it Assist conversations are not announced.
+- Assist conversations are never announced, also not with *notify* `true`: notifications are for calls.
 
 Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), the
 shopping history (`shopping-history.jsonl`) and the web usage of the day (`web-usage.json`) are in the add-on's own folder
@@ -186,6 +185,10 @@ BrainCall can also be the conversation agent of Home Assistant's own assistant (
 dashboards, voice devices). Phone and Assist then share one brain: the same assistant, tools and access rules.
 This needs the integration **Brain Assist** in Home Assistant, which forwards the requests to BrainCall:
 [janlenck/brainassist](https://github.com/janlenck/brainassist) (BrainCall 1.11.0 or newer).
+
+Since 1.13.0 the add-on tells Home Assistant where its API is and which token it needs. Once Brain Assist is
+installed, Settings → Devices & services shows *Brain Assist* as discovered: confirm, no address or token to type.
+A new *API token* reaches the integration the same way at the next start of the add-on.
 
 Who may do what is decided in *Callers*, like on the phone. An entry for Assist has, instead of or next to the
 number:
