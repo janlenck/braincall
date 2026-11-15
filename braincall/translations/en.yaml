@@ -72,11 +72,13 @@ configuration:
     name: Ring time (s)
     description: After this an unanswered call is cancelled.
   caller_memory:
-    name: Caller memory
+    name: Memory per person
     description: >-
-      Remember the summary of each call per number and give the last three to the assistant in the next call
-      with that number. none: no memory (default). A number of days, e.g. 30: only calls of the last 30 days.
-      forever: no age limit. Stored in calls.jsonl in the add-on folder.
+      Remember the summary of each call and each Brain Assist conversation per person and give the last three
+      of each to the assistant the next time. An entry with number and ha_user has one memory on the phone and
+      in Assist. none: no memory (default). A number of days, e.g. 30: only the last 30 days. forever: no age
+      limit. Stored in calls.jsonl in the add-on folder. With the memory on, every Assist conversation costs
+      one more short request to Claude for its summary.
   log_level:
     name: Log level
     description: >-

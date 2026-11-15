@@ -455,6 +455,26 @@ def test_turn_reports_tool_results(brain):
     assert results == [("ha_state", "get_state ok")]
 
 
+def test_summary_of_an_assist_conversation_is_not_called_a_phone_call(brain):
+    asked = []
+
+    def create(**kw):
+        asked.append(kw["messages"][0]["content"])
+        return message("Jan hat das Licht im Flur eingeschaltet.")
+
+    brain.client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    transcript = ["Jan via Satellite: Mach das Licht im Flur an", "Claudine: Ist an."]
+    assert brain.summarize(transcript, "Jan via Satellite", ["ha_control …"], "de", channel="voice") == (
+        "Jan hat das Licht im Flur eingeschaltet.")
+    brain.summarize(transcript, "Jan", [], "en", channel="text")
+    brain.summarize(transcript, "Jan (0151)", [], "de")
+    voice, text, phone = asked
+    assert "in Home Assistant (spoken to a voice device)" in voice and "in German" in voice
+    assert "Person: Jan via Satellite" in voice and "Actions: ha_control …" in voice
+    assert "(typed in the chat)" in text and "in English" in text
+    assert "phone call" not in voice + text and "Summarize this phone call" in phone and "Caller: Jan (0151)" in phone
+
+
 def test_turn_plain_answer(brain):
     hang, said, messages, _, fake = run_turn(brain, message("Hallo Jan, wie kann ich helfen?"))
     assert hang is False

@@ -207,17 +207,129 @@ def test_memory_is_off_by_default(main, after):
     assert not main.calls.enabled
     after("0999")
     assert not (Path(main._LOGDIR) / "calls.jsonl").exists()
-    assert "no memory of earlier calls" in main.previous("0999", main.GUEST)
+    assert "no memory of earlier calls or conversations" in main.previous("0999", main.GUEST)
 
 
 def test_after_call_remembers_summary_for_next_call(main, after, remembered):
     after("+49170222")
     after("0999", inbound=False)
     note = main.previous("0170222", frozenset({"calendar"}))
-    assert "(they called): Summary of Maryna (+49170222)" in note
-    assert "You remember earlier calls with this number" in note
+    assert "(phone, they called): Summary of Maryna (+49170222)" in note
+    assert "You remember earlier calls and conversations with this caller" in note
     assert "none for this caller" in main.previous("0160333", main.GUEST)
-    assert "(you called them): Summary of 0999" in main.previous("0999", main.GUEST)
+    assert "(phone, you called them): Summary of 0999" in main.previous("0999", main.GUEST)
+
+
+# ---------------------------------------------------------------- one memory on the phone and in Brain Assist (#50)
+PEOPLE = [
+    {"number": "0151111", "ha_user": "Jan", "name": "Jan", "access": "admin"},
+    {"number": "0170222", "ha_user": "maryna-id", "name": "Maryna", "access": "calendar", "notify": True},
+    {"ha_device": "Küche", "access": "read"},
+    {"ha_user": "*", "access": "guest"},
+]
+
+
+@pytest.fixture
+def people(main, monkeypatch, remembered, after):
+    """Callers for phone and Assist, the memory on, summaries faked ("Summary of <who>")."""
+    monkeypatch.setitem(main.cfg, "callers", config._callers(PEOPLE))
+    return main
+
+
+def conversation(main, text="Wie warm ist es?", channel="text", **who):
+    """An Assist conversation that is over, as assist.Conversations hands it to on_close."""
+    req = main.assist.parse({"text": text, "channel": channel, **who})
+    conv = main.assist.Conversation("c1", "key")
+    conv.person = main.assist.identify(main.cfg.callers, req)
+    conv.channel, conv.language, conv.label = channel, "de", main.assist.label(conv.person, req)
+    conv.device = req["device_name"] or req["area_name"]
+    conv.transcript = [f"{conv.label}: {text}", "Claudine: 21 Grad."]
+    conv.ended = time.time()
+    return conv
+
+
+def test_a_phone_call_is_remembered_in_assist(people, after):
+    after("0151111")
+    note = people.recall(people.assist.identify(people.cfg.callers, people.assist.parse(
+        {"text": "x", "user_name": "jan"})))
+    assert "(phone, they called): Summary of Jan (0151111)" in note and "with this person" in note
+
+
+def test_an_assist_conversation_is_remembered_on_the_phone(people, events):
+    people.after_assist(conversation(people, "Stell die Heizung auf 21 Grad", user_name="Jan",
+                                     device_name="Tablet", area_name="Flur"))
+    note = people.previous("0151111", frozenset({"admin"}), people.find_caller("0151111"))
+    assert "(Home Assistant chat, device “Tablet”): Summary of Jan via Tablet" in note
+    assert events["summarized"] == {"channel": "text"}
+    line = json.loads(people.calls.path.read_text(encoding="utf-8").splitlines()[-1])
+    assert (line["number"], line["ha_user"], line["channel"], line["device"]) == (
+        "0151111", "jan", "assist-text", "Tablet")
+    assert "direction" not in line
+    assert events["notify"] == []  # Assist conversations are not announced unless the entry asks for it
+
+
+def test_assist_summary_is_announced_only_if_the_entry_asks(people, events):
+    people.after_assist(conversation(people, "Hat Jan Freitag Zeit?", channel="voice", user_id="maryna-id",
+                                     user_name="Maryna K"))
+    assert events["notify"] == [("notify.phone", "Gespräch mit Maryna in Home Assistant", "Summary of Maryna")]
+
+
+def test_a_voice_device_has_its_own_memory(people, after):
+    after("0151111")
+    kitchen = {"device_name": "Satellite", "area_name": "Küche"}
+    people.after_assist(conversation(people, "Wie warm ist es draußen?", channel="voice", **kitchen))
+    person = people.assist.identify(people.cfg.callers, people.assist.parse({"text": "x", **kitchen}))
+    note = people.recall(person)
+    assert "(Home Assistant, spoken, device “Satellite”)" in note and "the people who used this device" in note
+    assert "Summary of someone via Satellite" in note
+    assert "Jan (0151111)" not in note  # nothing of a person, whoever spoke there
+    assert "Satellite" not in people.previous("0151111", frozenset({"admin"}), people.find_caller("0151111"))
+
+
+def test_everyone_else_is_remembered_by_their_own_id(people):
+    for user, name in (("u1", "Tom"), ("u2", "Eva")):
+        people.after_assist(conversation(people, "Hallo", user_id=user, user_name=name))
+    note = people.recall(people.assist.identify(people.cfg.callers, people.assist.parse(
+        {"text": "x", "user_id": "u2", "user_name": "Eva"})))
+    assert "Summary of Eva" in note and "Tom" not in note
+
+
+def test_closed_conversation_is_summarized_in_the_background(people, monkeypatch):
+    done = []
+    monkeypatch.setattr(people, "after_assist", done.append)
+    conv = conversation(people, user_name="Jan")
+    people.assist_closed(conv)
+    for _ in range(100):
+        if done:
+            break
+        time.sleep(0.01)
+    assert done == [conv]
+
+
+def test_nothing_is_summarized_without_memory_or_notification(main, monkeypatch):
+    """No request to Claude for a summary nobody would use."""
+    monkeypatch.setitem(main.cfg, "callers", config._callers(PEOPLE))
+    monkeypatch.setattr(main, "after_assist", lambda conv: pytest.fail("must not be summarized"))
+    assert not main.calls.enabled
+    main.assist_closed(conversation(main, user_name="Jan"))            # memory off, no notify
+    empty = conversation(main, user_id="maryna-id")
+    empty.transcript = []
+    main.assist_closed(empty)                                           # nothing was said
+    monkeypatch.setitem(main.cfg, "notify_services", [])
+    main.assist_closed(conversation(main, user_id="maryna-id"))       # notify wanted, but nowhere to send it
+    time.sleep(0.05)
+
+
+def test_memory_can_be_forgotten_per_person(server, people, after):
+    after("0151111")
+    after("0170222")
+    people.after_assist(conversation(people, user_name="Jan"))
+    assert server("DELETE", "/api/memory", token=None)[0] == 401
+    assert server("DELETE", "/api/memory?ha_user=Jan") == (200, {"forgotten": 2})  # the call and the chat
+    assert server("DELETE", "/api/memory?ha_user=Jan") == (200, {"forgotten": 0})
+    assert server("DELETE", "/api/memory?number=%2B49170222") == (200, {"forgotten": 1})
+    assert server("DELETE", "/api/memory")[0] == 400
+    assert "none for this caller" in people.previous("0151111", frozenset({"admin"}), people.find_caller("0151111"))
 
 
 def test_memory_is_ordered_by_call_end_not_save_time(main, remembered, events, monkeypatch):

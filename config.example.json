@@ -120,8 +120,9 @@
   // --- Logs and call notes ---
   "log_dir": "",                      // empty = logs\ in the project folder; environment variables allowed
   "log_level": "info",                // "trace" (also every look at the shopping list), "debug", "info", "warning"
-  "caller_memory": "none",            // summaries of earlier calls per number as context in the next call:
-                                      // "none" (off), days like 30 (only that recent) or "forever"; in calls.jsonl
+  "caller_memory": "none",            // summaries of earlier calls and Brain Assist conversations per person as
+                                      // context the next time: "none" (off), days like 30 (only that recent)
+                                      // or "forever"; in calls.jsonl. One memory for number and ha_user of an entry
 
   // --- HTTP API: call trigger, planned calls, shopping history, Brain Assist ---
   // Every request needs "Authorization: Bearer <token>", also from this computer (only /health is open).

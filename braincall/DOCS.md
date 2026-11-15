@@ -46,11 +46,23 @@ After an incoming call a short summary (translated into the configured language)
 *Notify after calls*: notify entities (e.g. `notify.<phone>`) or notify services (e.g. `notify.mobile_app_<phone>`, an e-mail notifier). Default: for everyone except
 `admin`; *notify* per caller overrides it.
 
-*Caller memory* (default `none`): the summary of each call is kept per number in `calls.jsonl` and the last
-three are given to the assistant at the start of the next call with that number, so callers do not have to
-repeat themselves. A number of days (e.g. `30`) keeps only that recent calls, `forever` has no age limit.
-A caller only gets summaries of calls with at most their current access. With `none` the file is neither read
-nor written; delete it to forget earlier calls.
+*Memory per person* (`caller_memory`, default `none`): the summary of each call and each
+[Brain Assist](#brain-assist) conversation is kept per person in `calls.jsonl`, and the last three calls and
+last three Assist conversations are given to the assistant the next time, so nobody has to repeat themselves.
+
+- A person is found by the phone number or by `ha_user` of their entry: an entry with both has one memory on the
+  phone and in Assist. A voice device without a user (`ha_device`) has its own memory, for whoever speaks there.
+- An Assist conversation is summarized when it is over: 15 minutes after the last request, or as soon as the
+  same user starts a new one on the same device. A restart of the add-on loses the conversations still open.
+  Each summary is one more short request to Claude.
+- A number of days (e.g. `30`) keeps only that recent entries, `forever` has no age limit.
+- Nobody gets summaries recorded with more access than they have now: what an administrator said in the chat
+  does not reach the same person on a restricted tablet.
+- With `none` the file is neither read nor written. To forget one person:
+  `DELETE http://127.0.0.1:8099/api/memory?ha_user=Jan` (or `number=…`, `ha_device=…`) with the API token; to
+  forget everything, delete the file.
+- *notify* per caller also applies to Assist: with `true` the summary of each Assist conversation goes to
+  *Notify after calls*. Without it Assist conversations are not announced.
 
 Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), the
 shopping history (`shopping-history.jsonl`) and the web usage of the day (`web-usage.json`) are in the add-on's own folder
@@ -172,8 +184,8 @@ After each call the event `braincall_call` is fired (`number`, `answered`, `reas
 
 BrainCall can also be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on
 dashboards, voice devices). Phone and Assist then share one brain: the same assistant, tools and access rules.
-This needs the integration **Brain Assist** in Home Assistant, which forwards the requests to BrainCall
-(`janlenck/brainassist`, in preparation). The BrainCall side is ready since 1.11.0.
+This needs the integration **Brain Assist** in Home Assistant, which forwards the requests to BrainCall:
+[janlenck/brainassist](https://github.com/janlenck/brainassist) (BrainCall 1.11.0 or newer).
 
 Who may do what is decided in *Callers*, like on the phone. An entry for Assist has, instead of or next to the
 number:
@@ -187,7 +199,8 @@ number:
 - With an entry for the user and one for the device the stricter access wins: a hallway tablet with `shopping`
   stays at the shopping list even while an administrator is logged in on it.
 
-An entry without number is never called and matches no phone call. Assist has no line: nothing is hung up there,
+An entry without number is never called and matches no phone call. With *Memory per person* on, phone and Assist share
+what they remember of a person. Assist has no line: nothing is hung up there,
 and planned calls are still made by phone or through `/api/tasks`. Spoken answers are short and without Markdown,
 written ones may use lists and tables.
 

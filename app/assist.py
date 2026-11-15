@@ -40,6 +40,9 @@ HINT = {
 }
 
 
+CLOSING = "Answer the request right away.]"  # the end of the first system note of a conversation
+
+
 def _fold(value) -> str:
     return str(value or "").strip().casefold()
 
@@ -95,7 +98,23 @@ def identify(callers: list, req: dict) -> dict | None:
         return None
     access = rights.stricter(user["access"], device["access"]) if user and device else entries[0]["access"]
     webs = [e.get("web") for e in entries]
+    # Whose memory this is (memory.CallMemory): the person's, shared with their phone number. "*" stands for
+    # many users or devices: there the one that really asks counts. Without a user it is the memory of the
+    # device, for whoever speaks there.
+    asking = req.get("user_id") or req.get("user_name")
+    if user is not None and _fold(user["ha_user"]) != "*":
+        whom = {"ha_user": user["ha_user"], "number": user["number"] if user["number"] != "*" else ""}
+    elif user is not None and asking:
+        whom = {"ha_user": asking, "number": ""}
+    elif device is not None:  # nobody is logged in there (a voice device), whatever entry gave the access
+        own = _fold(device["ha_device"]) != "*"
+        whom = {"ha_device": device["ha_device"] if own else req.get("device_id") or req.get("device_name")}
+    else:
+        whom = {}  # a request without user and device: nothing to remember it by
     return {
+        "who": whom,
+        # summary of a conversation to the notify services: off unless an entry asks for it
+        "notify": any(e.get("notify") is True for e in entries),
         # the entries plus who it really is: "*" stands for many users and devices
         "key": "|".join([_fold(user["ha_user"]) if user else "", _fold(device["ha_device"]) if device else "",
                          _fold(req.get("user_id") or req.get("user_name")),
@@ -140,7 +159,7 @@ def intro(person: dict, req: dict, cfg, owner: str, shopping_history: bool) -> s
                         where="conversation", anyone="The person")
     if person["instructions"]:
         note += f"Instructions from {owner} for this person: {_clean(person['instructions'])} "
-    return note + "Answer the request right away.]"
+    return note + CLOSING
 
 
 def refusal(req: dict, lang: str, assistant: str) -> str:
@@ -165,7 +184,14 @@ class Conversation:
         self.key = key            # who it belongs to (identify): another person never continues it
         self.messages: list = []
         self.counters: dict = {}  # pending confirmations, bookings (Brain.turn)
-        self.actions: list = []   # changing tool calls and web lookups, for a later summary
+        self.actions: list = []   # changing tool calls and web lookups, for the summary
+        self.transcript: list = []  # "Jan: …" / "Claudine: …", for the summary once the conversation is over
+        self.person: dict | None = None  # identify() of the last request
+        self.channel = "text"
+        self.language = "de"
+        self.label = ""           # for the log and the summary: "Jan via Küche Satellite"
+        self.device = ""          # name of the device or its area
+        self.ended = 0.0          # time.time() of the end of the last request
         self.lock = threading.Lock()  # one turn at a time
         self.used = 0.0
         self.pins = 0             # requests that hold it (Conversations.get … release): never forgotten meanwhile
@@ -175,14 +201,41 @@ class Conversations:
     """The running Assist conversations by conversation_id, forgotten after IDLE_SECONDS without a request.
     get() hands a conversation out pinned; release() after the turn. A pinned one is never dropped: otherwise a
     second request with the same id could get a new object while the first still runs, with its own history and
-    confirmations."""
+    confirmations.
+    on_close(conversation) is called for every conversation that is over: not used for the idle time, replaced
+    by a new one of the same user and device, or dropped for the limit. That is when it is summarized for the
+    memory (Assist has no hang-up). It runs outside the lock and must return quickly."""
 
-    def __init__(self, idle: float = IDLE_SECONDS, limit: int = MAX_CONVERSATIONS, clock=time.monotonic):
+    def __init__(self, idle: float = IDLE_SECONDS, limit: int = MAX_CONVERSATIONS, clock=time.monotonic,
+                 on_close=None):
         self.idle = idle
         self.limit = limit
         self.clock = clock
+        self.on_close = on_close
         self.lock = threading.Lock()
         self.items: dict[str, Conversation] = {}
+
+    def _expired(self, now: float) -> list:
+        """Takes out what was not used for the idle time (caller holds the lock)."""
+        old = [c for c in self.items.values() if now - c.used > self.idle and not c.pins]
+        for c in old:
+            del self.items[c.id]
+        return old
+
+    def _closed(self, closed: list):
+        if self.on_close is not None:
+            for conv in closed:
+                try:
+                    self.on_close(conv)
+                except Exception:  # noqa: BLE001  the summary must never break a request
+                    log.exception("Closing an Assist conversation failed")
+
+    def sweep(self):
+        """Closes the conversations whose idle time is over. Called regularly, so the last conversation of the
+        day is summarized too, not only when the next request comes."""
+        with self.lock:
+            closed = self._expired(self.clock())
+        self._closed(closed)
 
     def get(self, cid: str, key: str) -> Conversation:
         """The conversation with this id, or a new one: without an id, after the idle time, or if the id belongs
@@ -190,10 +243,15 @@ class Conversations:
         It comes pinned: call release() when the request is done."""
         now = self.clock()
         with self.lock:
-            for old in [k for k, c in self.items.items() if now - c.used > self.idle and not c.pins]:
-                del self.items[old]
+            closed = self._expired(now)
             conv = self.items.get(cid) if cid else None
             if conv is None or conv.key != key:
+                # a new conversation of the same user on the same device: the earlier one is over
+                # (Home Assistant gives a new id after a few minutes, or for a new chat)
+                earlier = [c for c in self.items.values() if c.key == key and not c.pins]
+                for c in earlier:
+                    del self.items[c.id]
+                closed += earlier
                 conv = Conversation(cid if cid and conv is None else uuid.uuid4().hex, key)
                 self.items[conv.id] = conv
             conv.used = now
@@ -202,19 +260,22 @@ class Conversations:
                 idle = sorted((c for c in self.items.values() if not c.pins), key=lambda c: c.used)
                 for c in idle[:len(self.items) - self.limit]:
                     del self.items[c.id]
-            return conv
+                    closed.append(c)
+        self._closed(closed)
+        return conv
 
     def release(self, conv: Conversation):
         """The request that got conv from get() is done: the idle time counts from now."""
         with self.lock:
             conv.pins = max(0, conv.pins - 1)
             conv.used = self.clock()
+            conv.ended = time.time()
 
     def __len__(self) -> int:
         return len(self.items)
 
 
-def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: str = "") -> None:
+def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: str = "", recall=None) -> None:
     """One Assist request (parse) answered as events for the stream of POST /api/converse:
       {"type": "start", "conversation_id", "access"}
       {"type": "text", "text"}                          pieces of the answer, to be joined as they are
@@ -222,7 +283,8 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
       {"type": "tool_result", "id", "name", "result"}
       {"type": "end", "conversation_id", "continue_conversation"}
       {"type": "error", "message"}                      instead of "end"
-    aborted() is True once the client is gone."""
+    aborted() is True once the client is gone. recall(person) -> the system note on what is remembered of the
+    person (memory.note), for the start of a conversation."""
     person = identify(cfg.callers, req)
     lang = language(person, req, cfg)
     who = label(person, req)
@@ -239,12 +301,18 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
         return
     conv = store.get(req["conversation_id"], person["key"])
     try:
-        _turn(brain, cfg, conv, person, req, lang, who, emit, aborted, owner)
+        _turn(brain, cfg, conv, person, req, lang, who, emit, aborted, owner, recall)
     finally:
         store.release(conv)
 
 
-def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, who: str, emit, aborted, owner: str):
+def subject(person: dict) -> str:
+    """Whom the notes of a memory are about, for memory.note."""
+    return "the people who used this device" if "ha_device" in person["who"] else "this person"
+
+
+def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, who: str, emit, aborted, owner: str,
+          recall=None):
     """The turn of converse() for a listed person, in their conversation."""
     channel = req["channel"]
     assistant = cfg.assistant_name or "Claude"
@@ -275,9 +343,20 @@ def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, wh
     with conv.lock:
         emit({"type": "start", "conversation_id": conv.id, "access": access})
         log.info("Assist (%s, access %s) %s: %s", channel, access, who, req["text"])
+        conv.person, conv.channel, conv.language, conv.label = person, channel, lang, who
+        conv.device = req["device_name"] or req["area_name"]
         if not conv.messages:
-            conv.messages.append({"role": "user", "content": intro(
-                person, req, cfg, owner or "the owner", bool(getattr(brain, "shopping", None)))})
+            note = intro(person, req, cfg, owner or "the owner", bool(getattr(brain, "shopping", None)))
+            if recall is not None:
+                try:
+                    remembered = _clean(recall(person))
+                except Exception:  # noqa: BLE001  the memory must never stop a conversation
+                    log.exception("Reading the memory failed")
+                    remembered = ""
+                if remembered:  # inside the system note, before its closing sentence
+                    note = note.removesuffix(CLOSING) + remembered.rstrip() + " " + CLOSING
+            conv.messages.append({"role": "user", "content": note})
+        conv.transcript.append(f"{who}: {req['text']}")
         last = conv.messages[-1]
         if last["role"] == "user" and isinstance(last["content"], str):
             conv.messages[-1] = {"role": "user", "content": last["content"] + "\n" + req["text"]}
@@ -294,5 +373,7 @@ def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, wh
             emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
             return
         answer = "".join(said).strip()
+        if answer:
+            conv.transcript.append(f"{assistant}: {answer}")
         log.info("%s: %s", assistant, answer)
         emit({"type": "end", "conversation_id": conv.id, "continue_conversation": asks(answer)})
