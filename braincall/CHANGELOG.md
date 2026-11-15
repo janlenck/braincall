@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.1
+
+- Fix: when Home Assistant could not be told where the API is, the warning in the log could contain the API token
+  if the Supervisor quoted the request in its error. Both tokens are now replaced by `***` there
+
 ## 1.13.0
 
 - New: Home Assistant finds BrainCall by itself (#50). At every start the add-on tells Home Assistant where its API

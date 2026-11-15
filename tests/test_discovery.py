@@ -73,6 +73,39 @@ def test_a_refusal_is_not_repeated_and_says_what_still_works(monkeypatch, caplog
     assert "403" in caplog.text and "by hand" in caplog.text and "the-api-token" not in caplog.text
 
 
+def test_an_answer_that_echoes_the_token_is_logged_without_it(monkeypatch, caplog):
+    """The Supervisor may quote what it got in its error: neither the API token nor its own token reach the log."""
+    cfg = make_cfg()
+    cfg["supervisor_token"] = "the-supervisor-token"
+    echo = 'invalid config {"host": "127.0.0.1", "port": 8099, "token": "the-api-token"}'
+    fake_post(monkeypatch, Resp(400, echo))
+    with caplog.at_level(logging.WARNING, logger="discovery"):
+        assert discovery.announce(cfg, "the-api-token", sleep=lambda s: None) is False
+    assert "400 invalid config" in caplog.text and '"token": "***"' in caplog.text
+    assert "the-api-token" not in caplog.text and "the-supervisor-token" not in caplog.text
+
+
+def test_a_token_at_the_cut_of_a_long_answer_is_not_logged_in_part(monkeypatch, caplog):
+    cfg = make_cfg()
+    cfg["supervisor_token"] = "sup"
+    token = "T0KEN" * 10
+    fake_post(monkeypatch, Resp(400, "x" * 180 + token))
+    with caplog.at_level(logging.WARNING, logger="discovery"):
+        discovery.announce(cfg, token, sleep=lambda s: None)
+    assert "T0KEN" not in caplog.text and "***" in caplog.text
+
+
+def test_an_exception_that_names_the_tokens_is_logged_without_them(monkeypatch, caplog):
+    cfg = make_cfg()
+    cfg["supervisor_token"] = "the-supervisor-token"
+    failure = requests.ConnectionError("Authorization: Bearer the-supervisor-token, body token the-api-token")
+    fake_post(monkeypatch, *[failure] * discovery.ATTEMPTS)
+    with caplog.at_level(logging.WARNING, logger="discovery"):
+        assert discovery.announce(cfg, "the-api-token", sleep=lambda s: None) is False
+    assert "ConnectionError" in caplog.text
+    assert "the-api-token" not in caplog.text and "the-supervisor-token" not in caplog.text
+
+
 def test_gives_up_after_a_few_attempts(monkeypatch):
     cfg = make_cfg()
     cfg["supervisor_token"] = "sup"
