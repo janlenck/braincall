@@ -18,6 +18,7 @@ from test_brain import StubHA, message, names, tool
 TZ = ZoneInfo("Europe/Berlin")
 NOON = datetime(2026, 11, 10, 12, 0, tzinfo=TZ)  # a Tuesday
 JAN = {"number": "0151111", "name": "Jan Mobile"}
+JAN_STORED = {**JAN, "ha_user": ""}
 CALLERS = [{"number": "0151111", "name": "Jan Mobile", "access": "admin"},
            {"number": "0170222", "name": "Mark", "access": "guest"}]
 
@@ -89,7 +90,7 @@ def test_build_defaults():
     t = build()
     assert (t["status"], t["retries"], t["leave_message"], t["call_back"]) == ("planned", 2, True, False)
     assert t["not_before"] == "2026-11-10T12:00+01:00" and t["not_after"] == "2026-11-11T12:00+01:00"
-    assert t["requester"] == JAN and t["grants"] == {} and t["follow_up"] == []
+    assert t["requester"] == JAN_STORED and t["grants"] == {} and t["follow_up"] == []
 
 
 def test_build_stores_the_number_without_spaces():
@@ -151,6 +152,95 @@ def test_clean_result_fixes_the_shape():
                  "result": ""}], "open_points": ["eins"], "do_not_call": True}
     assert tasks.clean_result(None)["status"] == "partial"
     assert tasks.clean_result({"status": "message_left", "summary": "x"})["status"] == "message_left"
+
+
+# ---------------------------------------------------------------- whom to call, who asks (#50)
+PEOPLE = [{"number": "0151111", "ha_user": "Jan", "name": "Jan", "access": "admin"},
+          {"number": "0170222", "name": "Mark", "access": "guest"},
+          {"number": "0170333", "name": "Mark", "access": "guest"},
+          {"number": "0160444", "ha_user": "maryna-id", "name": "Maryna", "access": "read"},
+          {"ha_user": "dashboard", "name": "Flur", "access": "admin"},
+          {"number": "*", "name": "Unknown", "access": "guest"}]
+
+
+def people_cfg():
+    return make_cfg(outbound_allowed_regex="", callers=PEOPLE)
+
+
+def test_callee_is_a_number_or_a_person_with_a_number():
+    c = people_cfg()
+    assert tasks.callee(c, {"number": "04542 1234", "name": "Seeblick"}) == ("04542 1234", "Seeblick", "")
+    assert tasks.callee(c, {"name": " maryna "}) == ("0160444", "Maryna", "")
+    assert tasks.callee(c, {"name": "Mark"})[2].startswith("Not planned: Mark is not a person")  # two entries
+    assert tasks.callee(c, {"name": "Flur"})[2].startswith("Not planned: Flur is not a person")  # no number
+    assert tasks.callee(c, {"name": "Unknown"})[2].startswith("Not planned: Unknown")            # "*"
+    assert tasks.callee(c, {}) == ("", "", "Not planned: the number is missing.")
+
+
+def test_build_calls_a_person_by_name():
+    task, error = tasks.build(people_cfg(), {"name": "Maryna", "task": "x"}, JAN, NOON)
+    assert error == "" and (task["number"], task["name"]) == ("0160444", "Maryna")
+
+
+def test_requester_is_a_person():
+    c = people_cfg()
+    assert tasks.requester_entry(c, "+49151111") == {"number": "0151111", "name": "Jan", "ha_user": "Jan"}
+    assert tasks.requester_entry(c, user_id="maryna-id", user_name="M") == {
+        "number": "0160444", "name": "Maryna", "ha_user": "maryna-id"}
+    assert tasks.requester_entry(c, user_id="x", user_name="dashboard") == {
+        "number": "", "name": "Flur", "ha_user": "dashboard"}
+    assert tasks.requester_entry(c, user_id="u9", user_name="Gast") == {"number": "", "name": "Gast",
+                                                                        "ha_user": "u9"}
+
+
+def test_without_a_number_there_is_no_call_back():
+    task, _ = tasks.build(cfg(), plan(call_back=True), {"number": "", "name": "Flur", "ha_user": "dashboard"}, NOON)
+    assert task["call_back"] is False and task["requester"]["ha_user"] == "dashboard"
+    assert "no call back: there is no number to call" in tasks.read_back(task, cfg(), True)
+
+
+def test_the_store_announces_every_status_change(store):
+    seen = []
+    store.on_change = lambda t: seen.append(t["status"])
+    t = store.add(build(retries=1, not_after="2026-11-10T19:00"))
+    store.claim(NOON)
+    store.not_reached(t["id"], "no answer", NOON)
+    other = store.add(build())
+    store.cancel(other["id"])
+    store.claim(NOON + timedelta(minutes=15))
+    store.finish(t["id"], {"status": "done", "summary": "ok"})
+    assert seen == ["planned", "running", "planned", "planned", "cancelled", "running", "done"]
+
+
+def test_planned_is_announced_before_the_scheduler_can_claim_the_task(store):
+    """add() tells the listener while it still holds the lock: a claim right after cannot overtake "planned"."""
+    import threading
+
+    seen = []
+
+    def listener(t):
+        free = []
+        probe = threading.Thread(target=lambda: free.append(store.lock.acquire(blocking=False)))
+        probe.start()
+        probe.join()
+        seen.append((t["status"], free[0]))
+
+    store.on_change = listener
+    store.add(build())
+    assert seen == [("planned", False)]  # the lock was held by add()
+
+
+def test_find_requester_is_none_for_someone_not_listed():
+    assert tasks.find_requester(people_cfg(), "0999", "u9", "Gast") is None
+    assert tasks.find_requester(people_cfg(), "0151111")["ha_user"] == "Jan"
+
+
+def test_a_broken_listener_does_not_break_the_task(store):
+    def broken(t):
+        raise RuntimeError("Home Assistant is gone")
+
+    store.on_change = broken
+    assert store.add(build())["status"] == "planned" and len(store.all()) == 1
 
 
 # ---------------------------------------------------------------- store
@@ -480,8 +570,19 @@ def test_plan_call_is_read_back_first_and_stored_after_a_yes(brain, conversation
     (task,) = brain.tasks.all()
     assert (task["goal"], task["may_share"], task["may_accept"]) == ("Reserve a table for 4 tonight", [], "")
     assert "Stored" in last_result(conversation) and "hang up" in last_result(conversation)
-    assert task["requester"] == JAN and task["call_back"] is True and task["source"] == "phone"
+    assert task["requester"] == JAN_STORED and task["call_back"] is True and task["source"] == "phone"
     assert len(actions) == 1 and actions[0].startswith("plan_call")
+
+
+def test_a_call_planned_on_the_phone_names_the_home_assistant_user_of_the_caller(brain, conversation, today):
+    """The phone call knows only number and name; the task gets the whole person from callers."""
+    brain.cfg["callers"] = config._callers([{"number": "0151111", "ha_user": "jan-id", "name": "Jan",
+                                             "access": "admin"}])
+    turn(brain, conversation, message(plan_call(**plan())), message("Stimmt das?"))
+    conversation.append({"role": "user", "content": "Ja."})
+    turn(brain, conversation, message(plan_call(**plan(), confirmed=True)), message("Tschüss!"))
+    (task,) = brain.tasks.all()
+    assert task["requester"] == {"number": "0151111", "name": "Jan", "ha_user": "jan-id"}
 
 
 def test_a_yes_does_not_cover_another_number(brain, conversation, today):

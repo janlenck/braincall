@@ -483,7 +483,7 @@ def test_version(server, main):
     status, body = server("GET", "/api/version")
     assert status == 200
     assert body == {"api": 1, "version": config.version(), "phone": True, "assistant": "Claudine",
-                    "home_assistant": False}
+                    "home_assistant": False, "tasks": True}
     assert body["version"].count(".") == 2
 
 
@@ -585,6 +585,7 @@ def planned(main, events, monkeypatch, tmp_path):
     """A fresh task store, a registered phone, and outbound() replaced: records calls, returns the next session."""
     import tasks
     store = tasks.TaskStore(tmp_path / "tasks.json", main.cfg)
+    store.on_change = main.announce_task
     monkeypatch.setattr(main, "task_store", store)
     monkeypatch.setattr(main.brain, "tasks", store)
     monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.REGISTERED)
@@ -804,6 +805,57 @@ def test_tasks_api(server, planned):
     assert server("DELETE", f"/tasks/{task['id']}")[0] == 409
     assert server("DELETE", "/tasks/nope")[0] == 404
     assert server("DELETE", "/call")[0] == 404
+
+
+def wait_for(check, tries=100):
+    for _ in range(tries):
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_every_status_change_is_announced(server, planned):
+    """braincall_task_updated on planned, running, planned again and the end: Brain Assist's to-do list follows."""
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x", "retries": 1})
+    assert status == 201
+    store, now = planned.store, datetime.now().astimezone()
+    store.claim(now)
+    store.not_reached(task["id"], "no answer", now)
+    store.claim(now + timedelta(hours=1))
+    store.finish(task["id"], {"status": "done", "summary": "ok"})
+
+    def updates():
+        return [d["status"] for n, d in planned.events["events"] if n == "braincall_task_updated"]
+
+    assert wait_for(lambda: len(updates()) == 5)
+    assert sorted(updates()) == sorted(["planned", "running", "planned", "running", "done"])
+    first = next(d for n, d in planned.events["events"] if n == "braincall_task_updated")
+    assert first["id"] == task["id"] and first["goal"] == "x" and first["requester"] == "Jan Lenck"
+
+
+def test_tasks_api_calls_a_person_by_name_for_a_home_assistant_user(server, planned, main, monkeypatch):
+    monkeypatch.setitem(main.cfg, "callers", config._callers(PEOPLE))
+    status, task = server("POST", "/api/tasks", {"name": "maryna", "task": "Frag nach Freitag", "goal": "Termin",
+                                                 "requester_user_id": "", "requester_user_name": "jan",
+                                                 "call_back": True})
+    assert status == 201 and (task["number"], task["name"]) == ("0170222", "Maryna")
+    assert task["requester"] == {"number": "0151111", "name": "Jan", "ha_user": "Jan"} and task["call_back"] is True
+
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+                                                 "requester_user_id": "u-77", "requester_user_name": "Flur",
+                                                 "call_back": True})
+    assert status == 201 and task["call_back"] is False  # nobody to call back
+    assert task["requester"] == {"number": "", "name": "Flur", "ha_user": "u-77"}
+
+    # an unlisted number next to a Home Assistant user: the user asks, not the owner
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+                                                 "requester": "0999", "requester_user_name": "Flur"})
+    assert status == 201 and task["requester"] == {"number": "", "name": "Flur", "ha_user": "Flur"}
+
+    assert server("POST", "/api/tasks", {"name": "Küche", "task": "x", "goal": "x"}) == (
+        400, {"error": "Küche is not a person with a number in the callers list. Ask for the number."})
+    assert server("POST", "/api/tasks", {"task": "x", "goal": "x"}) == (400, {"error": "the number is missing."})
 
 
 def test_tasks_api_refuses(server, planned):

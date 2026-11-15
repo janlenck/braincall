@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.14.0
+
+Planned calls from Home Assistant (#50).
+
+- New: an administrator plans calls in Brain Assist too, by voice or in the chat: "Ruf Mark morgen um 18 Uhr an und
+  frag, ob er Zeit hat". Same read-back and yes as on the phone; a call that is due starts at once
+- New: call a person by name. Without a number, the name of a *Callers* entry with a number is enough ("Ruf Mark
+  an", or `{"name": "Mark", …}` for `POST /api/tasks`). A name that two entries share, or a person without a number,
+  is refused and the assistant asks for the number
+- New: the requester is always a person, found by phone number or by Home Assistant user (`requester_user_id` /
+  `requester_user_name` for `POST /api/tasks`). Someone without a number in their entry gets the result as
+  notification and event, never by call back; the read-back says so
+- New: event `braincall_task_updated` on every status change of a task (planned, running, planned again, final),
+  so Brain Assist's to-do list follows without asking all the time. `braincall_task_finished` also names
+  `requester_ha_user`
+- `GET /api/version` says whether planned calls are on (`tasks`)
+
 ## 1.13.1
 
 - Fix: when Home Assistant could not be told where the API is, the warning in the log could contain the API token

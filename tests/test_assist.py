@@ -8,7 +8,7 @@ import rights
 from brain import Brain
 from config import parse_access
 from conftest import make_cfg
-from test_brain import FakeMessages, StubHA, message, tool
+from test_brain import FakeMessages, StubHA, ToolUseBlock, message, tool
 
 CALLERS = [
     {"number": "0151111", "ha_user": "Jan", "name": "Jan Lenck", "access": "admin"},
@@ -339,7 +339,7 @@ def run(brain, body, *msgs, store=None, abort=lambda: False, callers=CALLERS):
     brain.client = SimpleNamespace(messages=fake)
     brain.cfg["callers"] = cfg(callers).callers
     events = []
-    store = store or assist.Conversations()
+    store = assist.Conversations() if store is None else store  # an empty store is falsy (len 0)
     assist.converse(brain, brain.cfg, store, assist.parse(body), events.append, abort, "Jan")
     return events, fake, store
 
@@ -377,12 +377,85 @@ def test_voice_gets_sentences_cleaned_for_speech(brain):
     assert "the area “Küche”" in fake.requests[0]["messages"][0]["content"]
 
 
-def test_assist_has_no_line_to_hang_up_and_plans_no_calls(brain):
+def test_assist_has_no_line_to_hang_up_but_an_admin_may_plan_calls(brain):
     brain.tasks = object()  # planned calls are on
     _, fake, _ = run(brain, {"text": "Hallo", "user_name": "Jan"}, message("Hallo."))
     names = {t["name"] for t in fake.requests[0]["tools"]}
-    assert "ha_control" in names and not names & {"hang_up", "plan_call"}
-    assert "hang_up" not in fake.requests[0]["system"] and "plan_call" not in fake.requests[0]["system"]
+    assert "ha_control" in names and "plan_call" in names and "hang_up" not in names
+    system = fake.requests[0]["system"]
+    assert "plan_call" in system and "hang up" not in system and "list of Brain Call tasks" in system
+
+
+def test_only_an_admin_plans_calls_in_assist(brain):
+    brain.tasks = object()
+    _, fake, _ = run(brain, {"text": "Ruf Walter an", "user_id": "0f3a-uuid-maryna"}, message("Das geht nicht."))
+    assert "plan_call" not in {t["name"] for t in fake.requests[0]["tools"]}
+    assert "plan_call" not in fake.requests[0]["system"]
+
+
+def plan_tool(id_="p1", **inp):
+    """A plan_call block (tool() takes the tool's name as its own first argument, the plan has a name too)."""
+    return ToolUseBlock(type="tool_use", id=id_, name="plan_call", input=inp)
+
+
+def tool_result(fake, tool_id: str) -> str:
+    """What Claude got back for a tool call (the requests share the growing list of messages)."""
+    for m in fake.requests[-1]["messages"]:
+        if m["role"] == "user" and isinstance(m["content"], list):
+            for b in m["content"]:
+                if isinstance(b, dict) and b.get("tool_use_id") == tool_id:
+                    return b["content"]
+    raise AssertionError(f"no result for {tool_id}")
+
+
+def plan_in_assist(brain, tmp_path, who: dict, callers=CALLERS, **plan):
+    """Two turns in one conversation: the plan is read back, then stored after the person's yes."""
+    import tasks
+
+    brain.cfg["outbound_allowed_regex"] = ""
+    brain.tasks = tasks.TaskStore(tmp_path / "tasks.json", brain.cfg)
+    store = assist.Conversations()
+    events, fake, _ = run(brain, {"text": "Ruf Walter an und frag nach dem Termin", **who},
+                          message(plan_tool(**plan), stop="tool_use"), message("Soll ich das so machen?"),
+                          store=store, callers=callers)
+    read_back = tool_result(fake, "p1")
+    cid = events[0]["conversation_id"]
+    events, fake, _ = run(brain, {"text": "Ja", "conversation_id": cid, **who},
+                          message(plan_tool("p2", **plan, confirmed=True), stop="tool_use"), message("Erledigt."),
+                          store=store, callers=callers)
+    stored = tool_result(fake, "p2")
+    return read_back, stored, brain.tasks.all()
+
+
+def test_an_admin_plans_a_call_to_a_person_in_assist(brain, tmp_path):
+    read_back, stored, saved = plan_in_assist(brain, tmp_path, {"user_name": "Jan"}, name="Walter",
+                                              task="Frag Walter, wann er Zeit hat", call_back=True)
+    assert "NOT stored yet" in read_back and "0170222" in read_back and "you call back" in read_back
+    assert stored.startswith("Stored (task ") and "hang up" not in stored and "Tell the person" in stored
+    [task] = saved
+    assert (task["number"], task["name"], task["call_back"]) == ("0170222", "Walter", True)
+    assert task["requester"] == {"number": "0151111", "name": "Jan Lenck", "ha_user": "Jan"}
+
+
+def test_without_a_number_of_their_own_there_is_no_call_back(brain, tmp_path):
+    callers = [{"ha_user": "dash", "name": "Flur", "access": "admin"}, CALLERS[-1]]
+    read_back, _, saved = plan_in_assist(brain, tmp_path, {"user_name": "dash"}, callers=callers,
+                                         number="0170222", task="Frag nach dem Termin", call_back=True)
+    assert "no call back" in read_back
+    [task] = saved
+    assert task["call_back"] is False and task["requester"] == {"number": "", "name": "Flur", "ha_user": "dash"}
+
+
+def test_a_person_without_a_number_cannot_be_called(brain, tmp_path):
+    import tasks
+
+    brain.cfg["outbound_allowed_regex"] = ""
+    brain.tasks = tasks.TaskStore(tmp_path / "tasks.json", brain.cfg)
+    _, fake, _ = run(brain, {"text": "Ruf Maryna an", "user_name": "Jan"},
+                     message(plan_tool(name="Maryna", task="Frag nach dem Termin"), stop="tool_use"),
+                     message("Ich brauche die Nummer."))
+    answer = tool_result(fake, "p1")
+    assert "Maryna is not a person with a number" in answer and brain.tasks.all() == []
 
 
 def test_tools_show_up_in_the_stream(brain, ha):
