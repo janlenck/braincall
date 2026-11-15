@@ -77,6 +77,28 @@ def test_entry_without_name_takes_the_name_from_home_assistant():
     assert who(user_name="dashboard")["name"] == "dashboard"
 
 
+def test_id_wins_over_name_whatever_the_order_of_the_entries():
+    """Names are not unique: a user who is named like the admin must not get the admin's entry."""
+    callers = cfg([{"ha_user": "Jan", "name": "Jan", "access": "admin"},
+                   {"ha_user": "u2", "name": "Gast Jan", "access": "read"}]).callers
+    other = assist.identify(callers, req(user_id="u2", user_name="Jan"))
+    assert (other["access"], other["name"]) == ({"read"}, "Gast Jan")
+    assert assist.identify(callers, req(user_id="u1", user_name="Jan"))["access"] == {"admin"}  # by name
+
+
+def test_device_wins_over_its_area_whatever_the_order_of_the_entries():
+    callers = cfg([{"ha_device": "Küche", "access": "admin"},
+                   {"ha_device": "Tablet", "access": "shopping"},
+                   {"ha_device": "d-9", "access": "read"},
+                   {"ha_device": "*", "access": "guest"}]).callers
+    assert assist.identify(callers, req(device_name="Tablet", area_name="Küche"))["access"] == {"shopping"}
+    assert assist.identify(callers, req(device_id="d-9", device_name="Tablet", area_name="Küche"))["access"] == {
+        "read"}
+    assert assist.identify(callers, req(device_name="Satellite", area_name="Küche"))["access"] == {"admin"}
+    assert assist.identify(callers, req(device_name="Satellite", area_name="Bad"))["access"] == {"guest"}
+    assert assist.identify(callers, req(device_name="*", area_name="Küche"))["access"] == {"admin"}  # no wildcard
+
+
 def test_not_listed_is_nobody():
     assert who(user_name="Fremder") is None
     assert who() is None
@@ -203,37 +225,59 @@ class Clock:
         return self.now
 
 
+def take(store, cid, key):
+    """A conversation for one request that is over again."""
+    conv = store.get(cid, key)
+    store.release(conv)
+    return conv
+
+
 def test_conversation_continues_expires_and_never_changes_hands():
     clock = Clock()
     store = assist.Conversations(idle=60, clock=clock)
-    first = store.get("", "jan")
-    assert first.id and store.get(first.id, "jan") is first
-    assert store.get("from-ha", "jan").id == "from-ha"      # Home Assistant's own id is kept
-    other = store.get(first.id, "tablet")                   # someone else with the same id: a new conversation
+    first = take(store, "", "jan")
+    assert first.id and take(store, first.id, "jan") is first
+    assert take(store, "from-ha", "jan").id == "from-ha"    # Home Assistant's own id is kept
+    other = take(store, first.id, "tablet")                 # someone else with the same id: a new conversation
     assert other is not first and other.id != first.id
     clock.now += 61
-    again = store.get(first.id, "jan")
+    again = take(store, first.id, "jan")
     assert again is not first and again.id == first.id and len(store) == 1  # forgotten, the others too
+
+
+def test_idle_time_counts_from_the_end_of_the_request():
+    clock = Clock()
+    store = assist.Conversations(idle=60, clock=clock)
+    conv = store.get("a", "jan")
+    clock.now += 50  # a long answer
+    store.release(conv)
+    clock.now += 50
+    assert take(store, "a", "jan") is conv
 
 
 def test_conversations_are_limited():
     clock = Clock()
     store = assist.Conversations(limit=3, clock=clock)
-    ids = []
     for i in range(5):
         clock.now += 1
-        ids.append(store.get(f"c{i}", "jan").id)
+        take(store, f"c{i}", "jan")
     assert sorted(store.items) == ["c2", "c3", "c4"]
 
 
-def test_a_running_conversation_is_never_dropped():
+def test_a_conversation_in_use_is_never_dropped():
+    """From get() on, not only once its turn holds the lock: a second request with the same id must get the same
+    object, or two turns would run with separate histories and confirmations."""
     clock = Clock()
     store = assist.Conversations(idle=60, limit=1, clock=clock)
-    running = store.get("a", "jan")
-    with running.lock:
-        clock.now += 100
-        store.get("b", "jan")
-        assert "a" in store.items
+    running = store.get("a", "jan")       # handed out, the turn has not started yet
+    clock.now += 100
+    take(store, "b", "jan")               # over the limit and past the idle time
+    assert store.get("a", "jan") is running and running.pins == 2
+    store.release(running)
+    store.release(running)
+    clock.now += 100
+    take(store, "c", "jan")
+    assert "a" not in store.items         # released: forgotten like any other
 
 
 # ---------------------------------------------------------------- converse
@@ -312,6 +356,37 @@ def test_access_limits_the_tools_like_on_the_phone(brain, ha):
     assert events[0]["access"] == "shopping"
     assert {t["name"] for t in fake.requests[0]["tools"]} == {"shopping_list", "shopping_edit"}
     assert next(e for e in events if e["type"] == "tool_result")["result"] == "Not allowed in this call."
+    assert ha.calls == []
+
+
+def test_no_tool_runs_once_the_client_is_gone(brain, ha):
+    """Brain Assist closed the connection (noticed when the tool call is written): nothing is switched after that."""
+    events = []
+    brain.client = SimpleNamespace(messages=FakeMessages(
+        message(tool("ha_control", "t1", entity_id="light.flur", service="turn_on"),
+                tool("ha_control", "t2", entity_id="light.bad", service="turn_on"), stop="tool_use")))
+    brain.cfg["callers"] = cfg().callers
+    store = assist.Conversations()
+    assist.converse(brain, brain.cfg, store, req("Licht an", user_name="Jan"), events.append,
+                    lambda: any(e["type"] == "tool_call" for e in events), "Jan")
+    assert ha.calls == []
+    assert [(e["type"], e.get("id")) for e in events] == [
+        ("start", None), ("tool_call", "t1"), ("tool_result", "t1"), ("tool_call", "t2"), ("tool_result", "t2"),
+        ("end", None)]
+    assert {e["result"] for e in events if e["type"] == "tool_result"} == {"Not executed (aborted)."}
+    assert all(c.pins == 0 for c in store.items.values())
+
+
+def test_a_tool_held_back_is_announced_before_its_result(brain, ha, monkeypatch):
+    """The web safety check answers instead of the tool, without the step that normally announces the call."""
+    monkeypatch.setattr(brain, "_web_gate", lambda block, messages, counters: "Safety check: ask first.")
+    events, _, _ = run(brain, {"text": "Licht an", "user_name": "Jan"},
+                       message(tool("ha_control", entity_id="light.flur", service="turn_on"), stop="tool_use"),
+                       message("Soll ich das Licht im Flur einschalten?"))
+    kinds = [e["type"] for e in events]
+    assert kinds[:3] == ["start", "tool_call", "tool_result"] and kinds.count("tool_call") == 1
+    assert events[1]["id"] == events[2]["id"] == "t1" and events[2]["result"] == "Safety check: ask first."
+    assert text_of(events) == "Soll ich das Licht im Flur einschalten?"
     assert ha.calls == []
 
 

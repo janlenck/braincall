@@ -225,13 +225,28 @@ def api_token(cfg) -> tuple[str, bool]:
         token = path.read_text(encoding="utf-8").strip()
     except OSError:
         token = ""
-    if not token:
+    if token:
+        _owner_only(path)
+    else:
         token = secrets.token_urlsafe(32)
         path.parent.mkdir(parents=True, exist_ok=True)
         # created for the owner only (no effect on Windows); never world-readable, not even for a moment
         with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
             f.write(token + "\n")
     return token, True
+
+
+def _owner_only(path: Path):
+    """A token file put there by hand may be readable by other users of the computer: restrict it to the owner
+    (Unix). Where that is not possible (a folder on a file system without such rights) the log says so."""
+    if os.name == "nt":
+        return
+    try:
+        if path.stat().st_mode & 0o077:
+            path.chmod(0o600)
+    except OSError as e:
+        WARNINGS.append(f"{path} may be readable by other users of this computer and could not be restricted "
+                        f"to its owner ({e}). Whoever reads the API token can act as any user")
 
 
 def version() -> str:

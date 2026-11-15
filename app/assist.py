@@ -67,16 +67,17 @@ def parse(body: dict) -> dict:
 
 
 def _entry(callers: list, field: str, values: list) -> dict | None:
-    """The entry whose ha_user / ha_device is one of the values; "*" = everyone else."""
-    wanted = {_fold(v) for v in values} - {""}
-    fallback = None
-    for c in callers or []:
-        own = _fold(c.get(field))
-        if own == "*":
-            fallback = fallback or c
-        elif own and own in wanted:
-            return c
-    return fallback
+    """The entry whose ha_user / ha_device is one of the values; "*" = everyone else.
+    The values count in their order, whatever the order of the entries: an id before a name (names are not unique:
+    a user named like an admin must not get the admin's entry while an entry lists their own id), a device before
+    its area. "*" only if none of them matches."""
+    entries = [(_fold(c.get(field)), c) for c in callers or []]
+    for value in (_fold(v) for v in values):
+        if value and value != "*":
+            for own, c in entries:
+                if own == value:
+                    return c
+    return next((c for own, c in entries if own == "*"), None)
 
 
 def identify(callers: list, req: dict) -> dict | None:
@@ -87,10 +88,8 @@ def identify(callers: list, req: dict) -> dict | None:
     user = _entry(callers, "ha_user", [req.get("user_id"), req.get("user_name")])
     device = None
     if req.get("device_id") or req.get("device_name"):
-        exact = [c for c in callers or [] if _fold(c.get("ha_device")) != "*"]
-        device = (_entry(exact, "ha_device", [req.get("device_id"), req.get("device_name")])
-                  or _entry(exact, "ha_device", [req.get("area_id"), req.get("area_name")])
-                  or _entry(callers, "ha_device", []))
+        device = _entry(callers, "ha_device", [req.get("device_id"), req.get("device_name"),
+                                               req.get("area_id"), req.get("area_name")])
     entries = [e for e in (user, device) if e is not None]
     if not entries:
         return None
@@ -167,12 +166,16 @@ class Conversation:
         self.messages: list = []
         self.counters: dict = {}  # pending confirmations, bookings (Brain.turn)
         self.actions: list = []   # changing tool calls and web lookups, for a later summary
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # one turn at a time
         self.used = 0.0
+        self.pins = 0             # requests that hold it (Conversations.get … release): never forgotten meanwhile
 
 
 class Conversations:
-    """The running Assist conversations by conversation_id, forgotten after IDLE_SECONDS without a request."""
+    """The running Assist conversations by conversation_id, forgotten after IDLE_SECONDS without a request.
+    get() hands a conversation out pinned; release() after the turn. A pinned one is never dropped: otherwise a
+    second request with the same id could get a new object while the first still runs, with its own history and
+    confirmations."""
 
     def __init__(self, idle: float = IDLE_SECONDS, limit: int = MAX_CONVERSATIONS, clock=time.monotonic):
         self.idle = idle
@@ -183,22 +186,29 @@ class Conversations:
 
     def get(self, cid: str, key: str) -> Conversation:
         """The conversation with this id, or a new one: without an id, after the idle time, or if the id belongs
-        to someone else (what an admin was told is never continued by another user or device)."""
+        to someone else (what an admin was told is never continued by another user or device).
+        It comes pinned: call release() when the request is done."""
         now = self.clock()
         with self.lock:
-            for old in [k for k, c in self.items.items() if now - c.used > self.idle and not c.lock.locked()]:
+            for old in [k for k, c in self.items.items() if now - c.used > self.idle and not c.pins]:
                 del self.items[old]
             conv = self.items.get(cid) if cid else None
             if conv is None or conv.key != key:
                 conv = Conversation(cid if cid and conv is None else uuid.uuid4().hex, key)
                 self.items[conv.id] = conv
             conv.used = now
+            conv.pins += 1
             if len(self.items) > self.limit:
-                idle = sorted((c for c in self.items.values() if c is not conv and not c.lock.locked()),
-                              key=lambda c: c.used)
+                idle = sorted((c for c in self.items.values() if not c.pins), key=lambda c: c.used)
                 for c in idle[:len(self.items) - self.limit]:
                     del self.items[c.id]
             return conv
+
+    def release(self, conv: Conversation):
+        """The request that got conv from get() is done: the idle time counts from now."""
+        with self.lock:
+            conv.pins = max(0, conv.pins - 1)
+            conv.used = self.clock()
 
     def __len__(self) -> int:
         return len(self.items)
@@ -228,8 +238,19 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
         emit({"type": "end", "conversation_id": cid, "continue_conversation": False})
         return
     conv = store.get(req["conversation_id"], person["key"])
+    try:
+        _turn(brain, cfg, conv, person, req, lang, who, emit, aborted, owner)
+    finally:
+        store.release(conv)
+
+
+def _turn(brain, cfg, conv: Conversation, person: dict, req: dict, lang: str, who: str, emit, aborted, owner: str):
+    """The turn of converse() for a listed person, in their conversation."""
+    channel = req["channel"]
+    assistant = cfg.assistant_name or "Claude"
     access = ",".join(sorted(person["access"]))
     said: list[str] = []
+    announced: set = set()  # ids of the tool calls the client was told about
 
     def on_text(piece: str):
         # sentences cleaned for speech come without the space between them; text pieces come as written
@@ -237,11 +258,18 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
         said.append(piece)
         emit({"type": "text", "text": piece})
 
+    def tool_call(block):
+        if block.id not in announced:
+            announced.add(block.id)
+            emit({"type": "tool_call", "id": block.id, "name": block.name, "input": block.input or {}})
+
     def before_tool(block) -> bool:
-        emit({"type": "tool_call", "id": block.id, "name": block.name, "input": block.input or {}})
-        return True
+        """Before each tool: once the client is gone (emit noticed it), no further tool runs."""
+        tool_call(block)
+        return not aborted()
 
     def on_tool_result(block, out):
+        tool_call(block)  # a tool held back by the web safety check never passed before_tool
         emit({"type": "tool_result", "id": block.id, "name": block.name, "result": str(out)[:MAX_RESULT]})
 
     with conv.lock:
@@ -265,8 +293,6 @@ def converse(brain, cfg, store: Conversations, req: dict, emit, aborted, owner: 
             log.exception("Assist request failed")
             emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
             return
-        finally:
-            conv.used = store.clock()
         answer = "".join(said).strip()
         log.info("%s: %s", assistant, answer)
         emit({"type": "end", "conversation_id": conv.id, "continue_conversation": asks(answer)})

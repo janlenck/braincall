@@ -118,6 +118,30 @@ def test_api_token_file_can_be_replaced_by_hand(tmp_path):
     assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="file modes are a Unix thing")
+def test_api_token_file_put_there_by_hand_is_restricted_to_the_owner(tmp_path):
+    file = tmp_path / config.TOKEN_FILE
+    file.write_text("my-own\n", encoding="utf-8")
+    file.chmod(0o644)
+    assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
+    assert file.stat().st_mode & 0o777 == 0o600
+    assert config.WARNINGS == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="file modes are a Unix thing")
+def test_api_token_file_that_cannot_be_restricted_is_reported(tmp_path, monkeypatch):
+    file = tmp_path / config.TOKEN_FILE
+    file.write_text("my-own\n", encoding="utf-8")
+    file.chmod(0o644)
+
+    def refuse(self, mode):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(type(file), "chmod", refuse)
+    assert config.api_token(config.Config(api_token="", log_dir=str(tmp_path))) == ("my-own", True)
+    assert len(config.WARNINGS) == 1 and "readable by other users" in config.WARNINGS[0]
+
+
 def test_version_is_the_add_on_version():
     text = (config.ROOT / "braincall" / "config.yaml").read_text(encoding="utf-8")
     assert config.version() and f'version: "{config.version()}"' in text
