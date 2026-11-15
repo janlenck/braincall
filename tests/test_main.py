@@ -848,6 +848,11 @@ def test_tasks_api_calls_a_person_by_name_for_a_home_assistant_user(server, plan
     assert status == 201 and task["call_back"] is False  # nobody to call back
     assert task["requester"] == {"number": "", "name": "Flur", "ha_user": "u-77"}
 
+    # an unlisted number next to a Home Assistant user: the user asks, not the owner
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+                                                 "requester": "0999", "requester_user_name": "Flur"})
+    assert status == 201 and task["requester"] == {"number": "", "name": "Flur", "ha_user": "Flur"}
+
     assert server("POST", "/api/tasks", {"name": "Küche", "task": "x", "goal": "x"}) == (
         400, {"error": "Küche is not a person with a number in the callers list. Ask for the number."})
     assert server("POST", "/api/tasks", {"task": "x", "goal": "x"}) == (400, {"error": "the number is missing."})

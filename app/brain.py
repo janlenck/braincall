@@ -780,7 +780,11 @@ class Brain:
             return "Not allowed in this call."
         data = block.input or {}
         now = datetime.now(ZoneInfo(self.cfg.timezone))
-        requester = {k: (call or {}).get(k, "") for k in ("number", "name", "ha_user")}
+        # the requester as a person: their callers entry by number (phone) or Home Assistant user (Assist), so the
+        # task names their ha_user as well; someone not listed stays as the call names them
+        given = {k: str((call or {}).get(k) or "") for k in ("number", "name", "ha_user")}
+        found = tasks_mod.find_requester(self.cfg, given["number"], given["ha_user"])
+        requester = {**found, "name": found["name"] or given["name"]} if found else given
         task, refusal = tasks_mod.build(self.cfg, data, requester, now, source="phone")
         if task is None:
             return refusal

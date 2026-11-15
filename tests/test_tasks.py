@@ -212,6 +212,29 @@ def test_the_store_announces_every_status_change(store):
     assert seen == ["planned", "running", "planned", "planned", "cancelled", "running", "done"]
 
 
+def test_planned_is_announced_before_the_scheduler_can_claim_the_task(store):
+    """add() tells the listener while it still holds the lock: a claim right after cannot overtake "planned"."""
+    import threading
+
+    seen = []
+
+    def listener(t):
+        free = []
+        probe = threading.Thread(target=lambda: free.append(store.lock.acquire(blocking=False)))
+        probe.start()
+        probe.join()
+        seen.append((t["status"], free[0]))
+
+    store.on_change = listener
+    store.add(build())
+    assert seen == [("planned", False)]  # the lock was held by add()
+
+
+def test_find_requester_is_none_for_someone_not_listed():
+    assert tasks.find_requester(people_cfg(), "0999", "u9", "Gast") is None
+    assert tasks.find_requester(people_cfg(), "0151111")["ha_user"] == "Jan"
+
+
 def test_a_broken_listener_does_not_break_the_task(store):
     def broken(t):
         raise RuntimeError("Home Assistant is gone")
@@ -549,6 +572,17 @@ def test_plan_call_is_read_back_first_and_stored_after_a_yes(brain, conversation
     assert "Stored" in last_result(conversation) and "hang up" in last_result(conversation)
     assert task["requester"] == JAN_STORED and task["call_back"] is True and task["source"] == "phone"
     assert len(actions) == 1 and actions[0].startswith("plan_call")
+
+
+def test_a_call_planned_on_the_phone_names_the_home_assistant_user_of_the_caller(brain, conversation, today):
+    """The phone call knows only number and name; the task gets the whole person from callers."""
+    brain.cfg["callers"] = config._callers([{"number": "0151111", "ha_user": "jan-id", "name": "Jan",
+                                             "access": "admin"}])
+    turn(brain, conversation, message(plan_call(**plan())), message("Stimmt das?"))
+    conversation.append({"role": "user", "content": "Ja."})
+    turn(brain, conversation, message(plan_call(**plan(), confirmed=True)), message("Tschüss!"))
+    (task,) = brain.tasks.all()
+    assert task["requester"] == {"number": "0151111", "name": "Jan", "ha_user": "jan-id"}
 
 
 def test_a_yes_does_not_cover_another_number(brain, conversation, today):

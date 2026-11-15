@@ -217,21 +217,29 @@ def callee(cfg, data: dict) -> tuple[str, str, str]:
     return entry["number"], entry["name"], ""
 
 
-def requester_entry(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict:
-    """Who plans a call, as a person: their callers entry, found by phone number or Home Assistant user (id before
-    name). {"number", "name", "ha_user"}; number is "" for someone who can only be reached in Home Assistant, so
-    the result reaches them by notification and event, never by a call back."""
+def find_requester(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict | None:
+    """The callers entry of whoever plans a call, found by phone number or Home Assistant user (id before name), as
+    {"number", "name", "ha_user"}; None if nothing matches ("*" never does)."""
     number = str(number or "").strip()
-    folded = [str(v or "").strip().casefold() for v in (user_id, user_name)]
     for c in cfg.callers or []:
         if number and c["number"] and c["number"] != "*" and config.norm_number(c["number"], cfg.country_code) \
                 == config.norm_number(number, cfg.country_code):
-            return {"number": c["number"], "name": c["name"], "ha_user": c["ha_user"]}
-    for value in folded:
+            return {"number": c["number"], "name": c["name"], "ha_user": c["ha_user"] if c["ha_user"] != "*" else ""}
+    for value in (str(v or "").strip().casefold() for v in (user_id, user_name)):
         for c in cfg.callers or []:
             if value and c["ha_user"] and c["ha_user"] != "*" and c["ha_user"].casefold() == value:
-                return {"number": c["number"] if c["number"] != "*" else "", "name": c["name"] or user_name,
+                return {"number": c["number"] if c["number"] != "*" else "", "name": c["name"] or str(user_name or ""),
                         "ha_user": c["ha_user"]}
+    return None
+
+
+def requester_entry(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict:
+    """Who plans a call, as a person: their callers entry (find_requester), or else the Home Assistant user as it
+    was given. {"number", "name", "ha_user"}; number is "" for someone who can only be reached in Home Assistant,
+    so the result reaches them by notification and event, never by a call back."""
+    found = find_requester(cfg, number, user_id, user_name)
+    if found is not None:
+        return found
     return {"number": "", "name": str(user_name or "").strip(), "ha_user": str(user_id or user_name or "").strip()}
 
 
@@ -503,7 +511,7 @@ class TaskStore:
                           or now - datetime.fromisoformat(t["finished"]) <= timedelta(days=KEEP_DAYS)]
             self.tasks.append(task)
             self._save()
-        self._changed(task)
+            self._changed(task)  # under the lock: the scheduler may claim it right after, "planned" comes first
         log.info("Task %s planned: call %s (%s) %s; goal: %s", task["id"], task["name"] or "?", task["number"],
                  when(task, self.cfg), task["goal"])
         return task

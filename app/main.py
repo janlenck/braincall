@@ -799,7 +799,8 @@ class Handler(BaseHTTPRequestHandler):
                                           asked["requester_user_name"])
         if not any(asked.values()):  # an automation or script: the owner asks
             requester = {"number": "", "name": OWNER, "ha_user": ""}
-        elif asked["requester"] and not requester["number"]:  # a phone number that is not listed
+        elif asked["requester"] and not (requester["number"] or asked["requester_user_id"]
+                                         or asked["requester_user_name"]):  # a phone number that is not listed
             requester = {"number": "", "name": OWNER, "ha_user": ""}
         task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
