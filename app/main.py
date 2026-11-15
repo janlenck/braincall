@@ -92,7 +92,9 @@ shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
 if shopping_list is not None and cfg.shopping_rhythm_list:
     rhythm.Rhythm(cfg, ha, shopping_list, _LOGDIR / "shopping-products.json", classify=brain.classify_products)
 brain.shopping = shopping_list
-conversations = assist.Conversations()  # Brain Assist: the running conversations of POST /api/converse
+# Brain Assist: the running conversations of POST /api/converse; one that is over is summarized (assist_closed)
+conversations = assist.Conversations(on_close=lambda conv: assist_closed(conv))
+ASSIST_SWEEP = 30  # seconds between looks for Assist conversations whose idle time is over
 busy = threading.Lock()
 sip_failed: dict = {}
 abandoned: set = set()  # Call-IDs of outbound calls given up while ringing (a late 200 OK gets hung up)
@@ -165,13 +167,76 @@ def lang_for(caller: dict | None) -> str:
     return (caller or {}).get("language") or cfg.language or "de"
 
 
-def previous(number: str, access) -> str:
-    """What Claude remembers of earlier calls with this number, for the intro (memory.note)."""
+def previous(number: str, access, caller: dict | None = None) -> str:
+    """What Claude remembers of earlier calls and Assist conversations with this caller, for the intro
+    (memory.note). caller: the entry of the number, so the notes of its Home Assistant user are found too."""
     try:
-        return memory.note(calls.recent(number, access), OWNER_FIRST or "the owner", cfg.timezone, calls.enabled)
+        return memory.note(calls.recent(memory.who(caller, number), access), OWNER_FIRST or "the owner",
+                           cfg.timezone, calls.enabled)
     except Exception:  # noqa: BLE001  the memory must never stop a call
         log.exception("Reading the caller memory failed")
         return ""
+
+
+def same_person(whom: dict) -> list:
+    """Everything a person's summaries may be stored under, for forgetting them: what was asked for, plus the
+    number and the Home Assistant user of the caller entries that name them (an entry links the two; lines from
+    before 1.12 have only the number). "*" entries name nobody, and a device's memory stays its own."""
+    user = str(whom.get("ha_user") or "").strip().casefold()
+    out = [whom]
+    for c in cfg.callers:
+        entry_user = c["ha_user"].strip().casefold()
+        named = (user and entry_user == user) or (whom.get("number") and same_number(c["number"], whom["number"]))
+        if not named or c["number"] == "*" or entry_user == "*":
+            continue
+        out.append({"number": c["number"], "ha_user": c["ha_user"]})
+    return out
+
+
+def recall(person: dict) -> str:
+    """What Claude remembers of the person of an Assist conversation (assist.identify), for its first note."""
+    return memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
+                       calls.enabled, subject=assist.subject(person))
+
+
+ASSIST_TITLE = {"de": "Gespräch mit {who} in Home Assistant", "en": "Conversation with {who} in Home Assistant",
+                "uk": "Розмова з {who} у Home Assistant"}
+
+
+def after_assist(conv):
+    """Summary of an Assist conversation that is over: into the memory of the person, and to the notify services
+    if the person's entry asks for it (notify: true; off by default, unlike calls)."""
+    try:
+        person = conv.person
+        lang = cfg.language if cfg.language in ASSIST_TITLE else "de"
+        summary = brain.summarize(conv.transcript, conv.label, conv.actions, lang, channel=conv.channel)
+        if not summary:
+            return
+        log.info("Summary (Assist, %s): %s", conv.label, summary)
+        if person["notify"]:
+            for service in cfg.notify_services or []:
+                ha.notify(str(service), ASSIST_TITLE[lang].format(who=conv.label), summary)
+        calls.add(person["who"], summary, person["access"], when=datetime.fromtimestamp(conv.ended, timezone.utc),
+                  channel=f"assist-{conv.channel}", device=conv.device)
+    except Exception:  # noqa: BLE001
+        log.exception("Summary of an Assist conversation failed")
+
+
+def assist_closed(conv):
+    """An Assist conversation is over (assist.Conversations.on_close). Summarized in the background, and only if
+    someone will use the summary: the memory is on, or the entry wants a notification."""
+    person = conv.person
+    if not conv.transcript or person is None or not (calls.enabled or (person["notify"] and cfg.notify_services)):
+        return
+    threading.Thread(target=after_assist, args=(conv,), name="after assist", daemon=True).start()
+
+
+def assist_loop():
+    while not stopping.wait(ASSIST_SWEEP):
+        try:
+            conversations.sweep()
+        except Exception:  # noqa: BLE001
+            log.exception("Brain Assist: closing conversations failed")
 
 
 def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary="",
@@ -211,7 +276,8 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
             if summary:
                 log.info("Summary: %s", summary)
                 try:
-                    calls.add(number, summary, access, inbound, datetime.fromtimestamp(ended, timezone.utc))
+                    calls.add(memory.who(caller, number), summary, access, inbound,
+                              datetime.fromtimestamp(ended, timezone.utc))
                 except Exception:  # noqa: BLE001  event and call note still follow
                     log.exception("Saving the summary in %s failed", calls.path)
         report(answered, number, started, session, message, caller, summary, ended)
@@ -278,7 +344,8 @@ def outbound(number: str, message: str, task: dict | None = None):
         session.run(outbound=True, message=message, caller=number,
                     language=(task or {}).get("language") or lang_for(caller),
                     access=access, caller_name=caller_name(caller),
-                    instructions=caller["instructions"] if caller else "", previous=previous(number, access),
+                    instructions=caller["instructions"] if caller else "",
+                    previous=previous(number, access, caller),
                     web=web_for(caller), grants=(task or {}).get("grants"),
                     leave_message=(task or {}).get("leave_message", True))
         log.info("Call ended")
@@ -464,7 +531,8 @@ def on_incoming(call):
         session.run(outbound=False, caller=number, access=rights,
                     language=(task or {}).get("language") or lang_for(caller),
                     caller_name=name, instructions=instructions,
-                    previous=previous(number, rights), web=web_for(caller), grants=(task or {}).get("grants"))
+                    previous=previous(number, rights, caller), web=web_for(caller),
+                    grants=(task or {}).get("grants"))
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
@@ -609,7 +677,7 @@ class Handler(BaseHTTPRequestHandler):
                 gone.set()
 
         try:
-            assist.converse(brain, cfg, conversations, req, emit, gone.is_set, OWNER_FIRST)
+            assist.converse(brain, cfg, conversations, req, emit, gone.is_set, OWNER_FIRST, recall)
         except Exception as e:  # noqa: BLE001  the headers are out: the reason goes into the stream
             log.exception("Brain Assist request failed")
             emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
@@ -662,8 +730,23 @@ class Handler(BaseHTTPRequestHandler):
         task = task_store.get(self._task_id())
         self._send(200 if task else 404, task or {"error": "not found"})
 
+    def _forget(self):
+        """DELETE /api/memory?number=… | ha_user=… | ha_device=…: forgets what is remembered of a person."""
+        query = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        whom = {k: query.get(k, "") for k in memory.KEYS}
+        if not any(whom.values()):
+            return self._send(400, {"error": "say whom to forget: number, ha_user or ha_device"})
+        forgotten = sum(calls.forget(alias) for alias in same_person(whom))
+        log.info("Memory: %d summaries forgotten for %s", forgotten,
+                 ", ".join(f"{k} {v}" for k, v in whom.items() if v))
+        self._send(200, {"forgotten": forgotten})
+
     def do_DELETE(self):  # noqa: N802
         self._route()
+        if urlsplit(self.path).path == "/api/memory":
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            return self._forget()
         if not self._task_id():
             return self._send(404, {"error": "not found"})
         if not self._authorized():
@@ -856,6 +939,7 @@ def main():
             threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
         if task_store is not None:
             threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
+        threading.Thread(target=assist_loop, name="assist conversations", daemon=True).start()
         if shopping_list is not None:
             log.info("Shopping list: %s", shopping_list.describe())
             threading.Thread(target=shopping_loop, name="shopping list", daemon=True).start()

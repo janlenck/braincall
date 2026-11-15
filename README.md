@@ -36,7 +36,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/config.py` | configuration loading (JSONC, pointer file, environment variables) |
 | `app/phrases.py` | fixed phrases (greetings, fillers, status phrases) and their cached audio |
 | `app/timing.py` | timing log per turn and per call |
-| `app/memory.py` | caller memory: summaries of earlier calls per number (`caller_memory`) |
+| `app/memory.py` | memory per person: summaries of earlier calls and Brain Assist conversations (`caller_memory`) |
 | `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
 | `app/shopping.py` | automatic shopping list: watches the list, removes what stayed checked, history (`shopping-history.jsonl`), `shopping_history` |
 | `app/rhythm.py` | rhythm list: recurring products with interval, self-repair, automatic adding, forecast, `shopping_rhythm` |
@@ -124,13 +124,21 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
   language) and sends it to everything in `notify_services`: notify entities like `notify.phone` or notify
   services like `notify.mobile_app_phone` or an SMTP notifier. Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
-- `caller_memory` (default `"none"`): remembers the summary of each call per number in `logs/calls.jsonl` and
-  gives the last three to Claude at the start of the next call with that number ("Previous calls from this
-  number: …"), e.g. so Maryna does not have to repeat last week's date. `30` keeps only the last 30 days (older
-  entries are deleted), `"forever"` has no age limit. Only calls with a summary count, withheld numbers never.
-  A caller only gets summaries of calls with at most their current access: after lowering a number from
-  `admin` to `guest`, the old `admin` calls are no longer used. With `"none"` the file is neither read nor
-  written; an existing one stays until you delete it.
+- `caller_memory` (default `"none"`): remembers the summary of each call and each
+  [Brain Assist](#brain-assist) conversation per person in `logs/calls.jsonl` and gives the last three calls and
+  the last three Assist conversations to Claude the next time, e.g. so Maryna does not have to repeat last
+  week's date. `30` keeps only the last 30 days (older entries are deleted), `"forever"` has no age limit.
+  - A summary is stored under the number and under `ha_user` of the caller's entry, and found by either: an
+    entry with both has one memory on the phone and in Assist. A voice device without a user (`ha_device`) has
+    its own memory. Lines from before 1.12 have only the number and are found the same way; nothing is migrated.
+  - An Assist conversation is summarized when it is over: 15 minutes after its last request, or as soon as the
+    same user starts a new one on the same device (one more short request to Claude each). Conversations still
+    open at a restart are lost. `"notify": true` per entry also sends that summary to `notify_services`.
+  - Only calls with a summary count, withheld numbers never. Nobody gets summaries recorded with more access
+    than they have now: after lowering a number from `admin` to `guest`, the old `admin` calls are no longer
+    used, and what an administrator typed does not reach the same person on a restricted tablet.
+  - With `"none"` the file is neither read nor written; an existing one stays until you delete it.
+    `DELETE /api/memory?ha_user=Jan` (or `number=…`, `ha_device=…`) forgets one person.
 - `default_number` is only the target of the test call and grants no rights.
 - `control_domains` limits what may be controlled; `confirm_domains` (e.g. `cover`) require an explicit "yes".
   `input_datetime` lets Claudine set times of helpers (e.g. the start time of a timer: "Stell den Timer auf
@@ -451,6 +459,7 @@ such requests now get `401`, add the header.
 | `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |
 | `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
 | `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
+| `DELETE /api/memory?number=…` / `ha_user=…` / `ha_device=…` | forgets what is remembered of a person; answers `{"forgotten": n}` |
 
 `/tasks` and `/shopping/…` without `/api` still work.
 
@@ -458,7 +467,7 @@ such requests now get `401`, add the header.
 
 BrainCall can be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on
 dashboards, voice devices), so phone and Assist share one brain: the same prompt core, tools, access rules and
-limits. The integration **Brain Assist** (`janlenck/brainassist`, in preparation) runs inside Home Assistant and
+limits. The integration **Brain Assist** ([janlenck/brainassist](https://github.com/janlenck/brainassist)) runs inside Home Assistant and
 forwards each request to `POST /api/converse`; speech recognition and voice stay with Home Assistant.
 
 Without a phone: leave `sip_user` and `sip_password` empty. BrainCall then starts without the FRITZ!Box and
@@ -520,8 +529,10 @@ connection closes:
 failure `{"type": "error", "message": "…"}` comes instead of `end`. A conversation is continued with its
 `conversation_id` for 15 minutes after the last request, and only by the same user and device.
 
-Not part of this yet (see #50): the integration itself, memory shared between phone and Assist, limits per
-person, planned calls from Assist, and skills.
+The integration is [janlenck/brainassist](https://github.com/janlenck/brainassist). With `caller_memory` on,
+phone and Assist share what is remembered of a person (see [Callers and permissions](#callers-and-permissions)).
+
+Not part of this yet (see #50): limits per person, planned calls from Assist, and skills.
 
 ## Conversation flow and timing
 

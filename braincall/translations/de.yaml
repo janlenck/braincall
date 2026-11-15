@@ -75,11 +75,13 @@ configuration:
     name: Klingeldauer (s)
     description: Danach wird ein unbeantworteter Anruf abgebrochen.
   caller_memory:
-    name: Gedächtnis pro Anrufer
+    name: Gedächtnis pro Person
     description: >-
-      Die Zusammenfassung jedes Anrufs pro Nummer merken und die letzten drei beim nächsten Anruf mit dieser
-      Nummer der Assistentin mitgeben. none: kein Gedächtnis (Standard). Eine Zahl an Tagen, z. B. 30: nur
-      Anrufe der letzten 30 Tage. forever: ohne Altersgrenze. Gespeichert in calls.jsonl im Add-on-Ordner.
+      Die Zusammenfassung jedes Anrufs und jedes Brain-Assist-Gesprächs pro Person merken und die jeweils
+      letzten drei beim nächsten Mal der Assistentin mitgeben. Ein Eintrag mit Nummer und ha_user hat ein
+      Gedächtnis am Telefon und in Assist. none: kein Gedächtnis (Standard). Eine Zahl an Tagen, z. B. 30: nur
+      die letzten 30 Tage. forever: ohne Altersgrenze. Gespeichert in calls.jsonl im Add-on-Ordner. Mit
+      Gedächtnis kostet jedes Assist-Gespräch eine weitere kurze Anfrage an Claude für die Zusammenfassung.
   log_level:
     name: Log-Level
     description: >-

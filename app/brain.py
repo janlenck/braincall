@@ -1047,12 +1047,28 @@ class Brain:
         return False
 
     def summarize(self, transcript: list, caller: str, actions: list, language: str = "de",
-                  outbound: bool = False, mailbox: bool = False) -> str:
+                  outbound: bool = False, mailbox: bool = False, channel: str = "phone") -> str:
         """Short summary of a finished call for the owner, translated into their language.
         caller: the other party; outbound: the assistant made the call; mailbox: the phone system recognized a
-        mailbox announcement (CallSession.mailbox)."""
+        mailbox announcement (CallSession.mailbox). channel "voice" or "text": a conversation in Brain Assist
+        instead of a call (caller: who asked, and from which device)."""
         owner = (self.cfg.owner_name or "").strip() or "the owner"
         name = self.cfg.assistant_name or "Claude"
+        if channel in ASSIST_HEAD:
+            how = "spoken to a voice device" if channel == "voice" else "typed in the chat"
+            prompt = (f"Summarize this conversation with {name}, {owner}'s assistant, in Home Assistant ({how}) "
+                      f"for {owner} in {LANG_NAMES.get(language, 'German')}, in at most three short sentences, "
+                      "plain text without markdown. Say who asked (name if known, otherwise the device), what "
+                      "they wanted, and what was done (appointments, list changes, switched devices). Leave out "
+                      "values that were only read out, unless they were the point. Mention web lookups only in a "
+                      "few words (what was looked up), without URLs or source lists. Translate everything said in "
+                      "other languages. Only state what is in the transcript.\n\n"
+                      f"Person: {caller}\n"
+                      f"Actions: {'; '.join(actions) or 'none'}\n"
+                      "Transcript:\n" + "\n".join(transcript))
+            msg = self.client.messages.create(model=self.cfg.claude_model, max_tokens=600,
+                                              messages=[{"role": "user", "content": prompt}])
+            return "".join(b.text for b in msg.content if b.type == "text").strip()
         called = (f"It was an outgoing call: {name}, {owner}'s assistant, called {caller}; nobody called {owner}. "
                   "Mention a call back only if the transcript asks for one or agrees on one. ")
         if outbound and mailbox:

@@ -237,12 +237,59 @@ def test_conversation_continues_expires_and_never_changes_hands():
     store = assist.Conversations(idle=60, clock=clock)
     first = take(store, "", "jan")
     assert first.id and take(store, first.id, "jan") is first
-    assert take(store, "from-ha", "jan").id == "from-ha"    # Home Assistant's own id is kept
-    other = take(store, first.id, "tablet")                 # someone else with the same id: a new conversation
+    assert take(store, "from-ha", "maryna").id == "from-ha"  # Home Assistant's own id is kept
+    other = take(store, first.id, "tablet")                  # someone else with the same id: a new conversation
     assert other is not first and other.id != first.id
     clock.now += 61
     again = take(store, first.id, "jan")
     assert again is not first and again.id == first.id and len(store) == 1  # forgotten, the others too
+
+
+def closing(**kw):
+    """A store that records the conversations it closes."""
+    closed = []
+    return assist.Conversations(on_close=closed.append, **kw), closed
+
+
+def test_idle_conversations_are_closed_by_the_sweep():
+    clock = Clock()
+    store, closed = closing(idle=60, clock=clock)
+    a, b = take(store, "a", "jan"), store.get("b", "maryna")  # b is still answering
+    clock.now += 61
+    store.sweep()
+    assert closed == [a] and sorted(store.items) == ["b"]
+    store.release(b)
+    clock.now += 61
+    store.sweep()
+    assert closed == [a, b] and len(store) == 0
+
+
+def test_a_new_conversation_of_the_same_user_and_device_closes_the_earlier_one():
+    """Home Assistant gives a new id after a few minutes or for a new chat: the earlier conversation is over and
+    can be summarized right away, not only after the idle time."""
+    store, closed = closing()
+    first = take(store, "c1", "jan|tablet")
+    other = take(store, "c2", "maryna|tablet")
+    second = take(store, "c3", "jan|tablet")
+    assert closed == [first] and store.items == {"c2": other, "c3": second}
+    assert take(store, "c3", "jan|tablet") is second and closed == [first]  # going on closes nothing
+
+
+def test_a_running_conversation_is_not_closed_by_a_new_one():
+    store, closed = closing()
+    running = store.get("c1", "jan")
+    take(store, "c2", "jan")
+    assert closed == [] and "c1" in store.items
+    store.release(running)
+
+
+def test_closing_never_breaks_a_request():
+    def boom(conv):
+        raise RuntimeError("summary failed")
+
+    store = assist.Conversations(on_close=boom)
+    take(store, "c1", "jan")
+    assert take(store, "c2", "jan").id == "c2"
 
 
 def test_idle_time_counts_from_the_end_of_the_request():
@@ -257,11 +304,12 @@ def test_idle_time_counts_from_the_end_of_the_request():
 
 def test_conversations_are_limited():
     clock = Clock()
-    store = assist.Conversations(limit=3, clock=clock)
+    store, closed = closing(limit=3, clock=clock)
     for i in range(5):
         clock.now += 1
-        take(store, f"c{i}", "jan")
+        take(store, f"c{i}", f"user{i}")
     assert sorted(store.items) == ["c2", "c3", "c4"]
+    assert [c.id for c in closed] == ["c0", "c1"]  # the ones dropped are summarized too
 
 
 def test_a_conversation_in_use_is_never_dropped():
@@ -271,12 +319,12 @@ def test_a_conversation_in_use_is_never_dropped():
     store = assist.Conversations(idle=60, limit=1, clock=clock)
     running = store.get("a", "jan")       # handed out, the turn has not started yet
     clock.now += 100
-    take(store, "b", "jan")               # over the limit and past the idle time
+    take(store, "b", "maryna")            # over the limit and past the idle time
     assert store.get("a", "jan") is running and running.pins == 2
     store.release(running)
     store.release(running)
     clock.now += 100
-    take(store, "c", "jan")
+    take(store, "c", "maryna")
     assert "a" not in store.items         # released: forgotten like any other
 
 
@@ -416,6 +464,74 @@ def test_another_user_never_continues_a_conversation(brain):
     assert events[0]["conversation_id"] != cid
     sent = fake.requests[0]["messages"]
     assert [m["role"] for m in sent] == ["user", "assistant"] and "Zahnarzt" not in str(sent)
+
+
+def test_conversation_keeps_what_the_summary_needs(brain):
+    events, _, store = run(brain, {"text": "Mach das Licht im Flur an", "user_name": "Jan", "channel": "voice",
+                                   "device_name": "Satellite", "area_name": "Küche", "language": "de"},
+                           message(tool("ha_control", entity_id="light.flur", service="turn_on"), stop="tool_use"),
+                           message("Das Licht im Flur ist an."))
+    conv = store.items[events[0]["conversation_id"]]
+    assert conv.transcript == ["Jan Lenck via Satellite: Mach das Licht im Flur an",
+                               "Claudine: Das Licht im Flur ist an."]
+    assert (conv.channel, conv.language, conv.label, conv.device) == ("voice", "de", "Jan Lenck via Satellite",
+                                                                      "Satellite")
+    assert conv.person["who"] == {"ha_user": "Jan", "number": "0151111"} and conv.ended > 0
+    assert len(conv.actions) == 1 and conv.actions[0].startswith("ha_control")
+
+
+def test_what_is_remembered_opens_the_conversation(brain):
+    asked = []
+
+    def recall(person):
+        asked.append(person["who"])
+        return "You remember: [a note with a bracket] from yesterday. "
+
+    brain.client = SimpleNamespace(messages=FakeMessages(message("Ja."), message("Ja.")))
+    brain.cfg["callers"] = cfg().callers
+    store, events = assist.Conversations(), []
+    for text in ("Weißt du noch?", "Und sonst?"):
+        assist.converse(brain, brain.cfg, store, req(text, user_name="Jan", conversation_id="c1"), events.append,
+                        lambda: False, "Jan", recall)
+    first = store.items["c1"].messages[0]["content"]
+    assert first == ("[System: Jan is writing to you. You remember: (a note with a bracket) from yesterday. "
+                     "Answer the request right away.]\nWeißt du noch?")
+    assert asked == [{"ha_user": "Jan", "number": "0151111"}]  # once, at the start
+
+
+def test_memory_failure_does_not_stop_the_conversation(brain):
+    def recall(person):
+        raise OSError("disk full")
+
+    brain.client = SimpleNamespace(messages=FakeMessages(message("21 Grad.")))
+    brain.cfg["callers"] = cfg().callers
+    events = []
+    assist.converse(brain, brain.cfg, assist.Conversations(), req(user_name="Jan"), events.append, lambda: False,
+                    "Jan", recall)
+    assert events[-1]["type"] == "end" and text_of(events) == "21 Grad."
+
+
+@pytest.mark.parametrize("who_, expected, notify", [
+    ({"user_name": "Jan"}, {"ha_user": "Jan", "number": "0151111"}, False),
+    ({"user_name": "dashboard"}, {"ha_user": "dashboard", "number": ""}, False),
+    ({"device_name": "Flur Tablet"}, {"ha_device": "Flur Tablet"}, False),
+    ({"user_name": "Jan", "device_name": "Flur Tablet"}, {"ha_user": "Jan", "number": "0151111"}, False),
+    # logged in on a listed device without an entry of their own: their memory, not the device's
+    ({"user_id": "u7", "user_name": "Tom", "device_name": "Flur Tablet"}, {"ha_user": "u7", "number": ""}, False),
+    ({"user_id": "u8", "user_name": "Eva", "device_name": "Flur Tablet"}, {"ha_user": "u8", "number": ""}, False),
+])
+def test_whose_memory_a_request_uses(who_, expected, notify):
+    person = who(**who_)
+    assert person["who"] == expected and person["notify"] is notify
+
+
+def test_everyone_else_has_their_own_memory():
+    callers = cfg([{"ha_user": "*", "access": "guest", "notify": True}, {"ha_device": "*", "access": "read"}]).callers
+    assert assist.identify(callers, req(user_id="u7", user_name="Tom"))["who"] == {"ha_user": "u7", "number": ""}
+    assert assist.identify(callers, req(user_id="u7"))["notify"] is True
+    # a voice device has no user: the memory of the device, even though the user "*" entry gives the access
+    assert assist.identify(callers, req(device_id="d3", device_name="Sat"))["who"] == {"ha_device": "d3"}
+    assert assist.identify(cfg([{"ha_user": "*", "access": "guest"}]).callers, req())["who"] == {}
 
 
 def test_not_listed_gets_a_fixed_answer_without_claude(brain):

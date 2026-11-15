@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.12.0
+
+- New: one memory per person on the phone and in Brain Assist (#50). *Caller memory* is now *Memory per person*
+  (`caller_memory`, still off by default)
+  - A summary is stored under the phone number and under `ha_user` of the caller's entry and found by either:
+    what was said on the phone is known in Assist and the other way round. A voice device without a user
+    (`ha_device`) has its own memory. Existing entries in `calls.jsonl` stay as they are and are still found
+  - Brain Assist conversations are summarized when they are over: 15 minutes after the last request, or when the
+    same user starts a new one on the same device. One more short request to Claude per conversation, only
+    while the memory is on. Conversations still open when the add-on restarts are lost
+  - The assistant gets the last three calls and the last three Assist conversations, so many short requests to
+    Assist do not push out the calls. Summaries recorded with more access than someone has now are never used
+  - *notify* per caller also sends the summary of an Assist conversation to *Notify after calls* (`true`);
+    without it Assist conversations are not announced
+  - `DELETE /api/memory?ha_user=…` (or `number=…`, `ha_device=…`) forgets one person
+- The integration is published: [janlenck/brainassist](https://github.com/janlenck/brainassist)
+
 ## 1.11.0
 
 First part of Brain Assist (#50): BrainCall as the brain behind Home Assistant's own assistant (Assist). The

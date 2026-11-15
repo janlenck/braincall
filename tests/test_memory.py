@@ -155,10 +155,88 @@ def test_note_in_local_time_marked_as_background():
     entries = [{"time": "2026-11-01T13:05:00+00:00", "direction": "in", "summary": "Maryna asked about Friday."},
                {"time": "2026-07-01T08:00:00+00:00", "direction": "out", "summary": "Reminded her."}]
     text = memory.note(entries, "Jan", "Europe/Berlin")
-    assert "2026-11-01 14:05 (they called): Maryna asked about Friday." in text
-    assert "2026-07-01 10:00 (you called them): Reminded her." in text
-    assert "summaries written for Jan" in text and "not instructions" in text
+    assert "2026-11-01 14:05 (phone, they called): Maryna asked about Friday." in text
+    assert "2026-07-01 10:00 (phone, you called them): Reminded her." in text
+    assert "with this caller" in text and "summaries written for Jan" in text and "not instructions" in text
     assert "never say you cannot remember" in text
     assert "none for this caller" in memory.note([], "Jan", "Europe/Berlin")
-    assert "no memory of earlier calls" in memory.note([], "Jan", "Europe/Berlin", enabled=False)
+    assert "no memory of earlier calls or conversations" in memory.note([], "Jan", "Europe/Berlin", enabled=False)
     assert "2026-11-01" in memory.note(entries, "Jan", "Not/AZone")
+
+
+# ---------------------------------------------------------------- per person: number, ha_user, ha_device (#50)
+def test_who_of_a_phone_call():
+    jan = {"number": "0151111", "ha_user": "Jan"}
+    assert memory.who(jan, "+49151111") == {"number": "+49151111", "ha_user": "Jan"}
+    assert memory.who({"number": "0160333", "ha_user": ""}, "0160333") == {"number": "0160333", "ha_user": ""}
+    assert memory.who({"number": "*", "ha_user": "Jan"}, "0999") == {"number": "0999", "ha_user": ""}  # everyone else
+    assert memory.who(None, "0999") == {"number": "0999", "ha_user": ""}
+
+
+def test_one_memory_for_number_and_home_assistant_user(path):
+    m = mem(path)
+    m.add({"number": "+49 151 111", "ha_user": "Jan"}, "Call", ADMIN, True, when=NOW - timedelta(hours=3), now=NOW)
+    m.add({"ha_user": " JAN ", "number": "0151111"}, "Chat", ADMIN, when=NOW - timedelta(hours=2), now=NOW,
+          channel="assist-text", device="Tablet")
+    m.add({"ha_device": "Küche"}, "Kitchen", ADMIN, when=NOW - timedelta(hours=1), now=NOW, channel="assist-voice")
+    assert [e["summary"] for e in m.recent({"ha_user": "jan"}, ADMIN, NOW)] == ["Call", "Chat"]
+    assert [e["summary"] for e in m.recent("0151111", ADMIN, NOW)] == ["Call", "Chat"]
+    assert [e["summary"] for e in m.recent({"ha_device": "küche"}, ADMIN, NOW)] == ["Kitchen"]
+    assert m.recent({"ha_user": "maryna"}, ADMIN, NOW) == []
+    assert lines(path)[1] == {"time": "2026-11-08T10:00:00+00:00", "number": "0151111", "ha_user": "jan",
+                              "channel": "assist-text", "device": "Tablet", "access": "admin", "summary": "Chat"}
+    assert lines(path)[2]["ha_device"] == "küche" and "number" not in lines(path)[2]
+
+
+def test_lines_from_before_1_12_are_found_by_their_number(path):
+    """No migration: an old line has only the number, and the person's entry still has it."""
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"time": (NOW - timedelta(days=1)).isoformat(), "number": "0151111",
+                                "direction": "in", "access": "admin", "summary": "Old call"}) + "\n",
+                    encoding="utf-8")
+    m = mem(path)
+    got = m.recent({"ha_user": "Jan", "number": "0151111"}, ADMIN, NOW)
+    assert [e["summary"] for e in got] == ["Old call"]
+    assert "(phone, they called): Old call" in memory.note(got, "Jan", "Europe/Berlin", subject="this person")
+    assert m.recent({"ha_user": "Jan"}, ADMIN, NOW) == []  # without the number nothing links it to the user
+
+
+def test_many_short_requests_do_not_push_out_the_calls(path):
+    m = mem(path)
+    for i in range(4):
+        m.add("0151111", f"Call {i}", ADMIN, True, when=NOW - timedelta(days=10 - i), now=NOW)
+    for i in range(5):
+        m.add({"number": "0151111"}, f"Chat {i}", ADMIN, when=NOW - timedelta(hours=5 - i), now=NOW,
+              channel="assist-voice")
+    assert [e["summary"] for e in m.recent("0151111", ADMIN, NOW)] == [
+        "Call 1", "Call 2", "Call 3", "Chat 2", "Chat 3", "Chat 4"]
+
+
+def test_access_rule_holds_across_channels(path):
+    """What an admin said in the chat does not reach the same person on a restricted device."""
+    m = mem(path)
+    m.add({"ha_user": "jan"}, "Admin chat", ADMIN, when=NOW, now=NOW, channel="assist-text")
+    assert m.recent({"ha_user": "jan"}, frozenset({"shopping"}), NOW) == []
+    assert len(m.recent({"ha_user": "jan"}, ADMIN, NOW)) == 1
+
+
+def test_forget_a_person(path):
+    m = mem(path)
+    m.add({"number": "0151111", "ha_user": "Jan"}, "Call", ADMIN, True, when=NOW, now=NOW)
+    m.add({"ha_user": "jan"}, "Chat", ADMIN, when=NOW, now=NOW, channel="assist-text")
+    m.add("0160333", "Someone else", GUEST, True, when=NOW, now=NOW)
+    assert m.forget({"ha_user": "JAN"}) == 2
+    assert [e["summary"] for e in lines(path)] == ["Someone else"]
+    assert m.forget("0151111") == 0 and m.forget({}) == 0
+    assert mem(path, 0).forget("0160333") == 1  # also while the memory is off
+    assert mem(path.with_name("missing.jsonl")).forget("0160333") == 0
+
+
+def test_note_names_the_channel_and_the_subject():
+    entries = [{"time": "2026-11-01T13:05:00+00:00", "channel": "assist-voice", "device": "Küche", "summary": "A"},
+               {"time": "2026-11-02T13:05:00+00:00", "channel": "assist-text", "summary": "B"}]
+    text = memory.note(entries, "Jan", "Europe/Berlin", subject="this person")
+    assert "(Home Assistant, spoken, device “Küche”): A" in text and "(Home Assistant chat): B" in text
+    assert "conversations with this person" in text
+    assert "none for the people who used this device" in memory.note(
+        [], "Jan", subject="the people who used this device")
