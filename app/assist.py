@@ -98,13 +98,14 @@ def identify(callers: list, req: dict) -> dict | None:
         return None
     access = rights.stricter(user["access"], device["access"]) if user and device else entries[0]["access"]
     webs = [e.get("web") for e in entries]
-    # Whose memory this is (memory.CallMemory): the person's, shared with their phone number. "*" stands for
-    # many users or devices: there the one that really asks counts. Without a user it is the memory of the
-    # device, for whoever speaks there.
+    # Whose memory this is (memory.CallMemory): the person's, shared with their phone number. A user who has no
+    # entry of their own ("*", or only the device is listed) is remembered by their own id: two people logged in
+    # on the same tablet never read each other's notes. Only without any user it is the memory of the device,
+    # for whoever speaks there.
     asking = req.get("user_id") or req.get("user_name")
     if user is not None and _fold(user["ha_user"]) != "*":
         whom = {"ha_user": user["ha_user"], "number": user["number"] if user["number"] != "*" else ""}
-    elif user is not None and asking:
+    elif asking:
         whom = {"ha_user": asking, "number": ""}
     elif device is not None:  # nobody is logged in there (a voice device), whatever entry gave the access
         own = _fold(device["ha_device"]) != "*"

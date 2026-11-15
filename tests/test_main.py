@@ -325,9 +325,18 @@ def test_memory_can_be_forgotten_per_person(server, people, after):
     after("0170222")
     people.after_assist(conversation(people, user_name="Jan"))
     assert server("DELETE", "/api/memory", token=None)[0] == 401
-    assert server("DELETE", "/api/memory?ha_user=Jan") == (200, {"forgotten": 2})  # the call and the chat
+    # a call from before 1.12: stored under the number only
+    with open(people.calls.path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), "number": "0151111",
+                            "direction": "in", "access": "admin", "summary": "Old call"}) + "\n")
+    assert server("DELETE", "/api/memory?ha_user=Jan") == (200, {"forgotten": 3})  # the calls and the chat
     assert server("DELETE", "/api/memory?ha_user=Jan") == (200, {"forgotten": 0})
-    assert server("DELETE", "/api/memory?number=%2B49170222") == (200, {"forgotten": 1})
+    people.after_assist(conversation(people, user_id="maryna-id"))  # stored under her user and number …
+    with open(people.calls.path, "a", encoding="utf-8") as f:       # … and one under the user only
+        f.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), "ha_user": "maryna-id",
+                            "channel": "assist-text", "access": "calendar", "summary": "Chat"}) + "\n")
+    assert server("DELETE", "/api/memory?number=%2B49170222") == (200, {"forgotten": 3})
+    assert people.calls.path.read_text(encoding="utf-8") == ""
     assert server("DELETE", "/api/memory")[0] == 400
     assert "none for this caller" in people.previous("0151111", frozenset({"admin"}), people.find_caller("0151111"))
 

@@ -178,6 +178,21 @@ def previous(number: str, access, caller: dict | None = None) -> str:
         return ""
 
 
+def same_person(whom: dict) -> list:
+    """Everything a person's summaries may be stored under, for forgetting them: what was asked for, plus the
+    number and the Home Assistant user of the caller entries that name them (an entry links the two; lines from
+    before 1.12 have only the number). "*" entries name nobody, and a device's memory stays its own."""
+    user = str(whom.get("ha_user") or "").strip().casefold()
+    out = [whom]
+    for c in cfg.callers:
+        entry_user = c["ha_user"].strip().casefold()
+        named = (user and entry_user == user) or (whom.get("number") and same_number(c["number"], whom["number"]))
+        if not named or c["number"] == "*" or entry_user == "*":
+            continue
+        out.append({"number": c["number"], "ha_user": c["ha_user"]})
+    return out
+
+
 def recall(person: dict) -> str:
     """What Claude remembers of the person of an Assist conversation (assist.identify), for its first note."""
     return memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
@@ -721,7 +736,7 @@ class Handler(BaseHTTPRequestHandler):
         whom = {k: query.get(k, "") for k in memory.KEYS}
         if not any(whom.values()):
             return self._send(400, {"error": "say whom to forget: number, ha_user or ha_device"})
-        forgotten = calls.forget(whom)
+        forgotten = sum(calls.forget(alias) for alias in same_person(whom))
         log.info("Memory: %d summaries forgotten for %s", forgotten,
                  ", ".join(f"{k} {v}" for k, v in whom.items() if v))
         self._send(200, {"forgotten": forgotten})

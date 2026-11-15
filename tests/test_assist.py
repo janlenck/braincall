@@ -516,6 +516,9 @@ def test_memory_failure_does_not_stop_the_conversation(brain):
     ({"user_name": "dashboard"}, {"ha_user": "dashboard", "number": ""}, False),
     ({"device_name": "Flur Tablet"}, {"ha_device": "Flur Tablet"}, False),
     ({"user_name": "Jan", "device_name": "Flur Tablet"}, {"ha_user": "Jan", "number": "0151111"}, False),
+    # logged in on a listed device without an entry of their own: their memory, not the device's
+    ({"user_id": "u7", "user_name": "Tom", "device_name": "Flur Tablet"}, {"ha_user": "u7", "number": ""}, False),
+    ({"user_id": "u8", "user_name": "Eva", "device_name": "Flur Tablet"}, {"ha_user": "u8", "number": ""}, False),
 ])
 def test_whose_memory_a_request_uses(who_, expected, notify):
     person = who(**who_)
