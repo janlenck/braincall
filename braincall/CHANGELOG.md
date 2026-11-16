@@ -17,7 +17,9 @@ Clear log levels (#77): `info` = what is said and done, `debug` = plus the comma
 - Fix: other libraries logged below `info` again since the Anthropic SDK logs as `httpcore2` (with `debug` about 15
   lines per request, with the organization and workspace id of the Claude API). Every library that is not
   BrainCall's own now shows only warnings, whatever its name; its debug output appears with `trace` only, without
-  HTTP headers and without the configured keys, tokens and passwords
+  HTTP headers
+- The configured keys, tokens and passwords are replaced by `***` in every log line and traceback, BrainCall's own
+  included (e.g. an error answer of Home Assistant that echoes the token)
 
 ## 1.14.0
 

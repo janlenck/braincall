@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+import console
 import logfilter
 from logfilter import TRACE, Gate
 
@@ -58,6 +59,38 @@ def test_secret_added_later():
     gate.add("generated-api-token")
     r = record(logging.DEBUG, 'send "Bearer generated-api-token"')
     assert gate.filter(r) and r.getMessage() == 'send "Bearer ***"'
+
+
+def test_own_lines_are_redacted_too():
+    """An error answer of Home Assistant in BrainCall's own warning may echo a token."""
+    r = record(logging.WARNING, "light.buro: light.turn_on failed: 401 %s", path=OWN, name="ha", args=(KEY,))
+    assert Gate(logging.INFO, [KEY]).filter(r) and r.getMessage() == "light.buro: light.turn_on failed: 401 ***"
+
+
+def _boom():
+    try:
+        raise RuntimeError(f"auth failed for {KEY}")
+    except RuntimeError:
+        return sys.exc_info()
+
+
+@pytest.mark.parametrize("formatter", [logging.Formatter("%(levelname)s %(name)s: %(message)s"),
+                                       console.ColorFormatter()])
+@pytest.mark.parametrize("path, name", [(SITE, "anthropic._base_client"), (OWN, "brain")])
+def test_tracebacks_are_redacted_through_a_handler(tmp_path, formatter, path, name):
+    """A harmless message with a secret in the exception: the stack stays, the secret goes (file and console)."""
+    out = tmp_path / "log.txt"
+    handler = logging.FileHandler(out, encoding="utf-8")
+    handler.setFormatter(formatter)
+    handler.addFilter(Gate(logging.INFO, [KEY]))
+    r = logging.LogRecord(name, logging.ERROR, path, 1, "Request failed", None, _boom())
+    r.stack_info = f"Stack (most recent call last):\n  key={KEY}"
+    handler.handle(r)
+    handler.close()
+    text = out.read_text(encoding="utf-8")
+    assert KEY not in text
+    assert "Request failed" in text and "Traceback (most recent call last)" in text and "in _boom" in text
+    assert "RuntimeError: auth failed for ***" in text
 
 
 def test_secret_in_a_warning_is_hidden_too():

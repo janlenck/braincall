@@ -49,8 +49,8 @@ class ColorFormatter(logging.Formatter):
     def format(self, record):
         t = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
         msg = record.getMessage()
-        if record.exc_info:
-            msg += "\n" + self.formatException(record.exc_info)
+        if record.exc_info or record.exc_text:  # exc_text: the traceback already rendered and redacted (logfilter)
+            msg += "\n" + (record.exc_text or self.formatException(record.exc_info))
         if record.name == "httpx" or record.name.startswith("httpx"):
             return f"{GREY}{t}  {DIM}{msg}{RESET}"
         if record.levelno >= logging.WARNING:

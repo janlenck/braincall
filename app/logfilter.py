@@ -7,7 +7,7 @@ Assistant) and the debug output of other libraries.
 BrainCall's own lines follow log_level. Every other logger (httpcore2, urllib3, websocket, the Anthropic SDK …) is
 told apart by the file it logs from, not by a list of names: a renamed library cannot slip through. Below trace they
 show only warnings. With trace they show everything except HTTP headers (the Claude API answers with its organization
-and workspace id) and the configured secrets.
+and workspace id). The configured secrets never appear, in no line (BrainCall's own included) and no traceback.
 """
 import json
 import logging
@@ -36,6 +36,7 @@ def redact(text: str, *secrets: str) -> str:
 
 
 _own_files: dict[str, bool] = {}
+_TRACEBACK = logging.Formatter()  # renders a traceback like every formatter does
 
 
 def own(record: logging.LogRecord) -> bool:
@@ -63,17 +64,29 @@ class Gate(logging.Filter):
             self.secrets.append(secret)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if own(record):
-            return True
-        if record.levelno < logging.WARNING and self.level > TRACE:
+        library = not own(record)  # BrainCall's own lines are already decided by the logger level
+        if library and record.levelno < logging.WARNING and self.level > TRACE:
             return False
         try:
             text = record.getMessage()
         except Exception:  # noqa: BLE001  (the handler reports a broken message itself)
             return True
-        if record.levelno < logging.WARNING and "headers" in text.lower():
+        if library and record.levelno < logging.WARNING and "headers" in text.lower():
             return False  # httpcore2 "receive_response_headers", the SDK's "HTTP Response: … Headers({…})"
+        self._redact(record, text)
+        return True
+
+    def _redact(self, record: logging.LogRecord, text: str):
+        """The secrets out of every line, BrainCall's own too (an error answer may echo a token), and out of the
+        traceback: rendered once here into exc_text, which the formatters print instead of rendering it again."""
+        if not self.secrets:
+            return
         clean = redact(text, *self.secrets)
         if clean != text:
             record.msg, record.args = clean, None
-        return True
+        if record.exc_info and not record.exc_text:
+            record.exc_text = _TRACEBACK.formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = redact(record.exc_text, *self.secrets)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info, *self.secrets)
