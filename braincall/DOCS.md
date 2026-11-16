@@ -268,6 +268,8 @@ shopping list) as a *Local To-do* list "Recurring purchases" and fills it from w
 Everything the add-on writes into the rhythm list is English. Empty *Rhythm list* = none.
 
 *Log level* `debug` shows every change seen on the lists and every removal, `trace` also each look at them.
+Requests to the API: `debug` shows those that change something or are refused, `trace` also those that only read
+(e.g. `GET /api/tasks` once a minute).
 
 ## Updates
 

@@ -845,6 +845,13 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=outbound, args=(number, str(body.get("message") or "")), daemon=True).start()
         self._send(202, {"status": "dialing", "number": number})
 
+    def log_request(self, code="-", size="-"):
+        """A GET that worked is a poll (e.g. /api/tasks once a minute, /health): trace. What changes something, and
+        every refusal or error: debug (#77)."""
+        code = int(code) if isinstance(code, int) else code  # HTTPStatus.OK -> 200
+        polled = self.command == "GET" and isinstance(code, int) and code < 400
+        log.log(shopping.TRACE if polled else logging.DEBUG, 'HTTP "%s" %s %s', self.requestline, code, size)
+
     def log_message(self, fmt, *args):
         log.debug("HTTP " + fmt, *args)
 

@@ -83,7 +83,8 @@ configuration:
     name: Log level
     description: >-
       How much the log shows. info (default): calls and changes. debug: also details, e.g. every change seen on the
-      shopping list. trace: also every look at the shopping list (once a minute). warning: only problems.
+      shopping list, every API request that changes something. trace: also every look at the shopping list and every
+      API request that only reads (e.g. GET /api/tasks once a minute). warning: only problems.
   anthropic_api_key:
     name: Anthropic API key
     description: For Claude.

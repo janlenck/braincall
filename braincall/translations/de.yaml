@@ -86,7 +86,8 @@ configuration:
     name: Log-Level
     description: >-
       Wie viel das Log zeigt. info (Standard): Anrufe und Änderungen. debug: auch Details, z. B. jede Änderung auf
-      der Einkaufsliste. trace: auch jeder Blick auf die Einkaufsliste (einmal pro Minute). warning: nur Probleme.
+      der Einkaufsliste, jede Anfrage an die API, die etwas ändert. trace: auch jeder Blick auf die Einkaufsliste und
+      jede reine Abfrage der API (z. B. GET /api/tasks einmal pro Minute). warning: nur Probleme.
   anthropic_api_key:
     name: Anthropic-API-Key
     description: Für Claude.

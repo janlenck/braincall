@@ -325,7 +325,9 @@ the list by hand and that part stays off.
 
 `log_level` (default `"info"`) decides how much `braincall.log` and the console show: `"warning"` only problems,
 `"info"` calls and changes, `"debug"` also details (every change seen on the shopping list, every removal,
-every change to the rhythm list, every product added or classified), `"trace"` also every look at the lists. Other libraries never log below `info`.
+every change to the rhythm list, every product added or classified, every API request that changes something or is
+refused), `"trace"` also every look at the lists and every API request that only reads (`GET` that worked, e.g.
+`/api/tasks` once a minute). Other libraries never log below `info`.
 
 ## Web search
 

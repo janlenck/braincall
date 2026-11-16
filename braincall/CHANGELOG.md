@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.1
+
+- Log: requests to the API that only read (`GET` that worked, e.g. `/api/tasks` once a minute, `/health`) now appear
+  only with *Log level* `trace`, no longer every minute with `debug` (#77). Requests that change something and every
+  refused or failed one stay at `debug`
+
 ## 1.14.0
 
 Planned calls from Home Assistant (#50).
