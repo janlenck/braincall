@@ -11,6 +11,8 @@ import time
 
 from pyVoIP import RTP
 
+from logfilter import TRACE
+
 log = logging.getLogger("rtp")
 
 SILENCE = {"PCMU": b"\xff", "PCMA": b"\xd5"}
@@ -35,5 +37,5 @@ def setup(call) -> str:
         codec = "PCMA" if pref == RTP.PayloadType.PCMA else "PCMU"
         client.encode_packet = lambda payload: payload  # already encoded
         client.pmout.read = _padded_reader(client.pmout, SILENCE[codec])
-    log.info("Audio codec: %s", codec)
+    log.log(TRACE, "Audio codec: %s", codec)
     return codec

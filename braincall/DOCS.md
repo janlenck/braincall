@@ -268,8 +268,24 @@ shopping list) as a *Local To-do* list "Recurring purchases" and fills it from w
 Everything the add-on writes into the rhythm list is English. Empty *Rhythm list* = none.
 
 *Log level* `debug` shows every change seen on the lists and every removal, `trace` also each look at them.
-Requests to the API: `debug` shows those that change something or are refused, `trace` also those that only read
-(e.g. `GET /api/tasks` once a minute).
+
+## Log
+
+*Log level* decides how much the log shows:
+
+- `info` (default): what is said and what is done: the sentences of the call or the Assist conversation, call
+  started and ended, summary, notifications, planned calls, and what was switched (`automation.x switched on`,
+  `input_datetime.y set to 07:50`), added to the shopping list or the calendar
+- `debug`: plus the commands, for "why did Claudine do that": which tools Claude used with which parameters and what
+  came back in short, the data of service calls, web searches, the timing of each answer, API requests that change
+  something or are refused
+- `trace`: plus every single step, for connection problems: requests to Home Assistant, SIP messages, every look at
+  the lists, API requests that only read (e.g. `GET /api/tasks` once a minute), and the debug output of the
+  libraries
+- `warning`: only problems
+
+Other libraries only show warnings, unless the level is `trace`. HTTP headers and the configured keys, tokens and
+passwords never appear in the log.
 
 ## Updates
 

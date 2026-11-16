@@ -1,12 +1,15 @@
 """Home Assistant access: search, control limits, shopping lists, calendars and restricted bookings."""
 import json
+import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 import ha as ha_mod
 from conftest import FakeHTTP, FakeResponse, make_cfg
 from ha import HA
+from logfilter import TRACE
 
 STATES = [
     {"entity_id": "sensor.ebusd_hwc_storage_temp", "state": "48.5",
@@ -294,6 +297,52 @@ def test_control_switches_automation_on_and_off(make_ha, service):
     assert h.http.posted(f"/services/automation/{name}") == [{"entity_id": "automation.r5_aircon_timer"}]
 
 
+@pytest.mark.parametrize("entity, service, data, line", [
+    ("automation.r5_aircon_timer", "turn_on", None, "automation.r5_aircon_timer switched on"),
+    ("light.buro", "turn_on", {"brightness_pct": 50, "rgb_color": [255, 0, 0]}, "light.buro switched on"),
+    ("input_datetime.start_timer", "set_datetime", {"time": "07:50:00"}, "input_datetime.start_timer set to 07:50:00"),
+    ("climate.wohnzimmer", "set_temperature", {"temperature": 21}, "climate.wohnzimmer set to 21"),
+    ("cover.garage", "open_cover", None, "cover.garage opened"),
+])
+def test_control_writes_one_readable_info_line(make_ha, caplog, entity, service, data, line):
+    """#77: switching is not a problem (no warning); info says what was done, debug has the service data."""
+    h = _with_state(make_ha(), entity, "on")
+    with caplog.at_level(logging.DEBUG, logger="ha"):
+        assert h.call_service(entity, service, data, confirmed=True).startswith("Done.")
+    infos = [(r.levelno, r.getMessage()) for r in caplog.records if r.levelno >= logging.INFO]
+    assert infos == [(logging.INFO, line)]
+    debug, = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert debug.startswith(f"Service {entity.split('.')[0]}.{service} ") and repr(entity) in debug
+    for value in (data or {}).values():
+        assert repr(value) in debug
+
+
+def test_control_error_is_a_warning(make_ha, caplog):
+    h = make_ha()
+    h.http.routes[("POST", "/services/light/turn_on")] = FakeResponse({"message": "bad"}, 400)
+    with caplog.at_level(logging.INFO, logger="ha"):
+        h.call_service("light.buro", "turn_on")
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert "light.buro: light.turn_on failed: 400" in caplog.records[0].getMessage()
+
+
+def test_shopping_edit_writes_one_info_line(make_ha, caplog):
+    h = make_ha(shopping_list="todo.shopping_list")
+    with caplog.at_level(logging.INFO, logger="ha"):
+        assert h.shopping_edit("add", " Milch ").startswith("Done.")
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.INFO, "Shopping list todo.shopping_list: added 'Milch'")]
+
+
+def test_requests_to_home_assistant_are_traced(caplog):
+    r = SimpleNamespace(request=SimpleNamespace(method="POST", path_url="/api/services/light/turn_on"),
+                        status_code=200)
+    with caplog.at_level(TRACE, logger="ha"):
+        HA._trace_rest(r)
+    assert [(x.levelno, x.getMessage()) for x in caplog.records] == [(TRACE, "HA POST /api/services/light/turn_on 200")]
+    assert HA._trace_rest in HA(make_cfg(ha_url="https://ha:8123", ha_token="t")).http.hooks["response"]
+
+
 @pytest.mark.parametrize("service", ["trigger", "automation.trigger", "reload", "toggle", ""])
 def test_control_never_runs_an_automation(make_ha, service):
     h = make_ha()
@@ -455,6 +504,14 @@ def test_create_event_admin_timed(make_ha):
     assert created(h) == [{"entity_id": "calendar.work", "summary": "Termin", "location": "Büro",
                            "start_date_time": "2030-01-08T14:00:00+01:00",
                            "end_date_time": "2030-01-08T15:00:00+01:00"}]
+
+
+def test_create_event_writes_one_info_line(make_ha, caplog):
+    h = make_ha()
+    with caplog.at_level(logging.INFO, logger="ha"):
+        h.create_event("", "Urlaub", "2030-01-08", confirmed=True)
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.INFO, "Appointment added to calendar.family: 'Urlaub', 2030-01-08")]
 
 
 def test_create_event_all_day_end_is_inclusive_for_the_caller(make_ha):

@@ -17,12 +17,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import logfilter
 from ha import fold
 
 log = logging.getLogger("shopping")
 
-TRACE = 5  # below DEBUG: every poll
-logging.addLevelName(TRACE, "TRACE")
+TRACE = logfilter.TRACE  # every poll
 
 POLL_SECONDS = 60
 BUILTIN_LIST = "todo.shopping_list"  # the entity of Home Assistant's own Shopping list integration

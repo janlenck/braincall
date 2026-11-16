@@ -623,7 +623,7 @@ class CallSession:
             self._timer = None
             self.interrupt.clear()
         if timer is not None and (spec is None or spec.final.is_set()) and not self.restart.is_set():
-            log.info(timer.line())
+            log.debug(timer.line())
         return hang
 
     def _note_heard(self, heard):

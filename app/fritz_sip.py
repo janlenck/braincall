@@ -18,6 +18,8 @@ import time
 import pyVoIP
 from pyVoIP import SIP
 
+from logfilter import TRACE
+
 log = logging.getLogger("sip")
 
 INVITE_TIMEOUT = 10  # seconds to wait for the first answer to an INVITE
@@ -119,7 +121,7 @@ def patched_invite(self, number, ms, sendtype):
                     self.parse_message(resp)
                     continue
                 code = int(resp.status)
-                log.info("SIP %s %s for INVITE", code, resp.status.phrase)
+                log.log(TRACE, "SIP %s %s for INVITE", code, resp.status.phrase)
                 if code in (100, 180, 183):
                     self.pending_invites[call_id] = (uri, branch, cseq, tag)
                     return first, call_id, sess_id
@@ -142,7 +144,7 @@ def patched_invite(self, number, ms, sendtype):
         msg = SIP.SIPMessage(invite.encode("utf8"))  # parsed before sending, see above
         self.pending_invites[call_id] = (uri, branch, cseq, tag)
         self.out.sendto(invite.encode("utf8"), (self.server, self.port))
-        log.info("INVITE with credentials sent")
+        log.log(TRACE, "INVITE with credentials sent")
         return msg, call_id, sess_id
 
 
@@ -163,7 +165,7 @@ def cancel(sip, call_id: str) -> bool:
     req += "User-Agent: braincall\r\n"
     req += "Content-Length: 0\r\n\r\n"
     sip.out.sendto(req.encode("utf8"), (sip.server, sip.port))
-    log.info("CANCEL sent")
+    log.log(TRACE, "CANCEL sent")
     return True
 
 

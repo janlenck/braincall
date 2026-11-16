@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 import websocket
 
+from logfilter import TRACE
+
 log = logging.getLogger("ha")
 
 # Spoken German search terms -> typical (often English) parts of entity IDs, e.g. ebusd/Vaillant, Fronius, evcc.
@@ -61,6 +63,11 @@ AUTOMATION_CACHE_S = 300  # ha_automations: definitions read again after this ma
 DESCRIPTION_BRIEF = 400   # ha_automations: description per automation; ha_automation gives it in full
 # automation.trigger would run the actions right away, past control_domains and confirm_domains
 AUTOMATION_SERVICES = ("turn_on", "turn_off")
+# what a service did, for the info line of ha_control (#77); other services: "set to <value>" or the service name
+DONE = {"turn_on": "switched on", "turn_off": "switched off", "toggle": "toggled", "open_cover": "opened",
+        "close_cover": "closed", "stop_cover": "stopped", "lock": "locked", "unlock": "unlocked", "open": "opened",
+        "press": "pressed", "start": "started", "stop": "stopped", "pause": "paused", "trigger": "triggered"}
+SHOPPING_DONE = {"add": "added", "check": "checked", "uncheck": "unchecked", "remove": "removed"}
 
 # Useful attributes per domain for ha_state: short answers instead of complete attribute dumps
 ATTRS = {
@@ -354,12 +361,18 @@ class HA:
             self.tz = None
         self.http = requests.Session()
         self.http.headers["Authorization"] = f"Bearer {token}"
+        self.http.hooks["response"].append(self._trace_rest)
         self._cache = (0.0, [])
         self._configs = (0.0, {})  # definitions of automations and scripts for ha_automations
 
     @property
     def enabled(self) -> bool:
         return self.base is not None
+
+    @staticmethod
+    def _trace_rest(r, *args, **kwargs):
+        """Every REST request to Home Assistant, at trace (#77)."""
+        log.log(TRACE, "HA %s %s %s", r.request.method, r.request.path_url, r.status_code)
 
     def _get(self, path):
         r = self.http.get(self.base + path, timeout=10, verify=self.verify)
@@ -380,6 +393,7 @@ class HA:
         """Short WebSocket session: logs in, yields call(type, **data) -> result, closes afterwards."""
         if not self.ws_url:
             raise HAError("Home Assistant is not configured.")
+        log.log(TRACE, "HA WebSocket %s", self.ws_url)
         ws = websocket.create_connection(self.ws_url, timeout=WS_TIMEOUT, sslopt=self._sslopt())
         try:
             msg = json.loads(ws.recv())
@@ -392,6 +406,7 @@ class HA:
 
             def call(type_: str, **data):
                 n = next(ids)
+                log.log(TRACE, "HA WebSocket %s", type_)
                 ws.send(json.dumps({"id": n, "type": type_, **data}))
                 while True:
                     msg = json.loads(ws.recv())
@@ -520,7 +535,7 @@ class HA:
                     out["note"] = note
         if missing:
             out["no_data"] = missing
-        log.info("Energy %s, %s: %d statistics", out["range"], period or "total", len(ids))
+        log.debug("Energy %s, %s: %d statistics", out["range"], period or "total", len(ids))
         return json.dumps(out, ensure_ascii=False)
 
     @staticmethod
@@ -574,7 +589,7 @@ class HA:
                             for b, r in rows if any(r.get(k) is not None for k in keys)]
                            if len(spans) <= STAT_ROWS[period]
                            else f"{len(spans)} rows, too many to read out: choose a longer period.")
-        log.info("Statistics %s %s, %s", entity_id, out["range"], period or "total")
+        log.debug("Statistics %s %s, %s", entity_id, out["range"], period or "total")
         return json.dumps(out, ensure_ascii=False)
 
     # ------------------------------------------------------------------ history
@@ -620,7 +635,7 @@ class HA:
                 out["unavailable"] = f"{gaps} {'time' if gaps == 1 else 'times'} without a value"
         else:
             out.update(self._changes(points, known, stop, live))
-        log.info("History %s %s: %d states", entity_id, out["range"], len(points))
+        log.debug("History %s %s: %d states", entity_id, out["range"], len(points))
         return json.dumps(out, ensure_ascii=False)
 
     def _points(self, rows: list, begin: datetime, stop: datetime):
@@ -748,7 +763,7 @@ class HA:
             with self._ws() as call:
                 return bool((call("auth/current_user") or {}).get("is_admin"))
         except (HAError, OSError, websocket.WebSocketException) as e:
-            log.info("auth/current_user: %s", e)
+            log.debug("auth/current_user: %s", e)
             return None
 
     def _config_rest(self, s: dict) -> dict:
@@ -821,7 +836,7 @@ class HA:
                 row["description"] = desc if len(desc) <= DESCRIPTION_BRIEF else desc[: DESCRIPTION_BRIEF - 1] + "…"
             rows.append((-score, eid, row))
         rows.sort(key=lambda r: r[:2])
-        log.info("Automations '%s': %d hits", term, len(rows))
+        log.debug("Automations '%s': %d hits", term, len(rows))
         out = {"automations": [r for *_, r in rows[:limit]]}
         if len(rows) > limit:
             out["more"] = f"{len(rows) - limit} more: narrow it down with term."
@@ -862,7 +877,7 @@ class HA:
                 try:
                     config = (call(f"{domain}/config", entity_id=entity_id) or {}).get("config")
                 except HAError as e:
-                    log.info("%s/config %s: %s", domain, entity_id, e)
+                    log.debug("%s/config %s: %s", domain, entity_id, e)
                     config_error = e
                 if item_id:
                     try:
@@ -927,7 +942,7 @@ class HA:
             notes.append("No id (automation from YAML without id): Home Assistant keeps no runs (traces) for it.")
         if notes:
             out["notes"] = notes
-        log.info("Automation %s: definition %s, %d runs", entity_id, "yes" if config else "no", len(runs))
+        log.debug("Automation %s: definition %s, %d runs", entity_id, "yes" if config else "no", len(runs))
         return json.dumps(out, ensure_ascii=False)
 
     # ------------------------------------------------------------------ states
@@ -1083,7 +1098,7 @@ class HA:
                 scored.append((score, s["entity_id"].startswith("sensor."), s))
         scored.sort(key=lambda x: (-x[0], not x[1], x[2]["entity_id"]))
         hits = [self._fmt(s, brief=True) for _, _, s in scored[:limit]]
-        log.info("Search '%s': %d hits", term, len(scored))
+        log.debug("Search '%s': %d hits", term, len(scored))
         if not hits:
             return f"No entity found for '{term}'. Try other or English terms, or use ha_list."
         return json.dumps(hits, ensure_ascii=False)
@@ -1101,7 +1116,7 @@ class HA:
                 hits.append(f'{s["entity_id"]} | {a.get("friendly_name", "")} | '
                             f'{s.get("state")} {a.get("unit_of_measurement", "") or ""}'.rstrip()
                             + (f" | {brief}" if brief else ""))
-        log.info("List '%s': %d hits", filter_, len(hits))
+        log.debug("List '%s': %d hits", filter_, len(hits))
         if not hits:
             return (f"Nothing for '{filter_}'. Examples: °C, W, kW, kWh, %, temperature, power, energy, "
                     "battery, sensor, climate, switch.")
@@ -1139,7 +1154,7 @@ class HA:
             except ValueError:
                 item = {"time": e.get("datetime"), **item}
             out.append(item)
-        log.info("Forecast %s %s: %d entries", entity_id, kind, len(out))
+        log.debug("Forecast %s %s: %d entries", entity_id, kind, len(out))
         return json.dumps({"entity_id": entity_id, "type": kind, **units, "forecast": out}, ensure_ascii=False)
 
     def fire_event(self, name: str, data: dict):
@@ -1170,11 +1185,13 @@ class HA:
                     "not run or reloaded.")
         body = {k: v for k, v in (data or {}).items() if k not in TARGET_KEYS}
         body["entity_id"] = entity_id
-        log.warning("CONTROL %s.%s %s", domain, service, body)
+        log.debug("Service %s.%s %s", domain, service, body)
         r = self.http.post(f"{self.base}/services/{domain}/{service}", json=body,
                            timeout=15, verify=self.verify)
         if r.status_code >= 400:
+            log.warning("%s: %s.%s failed: %s %s", entity_id, domain, service, r.status_code, r.text[:200])
             return f"Error {r.status_code}: {r.text[:200]}"
+        log.info("%s %s", entity_id, done(service, body))
         time.sleep(1.0)
         self._cache = (0.0, [])
         return "Done. New state: " + self.get_state(entity_id)
@@ -1223,10 +1240,13 @@ class HA:
             return "Error: action must be add, check, uncheck or remove, and item must be set."
         service, extra = services[action]
         body = {"entity_id": entity_id, "item": str(item).strip(), **extra}
-        log.warning("SHOPPING todo.%s %s", service, body)
+        log.debug("Service todo.%s %s", service, body)
         r = self.http.post(f"{self.base}/services/todo/{service}", json=body, timeout=15, verify=self.verify)
         if r.status_code >= 400:
+            log.warning("Shopping list %s: %s %r failed: %s %s", entity_id, action, body["item"], r.status_code,
+                        r.text[:200])
             return f"Error {r.status_code}: {r.text[:200]}"
+        log.info("Shopping list %s: %s %r", entity_id, SHOPPING_DONE[action], body["item"])
         return "Done. " + self.shopping()
 
     # ------------------------------------------------------------------ calendars
@@ -1295,7 +1315,7 @@ class HA:
             extra = f" ({ev['location']})" if ev.get("location") else ""
             found.append((t.isoformat(), f"{when}: {ev.get('summary', '?')}{extra}  [{name}]"))
         found.sort()
-        log.info("Events %s, %d days: %d", [c["entity_id"] for c in cals], (end - begin).days, len(found))
+        log.debug("Events %s, %d days: %d", [c["entity_id"] for c in cals], (end - begin).days, len(found))
         head = (f"Period {begin:%Y-%m-%d} to {end - timedelta(seconds=1):%Y-%m-%d}, calendars: "
                 + ", ".join(c.get("attributes", {}).get("friendly_name") or c["entity_id"] for c in cals))
         body = "\n".join(e for _, e in found) or "No appointments in this period."
@@ -1343,7 +1363,7 @@ class HA:
                 lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M}–{until}: busy")
             else:
                 lines.append(f"{_wd(s)} {s:%Y-%m-%d %H:%M} to {_wd(e)} {e:%Y-%m-%d %H:%M}: busy")
-        log.info("Busy times %d days: %d blocks", (end - begin).days, len(lines))
+        log.debug("Busy times %d days: %d blocks", (end - begin).days, len(lines))
         head = (f"Period {begin:%Y-%m-%d} to {end - timedelta(seconds=1):%Y-%m-%d}. Only busy times, no details; "
                 "all other times are free.")
         return "\n".join([head, "\n".join(lines) or "Nothing busy in this period."])
@@ -1434,11 +1454,24 @@ class HA:
         if not confirmed:
             return ("Read the appointment (calendar, title, day, time) back to the caller and ask whether to add it. "
                     "Only call again with confirmed=true after a yes.")
-        log.warning("EVENT %s", body)
+        log.debug("Service calendar.create_event %s", body)
         r = self.http.post(f"{self.base}/services/calendar/create_event", json=body,
                            timeout=15, verify=self.verify)
         if r.status_code >= 400:
-            log.warning("EVENT failed: %s %s", r.status_code, r.text[:200])
+            log.warning("Appointment not added to %s: %s %s", cal["entity_id"], r.status_code, r.text[:200])
             return "Appointment NOT added (error)." if restricted else f"Error {r.status_code}: {r.text[:200]}"
         name = cal.get("attributes", {}).get("friendly_name") or cal["entity_id"]
+        log.info("Appointment added to %s: %r, %s", cal["entity_id"], title,
+                 body.get("start_date_time") or body.get("start_date"))
         return f"Added: {title}." if restricted else f"Added to {name}: {title}."
+
+
+def done(service: str, body: dict) -> str:
+    """What a service call did, readable: "switched on", "set to 07:50", "set to 21, heat"; the data of a switch
+    (brightness, colour …) only goes to debug."""
+    if service in DONE:
+        return DONE[service]
+    values = [str(v) for k, v in body.items() if k not in TARGET_KEYS and not isinstance(v, (dict, list))]
+    if service.startswith(("set_", "select_")) and values:
+        return "set to " + ", ".join(values)
+    return service.replace("_", " ")

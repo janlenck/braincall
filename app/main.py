@@ -37,6 +37,7 @@ import assist  # noqa: E402
 import config  # noqa: E402
 import discovery  # noqa: E402
 import fritz_sip  # noqa: E402
+import logfilter  # noqa: E402
 import memory  # noqa: E402
 import phrases  # noqa: E402
 import rhythm  # noqa: E402
@@ -58,11 +59,12 @@ _file = logging.handlers.RotatingFileHandler(_LOGDIR / "braincall.log", maxBytes
                                              backupCount=5, encoding="utf-8")
 _file.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
 LOG_LEVEL = config.log_level(cfg)
+# other libraries: only warnings, everything with trace except headers and secrets (#77)
+_gate = logfilter.Gate(LOG_LEVEL, (cfg.anthropic_api_key, cfg.openai_api_key, cfg.ha_token, cfg.sip_password,
+                                   cfg.supervisor_token))
+for _h in (_con, _file):
+    _h.addFilter(_gate)
 logging.basicConfig(level=LOG_LEVEL, handlers=[_con, _file])
-# other libraries stay at info at most: their debug output would bury BrainCall's own
-for _name in ("urllib3", "requests", "httpx", "httpcore", "anthropic", "openai", "websocket", "hpack",
-              "charset_normalizer", "asyncio"):
-    logging.getLogger(_name).setLevel(max(LOG_LEVEL, logging.INFO))
 log = logging.getLogger("main")
 pyVoIP.DEBUG = False
 
@@ -81,6 +83,7 @@ console.ASSISTANT = cfg.assistant_name or "Claude"
 PHONE = bool(cfg.sip_user and cfg.sip_password)
 # every request to the HTTP API needs this token; a generated one keeps the API on 127.0.0.1 (config.api_token)
 API_TOKEN, TOKEN_GENERATED = config.api_token(cfg)
+_gate.add(API_TOKEN)
 ha = HA(cfg)
 speech = Speech(cfg)
 brain = Brain(cfg, ha)
@@ -571,7 +574,9 @@ def logged_parse(msg):
     except Exception:  # noqa: BLE001
         return _orig_parse(msg)
     if method != "REGISTER" and code != 100:
-        log.info("SIP %s %s (%s)", code, msg.status.phrase, method or "?")
+        # the steps (183, 200 OK, the auth challenge, 487 after CANCEL) at trace; a refusal (486, 403 …) at info
+        level = logfilter.TRACE if code < 400 or code in (401, 407, 487) else logging.INFO
+        log.log(level, "SIP %s %s (%s)", code, msg.status.phrase, method or "?")
     if method == "INVITE" and code < 200:
         return None  # 180/183: nothing to do (pyVoIP would only print "TODO: Add 500 Error …" for 183)
     if method == "CANCEL":
@@ -850,7 +855,7 @@ class Handler(BaseHTTPRequestHandler):
         every refusal or error: debug (#77)."""
         code = int(code) if isinstance(code, int) else code  # HTTPStatus.OK -> 200
         polled = self.command == "GET" and isinstance(code, int) and code < 400
-        log.log(shopping.TRACE if polled else logging.DEBUG, 'HTTP "%s" %s %s', self.requestline, code, size)
+        log.log(logfilter.TRACE if polled else logging.DEBUG, 'HTTP "%s" %s %s', self.requestline, code, size)
 
     def log_message(self, fmt, *args):
         log.debug("HTTP " + fmt, *args)
