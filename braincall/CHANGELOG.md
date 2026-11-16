@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.14.1
+
+Clear log levels (#77): `info` = what is said and done, `debug` = plus the commands, `trace` = plus every single step.
+
+- `info` is shorter: the tool calls and their results (`Tool ha_search …`, `Search …: 6 hits`, `History …`), web
+  searches and the timing of each answer are now `debug`. Reading is not doing
+- What was switched is a readable `info` line instead of a warning: `automation.x switched on`,
+  `input_datetime.y set to 07:50`; the same for the shopping list (`added 'Milch'`) and appointments added. The full
+  service data is `debug`, a refused service call a warning
+- SIP messages of a call (`401`, `183`, `200 OK`, `INVITE with credentials sent`, `CANCEL sent`) and the audio codec
+  are now `trace`. `Calling …`, `Call ended` and refusals (`486 Busy Here` …) stay `info`
+- Requests to the API that only read (`GET` that worked, e.g. `/api/tasks` once a minute, `/health`) are now
+  `trace`, no longer a line every minute with `debug`. Requests that change something and refused ones stay `debug`
+- New at `trace`: every request to Home Assistant (REST with path and status, WebSocket with command)
+- Fix: other libraries logged below `info` again since the Anthropic SDK logs as `httpcore2` (with `debug` about 15
+  lines per request, with the organization and workspace id of the Claude API). Every library that is not
+  BrainCall's own now shows only warnings, whatever its name; its debug output appears with `trace` only, without
+  HTTP headers
+- The configured keys, tokens and passwords are replaced by `***` in every log line and traceback, BrainCall's own
+  included (e.g. an error answer of Home Assistant that echoes the token)
+
 ## 1.14.0
 
 Planned calls from Home Assistant (#50).

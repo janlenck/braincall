@@ -82,8 +82,11 @@ configuration:
   log_level:
     name: Log level
     description: >-
-      How much the log shows. info (default): calls and changes. debug: also details, e.g. every change seen on the
-      shopping list. trace: also every look at the shopping list (once a minute). warning: only problems.
+      How much the log shows. info (default): what is said and done (conversations, calls, what was switched).
+      debug: also the commands, for "why did Claudine do that": tools with parameters and result, web searches,
+      timing. trace: also every single step, for connection problems: requests to Home Assistant, SIP messages,
+      every API request that only reads (e.g. GET /api/tasks once a minute), output of the libraries. warning: only
+      problems.
   anthropic_api_key:
     name: Anthropic API key
     description: For Claude.

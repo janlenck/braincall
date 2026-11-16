@@ -323,9 +323,20 @@ the list by hand and that part stays off.
 
 ## Logging
 
-`log_level` (default `"info"`) decides how much `braincall.log` and the console show: `"warning"` only problems,
-`"info"` calls and changes, `"debug"` also details (every change seen on the shopping list, every removal,
-every change to the rhythm list, every product added or classified), `"trace"` also every look at the lists. Other libraries never log below `info`.
+`log_level` (default `"info"`) decides how much `braincall.log` and the console show:
+
+| Level | Shows | Examples |
+|---|---|---|
+| `"warning"` | only problems | |
+| `"info"` | what is said and what is done | caller and Claudine sentences, Assist question and answer, call started / ended / not answered, summary, notification sent, task status, what was switched (`automation.x switched on`, `input_datetime.y set to 07:50`), shopping list changes, appointments added, startup summary |
+| `"debug"` | plus the commands: what Claude asked for and what came back | tool calls with parameters (`Tool ha_search {'query': …}`), their result in short (`Search …: 6 hits`), the data of service calls, web searches and fetches, timing per turn, changes seen on the shopping and rhythm list, API requests that change something or are refused (`POST /api/converse 200`) |
+| `"trace"` | plus every single step | requests to Home Assistant (REST and WebSocket), SIP messages (`401`, `183`, `200 OK`) and the audio codec, every look at the lists, API requests that only read (`GET /api/tasks` once a minute), and the debug output of other libraries |
+
+Other libraries (HTTP clients, the Anthropic SDK, websocket …) only show warnings, whatever their name; their debug
+output appears with `"trace"` only. HTTP headers (the Claude API answers with organization and workspace id) and the
+configured keys, tokens and passwords never appear, also not with `"trace"`.
+
+`debug` is the level for "why did Claudine do that", `trace` the one for connection problems.
 
 ## Web search
 

@@ -666,7 +666,7 @@ class Brain:
     def _run_tool(self, block, tools: list, access, counters: dict | None = None, call: dict | None = None) -> str:
         """counters: per-call state, e.g. {"bookings": 1} = restricted bookings already made in this call.
         call: the call this turn belongs to, {"number", "name", "grants"} (grants of a planned call)."""
-        log.info("Tool %s %s", block.name, block.input)
+        log.debug("Tool %s %s", block.name, block.input)
         counters = {} if counters is None else counters
         i = block.input
         grants = (call or {}).get("grants") or {}
@@ -775,7 +775,7 @@ class Brain:
         """plan_call: checks the plan, and stores it only once the caller said something after it was read back
         (confirmed=true alone is not enough). The task stored is the one that was read back: the confirming call
         only has to name the same plan (tasks.confirm_key), its own wording of the details is not used."""
-        log.info("Tool %s %s", block.name, block.input)
+        log.debug("Tool %s %s", block.name, block.input)
         if block.name not in {t["name"] for t in tools} or self.tasks is None:
             return "Not allowed in this call."
         data = block.input or {}
@@ -880,7 +880,7 @@ class Brain:
             del pending[key]
             return ""
         pending[key] = len(messages)
-        log.info("Tool %s held back: web content in the conversation, asking the caller first", block.name)
+        log.debug("Tool %s held back: web content in the conversation, asking the caller first", block.name)
         return web_mod.CONFIRM
 
     def _web_used(self, content: list, used: dict):
@@ -896,7 +896,7 @@ class Brain:
             return
         today = self.web_budget.today()
         limits = (self.cfg.web_max_searches_per_day or "-", self.cfg.web_max_fetches_per_day or "-")
-        log.info("Web %s: %d searches, %d fetches (today %d/%s searches, %d/%s fetches); domains: %s; queries: %s",
+        log.debug("Web %s: %d searches, %d fetches (today %d/%s searches, %d/%s fetches); domains: %s; queries: %s",
                  who or "caller", used["searches"], used["fetches"], today["searches"], limits[0],
                  today["fetches"], limits[1], ", ".join(dict.fromkeys(used["domains"])) or "-",
                  "; ".join(q for q in used["queries"] if q) or "-")
@@ -1018,11 +1018,11 @@ class Brain:
             self._web_used(content, used)
             if msg.stop_reason == "pause_turn" and not uses:
                 # The API paused a long web research: send the conversation back unchanged, it goes on from there
-                log.info("Turn paused by the API (pause_turn), continuing")
+                log.debug("Turn paused by the API (pause_turn), continuing")
                 continue
             if not uses:
                 if splitter.fake_hangup:  # model wrote "hang up" as text instead of using the tool
-                    log.info("Hang-up written as text, treating it as hang-up")
+                    log.debug("Hang-up written as text, treating it as hang-up")
                     return True
                 return False
 

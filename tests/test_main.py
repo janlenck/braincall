@@ -487,6 +487,25 @@ def test_version(server, main):
     assert body["version"].count(".") == 2
 
 
+@pytest.mark.parametrize("method, path, token, level", [
+    ("GET", "/api/tasks", "secret", 5),        # a poll: trace
+    ("GET", "/health", None, 5),
+    ("GET", "/api/version", "secret", 5),
+    ("POST", "/api/tasks", "secret", 10),      # changes something (or is refused): debug
+    ("DELETE", "/api/tasks/abc", "secret", 10),
+    ("GET", "/api/tasks", "wrong", 10),        # refused: debug
+    ("GET", "/api/nothing", "secret", 10),
+])
+def test_polls_are_logged_at_trace(server, main, caplog, method, path, token, level):
+    """#77: a GET that worked would fill the debug log once a minute."""
+    with caplog.at_level(5, logger="main"):
+        status = server(method, path, {"task": "x"}, token=token)[0]
+    lines = [r for r in caplog.records if r.getMessage().startswith(f'HTTP "{method} {path} ')]
+    assert len(lines) == 1, [r.getMessage() for r in caplog.records]
+    assert lines[0].levelno == level
+    assert lines[0].getMessage().endswith(f'" {status} -')
+
+
 def test_tasks_are_also_under_api(server, main):
     assert server("GET", "/api/tasks") == server("GET", "/tasks")
     assert server("GET", "/api/tasks")[0] == 200

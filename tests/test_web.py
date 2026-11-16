@@ -190,7 +190,7 @@ def test_hooks_for_server_tools(brain):
 
 
 def test_web_usage_is_logged_per_caller(brain, caplog):
-    caplog.set_level("INFO", logger="brain")
+    caplog.set_level("DEBUG", logger="brain")  # the commands are debug (#77)
     run(brain, message(*search(), *fetch(), "Fertig."), who="Jan Mobile (phone)")
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Web "))
     assert line.startswith("Web Jan Mobile (phone): 1 searches, 1 fetches (today 1/50 searches, 1/50 fetches)")
@@ -411,3 +411,11 @@ def test_a_turn_still_paused_after_the_last_request_drops_the_open_call(brain, m
     assert len(r.fake.requests) == 2 and r.hang is False
     assert [b["type"] for b in r.messages[-1]["content"]] == ["server_tool_use", "web_search_tool_result"]
     assert r.messages[1]["content"][-1]["id"] == "s9"  # the earlier paused message is kept as it was
+
+
+def test_a_tool_that_only_reads_writes_nothing_at_info(brain, caplog):
+    """#77: reading is not doing; the tool call and its parameters are debug."""
+    with caplog.at_level("DEBUG", logger="brain"):
+        run(brain, message(tool("ha_state", entity_id="sensor.x"), stop="tool_use"), message("Erledigt."))
+    assert [r.getMessage() for r in caplog.records if r.levelno >= 20] == []
+    assert "Tool ha_state {'entity_id': 'sensor.x'}" in [r.getMessage() for r in caplog.records]
