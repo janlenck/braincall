@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.15.0
+## 1.14.1
 
 Clear log levels (#77): `info` = what is said and done, `debug` = plus the commands, `trace` = plus every single step.
 
