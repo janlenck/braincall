@@ -328,7 +328,8 @@ renamed), for any other list the *Local To-do* list with the expected name ("Sho
 setting (`Shopping list: todo.shopping_list does not exist, using todo.einkaufsliste (Shopping list integration),
 saved in the settings`), so the next start finds it at once. If it cannot be saved (with your own `config.json`),
 it is used all the same and one warning says what to set. A value you set yourself is never replaced: the warning
-names the list that was found.
+names the list that was found. With `shopping_auto` off, the shopping list of the tools `shopping_list` and
+`shopping_edit` is looked for the same way once Home Assistant has started, but never created.
 
 ## Logging
 

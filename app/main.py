@@ -503,6 +503,18 @@ def shopping_loop():
             return
 
 
+def shopping_lookup_loop():
+    """Automatic shopping list off: the list of the shopping tools is looked for once Home Assistant runs (#74)."""
+    while True:
+        try:
+            if shopping.locate(ha, cfg):
+                return
+        except Exception as e:  # noqa: BLE001  Home Assistant cannot be asked yet
+            log.debug("Shopping list: looking for it failed, tried again in a minute: %s", e)
+        if stopping.wait(shopping.POLL_SECONDS):
+            return
+
+
 def on_incoming(call):
     try:
         number = call.request.headers["From"]["number"] or ""
@@ -991,6 +1003,8 @@ def main():
             threading.Thread(target=shopping_loop, name="shopping list", daemon=True).start()
         elif not cfg.shopping_auto:
             log.info("Shopping list: automatic shopping list off (shopping_auto)")
+            if ha.enabled and cfg.shopping_list:
+                threading.Thread(target=shopping_lookup_loop, name="shopping list lookup", daemon=True).start()
 
         # a token set in the configuration opens the API to the LAN; a generated one keeps it on this host
         bind = "127.0.0.1" if TOKEN_GENERATED else "0.0.0.0"

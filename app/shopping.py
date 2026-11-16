@@ -183,13 +183,15 @@ def find_list(ha, entity_id: str) -> tuple[str, str]:
     return "", ""
 
 
-def missing_list(ha, cfg, key: str, what: str, display_name: str = "", taken=()) -> tuple[str, bool]:
+def missing_list(ha, cfg, key: str, what: str, display_name: str = "", taken=(),
+                 create: bool = True) -> tuple[str, bool]:
     """The list of the setting key (shopping_list, shopping_rhythm_list), whose entity is missing:
     (entity id to use, created), ("", False) when there is none to use.
 
     First it is looked for under another id. Found and the setting still has its default: that one is used and
     written into the settings, so the next start finds it at once. A value the user set is never replaced: the
-    warning names the list that was found. Not found: created as before (create_list)."""
+    warning names the list that was found. Not found: created as before (create_list), or with create False
+    (automatic shopping list off) only said."""
     entity_id = cfg[key]
     try:
         found, how = find_list(ha, entity_id)
@@ -198,6 +200,10 @@ def missing_list(ha, cfg, key: str, what: str, display_name: str = "", taken=())
         found, how = "", ""
     if found in taken:  # the other list of BrainCall, never both in one
         found = ""
+    if not found and not create:
+        log.info("The %s %s does not exist: the shopping tools have no list. Switch on shopping_auto to create it, "
+                 "or set %s to an existing to-do list", what, entity_id, key)
+        return "", False
     if not found:
         return (entity_id, True) if create_list(ha, entity_id, what, display_name) else ("", False)
     if entity_id != config.DEFAULTS.get(key):
@@ -213,6 +219,17 @@ def missing_list(ha, cfg, key: str, what: str, display_name: str = "", taken=())
         return found, False
     log.info("%s: %s does not exist, using %s (%s), saved in the settings", what.capitalize(), entity_id, found, how)
     return found, False
+
+
+def locate(ha, cfg) -> bool:
+    """Without the automatic shopping list: once after the start, the shopping list of the tools shopping_list and
+    shopping_edit is looked for under another id like with it (#74), but never created. True when done, False
+    while Home Assistant is still starting; raises if it cannot be asked (tried again later)."""
+    if not ha.core_running():
+        return False
+    if not ha.entity_exists(cfg.shopping_list):
+        missing_list(ha, cfg, "shopping_list", "shopping list", create=False)
+    return True
 
 
 def _time(entry: dict) -> datetime | None:

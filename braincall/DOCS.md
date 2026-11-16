@@ -260,7 +260,9 @@ shopping list) as a *Local To-do* list "Recurring purchases" and fills it from w
 A list that already exists under another entity id is used instead of a new one: the *Shopping list* integration
 as `todo.einkaufsliste` (German Home Assistant) or renamed, a *Local To-do* list "Shopping rhythm" as
 `todo.shopping_rhythm_2`. As long as the setting has its default, the add-on writes the entity id it found into the
-setting; a value you set yourself is never replaced, the log names the list it found instead.
+setting; a value you set yourself is never replaced, the log names the list it found instead. The shopping list is
+looked for like this also with the automatic shopping list off (for the assistant's shopping tools), but then never
+created.
 
 - Milk, butter, rolls get an entry after 2 purchases, pepper or dishwasher tabs after 3, a hamster or a piano never:
   Claude says once per product which kind it is.

@@ -880,3 +880,37 @@ def test_todo_entities_reads_the_entity_registry(monkeypatch):
     monkeypatch.setattr(h, "_ws", ws)
     assert h.todo_entities() == [{"entity_id": "todo.einkaufsliste", "platform": "shopping_list"}]
     assert sent == ["config/entity_registry/list"]
+
+
+# ---------------------------------------------------------------- the shopping tools without shopping_auto (#74)
+def test_without_automatic_shopping_list_the_tools_get_the_list_found(supervisor, caplog):
+    ha = FakeHA(lists=(GERMAN,))
+    builtin(ha)
+    c = make_cfg(supervisor_token="sup-token")
+    with caplog.at_level(logging.INFO, "shopping"):
+        assert shop.locate(ha, c)
+    assert c.shopping_list == GERMAN and ha.flows == []
+    (_, body, _), = supervisor.posts
+    assert body == {"options": {**OPTIONS, "shopping_list": GERMAN}}
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_without_automatic_shopping_list_nothing_is_created(supervisor, caplog):
+    ha = FakeHA(lists=())
+    c = make_cfg(supervisor_token="sup-token")
+    ha.running = False
+    assert not shop.locate(ha, c) and ha.registry_reads == 0   # Home Assistant still starting: later
+    ha.running = True
+    with caplog.at_level(logging.INFO, "shopping"):
+        assert shop.locate(ha, c)
+    assert c.shopping_list == SHOP and ha.flows == [] and supervisor.posts == []
+    info, = [r.getMessage() for r in caplog.records]
+    assert "does not exist" in info and "shopping_auto" in info
+    assert caplog.records[0].levelno == logging.INFO
+
+
+def test_without_automatic_shopping_list_an_existing_list_is_left_alone(supervisor):
+    ha = FakeHA(lists=(SHOP,))
+    c = make_cfg(supervisor_token="sup-token")
+    assert shop.locate(ha, c)
+    assert ha.registry_reads == 0 and supervisor.posts == []

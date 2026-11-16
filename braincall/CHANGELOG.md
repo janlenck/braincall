@@ -12,6 +12,9 @@ Fix: the shopping list under another entity id (#74).
   nothing is looked for again
 - The same for the *Rhythm list*: the *Local To-do* list "Shopping rhythm" under another id is used and saved, not
   created a second time and not filled again
+- Also with the automatic shopping list off: the shopping tools on the phone and in Assist (`shopping_list`,
+  `shopping_edit`) find the list under another id the same way, once Home Assistant has started. Nothing is created
+  then; a missing list is one `info` line
 - A value you set yourself is never replaced: the warning names the list that was found. If the setting cannot be
   saved, the list is used all the same and one warning says what to set
 - The add-on now has `hassio_api` (to save that one setting through the Supervisor)
