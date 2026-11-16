@@ -2,8 +2,8 @@
 
 ## 1.14.2
 
-- The log names the running version at every start (`BrainCall 1.14.2 starting, Python 3.12.x`), also when the
-  configuration is incomplete; the console banner shows it too
+- The log names the running version at every start (`BrainCall 1.14.2 starting, Python 3.12.x`), also with
+  *Log level* `warning` and when the configuration is incomplete; the console banner shows it too
 
 ## 1.14.1
 

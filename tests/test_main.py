@@ -486,6 +486,28 @@ def test_start_line_names_the_version(main):
     assert config.version().count(".") == 2
 
 
+def test_start_line_also_with_log_level_warning(main, monkeypatch):
+    """A start that stops on an incomplete configuration still says which version ran, also at warning."""
+    import logging
+    seen = []
+    handler = logging.Handler()
+    handler.emit = seen.append
+    root = logging.getLogger()
+    level = root.level
+    root.setLevel(logging.WARNING)
+    root.addHandler(handler)
+    monkeypatch.setattr(main, "incomplete", lambda: ["anthropic_api_key"])
+    try:
+        with pytest.raises(SystemExit):
+            main.main()
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(level)
+    assert [(r.levelname, r.getMessage().split(",")[0]) for r in seen] == [
+        ("INFO", f"BrainCall {config.version()} starting"),
+        ("ERROR", "Configuration incomplete: anthropic_api_key missing (config.json)")]
+
+
 def test_version(server, main):
     status, body = server("GET", "/api/version")
     assert status == 200
