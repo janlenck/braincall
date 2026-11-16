@@ -879,8 +879,19 @@ def incomplete() -> list:
     return [key for key in needed if not cfg[key]]
 
 
+def start_line() -> str:
+    """The first line of every start: which version runs (also when the configuration is incomplete)."""
+    return f"BrainCall {config.version() or '(version unknown)'} starting, Python {sys.version.split()[0]}"
+
+
+def log_start():
+    """The start line as info, also with log_level warning: it bypasses the level, not the handlers' filters."""
+    log.handle(log.makeRecord(log.name, logging.INFO, __file__, 0, start_line(), None, None))
+
+
 def main():
     console.banner(cfg)
+    log_start()
     missing = incomplete()
     if missing:
         log.error("Configuration incomplete: %s missing (config.json)", ", ".join(missing))
