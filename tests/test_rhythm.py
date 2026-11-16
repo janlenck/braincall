@@ -724,6 +724,7 @@ def supervisor(tmp_path, monkeypatch):
     path = tmp_path / "options.json"
     path.write_text(json.dumps(OPTIONS), encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_FILE", [str(path)])
+    monkeypatch.setattr(config, "_SAVED", {})
     sup = Supervisor()
     monkeypatch.setattr(config, "requests", sup)
     return sup
@@ -914,3 +915,29 @@ def test_without_automatic_shopping_list_an_existing_list_is_left_alone(supervis
     c = make_cfg(supervisor_token="sup-token")
     assert shop.locate(ha, c)
     assert ha.registry_reads == 0 and supervisor.posts == []
+
+
+def test_both_lists_found_in_one_start_are_both_saved(app, supervisor):
+    """/data/options.json keeps the old values until the next start: the second save must not undo the first."""
+    s, ha = app((GERMAN, "todo.shopping_rhythm_2"))
+    builtin(ha)
+    ha.entries["local_todo"] = [{"title": "Shopping rhythm", "entry_id": "lt1"}]
+    ha.registry.append({"entity_id": "todo.shopping_rhythm_2", "platform": "local_todo", "config_entry_id": "lt1"})
+    s.poll()
+    assert s.entity_id == GERMAN and s.rhythm.entity_id == "todo.shopping_rhythm_2"
+    first, second = (body for _, body, _ in supervisor.posts)
+    assert first == {"options": {**OPTIONS, "shopping_list": GERMAN}}
+    assert second == {"options": {**OPTIONS, "shopping_list": GERMAN, "shopping_rhythm_list": "todo.shopping_rhythm_2"}}
+
+
+def test_a_save_that_failed_is_not_carried_into_the_next(app, supervisor):
+    supervisor.status = 500
+    s, ha = app((GERMAN, "todo.shopping_rhythm_2"))
+    builtin(ha)
+    ha.entries["local_todo"] = [{"title": "Shopping rhythm", "entry_id": "lt1"}]
+    ha.registry.append({"entity_id": "todo.shopping_rhythm_2", "platform": "local_todo", "config_entry_id": "lt1"})
+    s.rhythm.ensure = lambda: None   # only the shopping list in this start
+    s.poll()
+    supervisor.status = 200
+    assert config.save_option(s.cfg, "shopping_rhythm_list", "todo.shopping_rhythm_2") is None
+    assert supervisor.posts[-1][1] == {"options": {**OPTIONS, "shopping_rhythm_list": "todo.shopping_rhythm_2"}}
