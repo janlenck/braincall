@@ -1050,6 +1050,13 @@ class HA:
                              f"{result.get('reason') or result.get('errors') or ''}".strip())
         return result
 
+    def todo_entities(self) -> list:
+        """The to-do entities of the entity registry (entity_id, platform, config_entry_id, disabled_by …), also
+        those under an id other than the expected one (#74). WebSocket; raises if it cannot be asked."""
+        with self._ws() as call:
+            out = call("config/entity_registry/list")
+        return [e for e in out or [] if isinstance(e, dict) and str(e.get("entity_id") or "").startswith("todo.")]
+
     def rename_entity(self, entity_id: str, name: str):
         """Sets the display name of an entity in the entity registry (WebSocket)."""
         with self._ws() as call:

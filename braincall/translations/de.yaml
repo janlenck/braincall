@@ -48,7 +48,8 @@ configuration:
     name: Einkaufsliste
     description: >-
       Die To-do-Liste (Entity-ID), die die Einkaufsliste ist: Anrufer mit access „shopping“ benutzen nur diese, und
-      die automatische Einkaufsliste beobachtet sie.
+      die automatische Einkaufsliste beobachtet sie. Mit dem Standardwert findet das Add-on die Integration
+      Einkaufsliste auch unter einer anderen ID (z. B. todo.einkaufsliste) und trägt sie hier ein.
   shopping_auto:
     name: Automatische Einkaufsliste
     description: >-

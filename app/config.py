@@ -4,8 +4,11 @@ import json
 import re
 import os
 import secrets
+import threading
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import requests
 
 DEFAULTS = {
     # SIP / FRITZ!Box
@@ -113,6 +116,9 @@ LOG_LEVELS = {"trace": 5, "debug": 10, "info": 20, "warning": 30}
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = [""]  # file actually loaded (for the log)
+SUPERVISOR = "http://supervisor"
+_SAVED: dict = {}  # options saved through the Supervisor in this run: /data/options.json still has the old values
+_SAVING = threading.Lock()
 WARNINGS: list[str] = []  # logged by main once logging is set up
 
 
@@ -199,6 +205,29 @@ def _shopping(cfg, data: dict):
         minutes = DEFAULTS["shopping_bought_after_minutes"]
     cfg["shopping_bought_after_minutes"] = minutes
     cfg["shopping_auto"] = cfg.shopping_auto is True
+
+
+def save_option(cfg, key: str, value):
+    """Stores one setting for good, as an app on Home Assistant OS: the Supervisor gets the full current options
+    (/data/options.json) with only this one changed, and the app's settings show the new value (#74). Needs
+    hassio_api in braincall/config.yaml. Raises with the reason if it cannot (not an app, refused …): with a
+    config.json of its own BrainCall never rewrites the file."""
+    if not cfg.supervisor_token:
+        raise RuntimeError("not running as an app on Home Assistant OS")
+    path = Path(CONFIG_FILE[0] or "/data/options.json")
+    with _SAVING:
+        options = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(options, dict):
+            raise ValueError(f"{path} holds no options")
+        # the Supervisor writes the file only at the next start: what was saved before in this run must stay
+        options.update(_SAVED)
+        options[key] = value
+        r = requests.post(f"{SUPERVISOR}/addons/self/options", json={"options": options}, timeout=15,
+                          headers={"Authorization": f"Bearer {cfg.supervisor_token}"})
+        if r.status_code != 200:
+            # the answer may echo an option; the log filter replaces the configured secrets
+            raise RuntimeError(f"the Supervisor answered {r.status_code} {str(r.text or '')[:200]}".strip())
+        _SAVED[key] = value
 
 
 def log_level(cfg) -> int:

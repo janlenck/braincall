@@ -1052,3 +1052,20 @@ def test_shopping_forecast_api(server, main, monkeypatch, tmp_path):
         raise OSError("down")
     watcher.rhythm = SimpleNamespace(entity_id="todo.shopping_rhythm", forecast=broken)
     assert server("GET", "/shopping/forecast")[0] == 503
+
+
+def test_shopping_lookup_without_automatic_shopping_list_waits_for_home_assistant(main, monkeypatch):
+    """shopping_auto off: the list of the shopping tools is looked for until Home Assistant answers (#74)."""
+    answers = [OSError("refused"), False, True]
+    tries = []
+
+    def locate(ha, cfg):
+        tries.append(1)
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(main.shopping, "locate", locate)
+    monkeypatch.setattr(main.stopping, "wait", lambda s: False)
+    main.shopping_lookup_loop()
+    assert len(tries) == 3 and answers == []
