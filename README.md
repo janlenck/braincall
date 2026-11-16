@@ -321,6 +321,15 @@ purchases") once Home Assistant has finished starting, and fills a new rhythm li
 are never touched. Creating needs administrator rights (the add-on has them); otherwise the log says how to create
 the list by hand and that part stays off.
 
+A list that exists under another entity id is found first and not created again (#74): for `todo.shopping_list` the
+to-do entity of the *Shopping list* integration (a German Home Assistant calls it `todo.einkaufsliste`, or it was
+renamed), for any other list the *Local To-do* list with the expected name ("Shopping rhythm" for
+`todo.shopping_rhythm`). If the setting still has its default, that list is used and, as an add-on, written into the
+setting (`Shopping list: todo.shopping_list does not exist, using todo.einkaufsliste (Shopping list integration),
+saved in the settings`), so the next start finds it at once. If it cannot be saved (with your own `config.json`),
+it is used all the same and one warning says what to set. A value you set yourself is never replaced: the warning
+names the list that was found.
+
 ## Logging
 
 `log_level` (default `"info"`) decides how much `braincall.log` and the console show:

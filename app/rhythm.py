@@ -197,9 +197,12 @@ class Rhythm:
         if self.ha.entity_exists(self.entity_id):
             self.on = True
             return
-        if not shop.create_list(self.ha, self.entity_id, "rhythm list", DISPLAY_NAME):
+        found, created = shop.missing_list(self.ha, self.cfg, "shopping_rhythm_list", "rhythm list", DISPLAY_NAME,
+                                           taken=(self.shopping.entity_id,))
+        if not found:
             return
-        self.on, self.unfilled = True, True  # filled by retry(), until it worked
+        self.entity_id = found
+        self.on, self.unfilled = True, created  # a new list is filled by retry(), until it worked
 
     def retry(self):
         """Every poll: fills a new list and updates the entries of purchases that failed before, until it works.

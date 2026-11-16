@@ -47,7 +47,8 @@ configuration:
     name: Shopping list
     description: >-
       The to-do list (entity id) that is the shopping list: callers with access "shopping" use only this one, and
-      the automatic shopping list watches it.
+      the automatic shopping list watches it. With the default, the add-on finds the Shopping list integration
+      under another id (e.g. todo.einkaufsliste) and writes it in here.
   shopping_auto:
     name: Automatic shopping list
     description: >-

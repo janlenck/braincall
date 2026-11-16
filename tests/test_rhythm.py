@@ -40,6 +40,8 @@ class FakeHA:
         self.empty = set()         # lists that answer without items although the entity counts open ones
         self.flow_fail = None
         self.entries = {}
+        self.registry = []         # to-do entities of the entity registry (#74)
+        self.registry_reads = 0
         self.flows, self.renamed, self.events = [], [], []
         self._n = 0
 
@@ -96,6 +98,10 @@ class FakeHA:
 
     def config_entries(self, domain):
         return self.entries.get(domain, [])
+
+    def todo_entities(self):
+        self.registry_reads += 1
+        return [dict(e) for e in self.registry]
 
     def config_flow(self, handler, data):
         if self.flow_fail:
@@ -692,3 +698,185 @@ def test_an_added_product_whose_line_cannot_be_written_is_not_added_twice(s, ha,
     assert len([e for e in history(s, "added") if e.get("by") == "rhythm"]) == 1
     run(s, clock, 30)
     assert ha.summaries(SHOP) == []
+
+
+# ---------------------------------------------------------------- a list under another entity id (#74)
+GERMAN = "todo.einkaufsliste"
+OPTIONS = {"sip_user": "620", "sip_password": "geheim", "shopping_list": SHOP, "shopping_auto": True,
+           "shopping_rhythm_list": RHYTHM, "callers": [{"number": "0151", "name": "Jan", "access": "admin"}]}
+
+
+class Supervisor:
+    """POST /addons/self/options: records the bodies, answers with status."""
+
+    def __init__(self):
+        self.posts = []
+        self.status = 200
+
+    def post(self, url, json=None, timeout=None, headers=None):
+        self.posts.append((url, json, headers))
+        return SimpleNamespace(status_code=self.status, text='{"result": "error", "message": "nope"}')
+
+
+@pytest.fixture
+def supervisor(tmp_path, monkeypatch):
+    """BrainCall as an app: the options in /data/options.json, the Supervisor that takes new ones."""
+    path = tmp_path / "options.json"
+    path.write_text(json.dumps(OPTIONS), encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_FILE", [str(path)])
+    sup = Supervisor()
+    monkeypatch.setattr(config, "requests", sup)
+    return sup
+
+
+@pytest.fixture
+def app(tmp_path, clock, classify, monkeypatch):
+    """make(lists, **cfg) -> (watcher, ha): a watcher as an app (Supervisor token) on a Home Assistant with these
+    lists, nothing polled yet."""
+    monkeypatch.setattr(shop.time, "sleep", lambda s: None)
+
+    def make(lists, **cfg):
+        ha = FakeHA(lists=lists)
+        cfg.setdefault("timezone", "Europe/Berlin")
+        cfg.setdefault("supervisor_token", "sup-token")
+        c = make_cfg(**cfg)
+        s = shop.Shopping(c, ha, tmp_path / "shopping-history.jsonl", now=clock)
+        if c.shopping_rhythm_list:
+            rh.Rhythm(c, ha, s, tmp_path / "shopping-products.json", classify=classify)
+        return s, ha
+    return make
+
+
+def builtin(ha, entity_id=GERMAN):
+    ha.registry.append({"entity_id": entity_id, "platform": "shopping_list", "config_entry_id": "sl1"})
+
+
+def test_the_shopping_list_under_another_id_is_used_and_saved(app, supervisor, clock, caplog):
+    s, ha = app((GERMAN, RHYTHM))
+    builtin(ha)
+    ha.registry.append({"entity_id": "todo.other", "platform": "local_todo", "config_entry_id": "lt9"})
+    with caplog.at_level(logging.INFO, "shopping"):
+        s.poll()
+    assert s.entity_id == GERMAN and s.cfg.shopping_list == GERMAN and s.lists_checked
+    assert ha.flows == []
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert any("todo.shopping_list does not exist, using todo.einkaufsliste (Shopping list integration), saved "
+               "in the settings" in r.getMessage() for r in caplog.records)
+    (url, body, headers), = supervisor.posts
+    assert url == "http://supervisor/addons/self/options" and headers["Authorization"] == "Bearer sup-token"
+    assert body == {"options": {**OPTIONS, "shopping_list": GERMAN}}   # everything else as it was
+    ha.lists[GERMAN].append({"summary": "Milch", "uid": "a", "status": "needs_action"})
+    run(s, clock, 1)
+    assert [e["event"] for e in history(s)] == ["added"] and history(s)[0]["list"] == GERMAN
+
+
+def test_after_the_restart_the_saved_list_is_not_looked_for_again(app, supervisor):
+    s, ha = app((GERMAN, RHYTHM), shopping_list=GERMAN)
+    builtin(ha)
+    s.poll()
+    assert s.entity_id == GERMAN and ha.registry_reads == 0 and ha.flows == [] and supervisor.posts == []
+
+
+def test_a_list_the_user_set_is_never_replaced(app, supervisor, caplog):
+    s, ha = app((SHOP, "todo.vorrat_2"), shopping_rhythm_list="todo.vorrat")
+    ha.entries["local_todo"] = [{"title": "Vorrat", "entry_id": "lt1"}]
+    ha.registry.append({"entity_id": "todo.vorrat_2", "platform": "local_todo", "config_entry_id": "lt1"})
+    with caplog.at_level(logging.INFO, "shopping"):
+        s.poll()
+    assert not s.rhythm.on and s.rhythm.entity_id == "todo.vorrat" and s.cfg.shopping_rhythm_list == "todo.vorrat"
+    assert ha.flows == [] and supervisor.posts == []
+    warning, = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "todo.vorrat does not exist" in warning and "todo.vorrat_2" in warning and "shopping_rhythm_list" in warning
+
+
+def test_if_the_setting_cannot_be_saved_the_list_is_used_anyway(app, supervisor, caplog):
+    supervisor.status = 403
+    s, ha = app((GERMAN, RHYTHM))
+    builtin(ha)
+    with caplog.at_level(logging.INFO, "shopping"):
+        s.poll()
+    assert s.entity_id == GERMAN and ha.flows == []
+    warning, = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "403" in warning and "set shopping_list to todo.einkaufsliste" in warning
+
+
+def test_outside_home_assistant_os_the_list_is_used_without_saving(app, supervisor, caplog):
+    s, ha = app((GERMAN, RHYTHM), supervisor_token="")
+    builtin(ha)
+    with caplog.at_level(logging.WARNING, "shopping"):
+        s.poll()
+    assert s.entity_id == GERMAN and supervisor.posts == []
+    warning, = [r.getMessage() for r in caplog.records]
+    assert "not running as an app" in warning and "set shopping_list to todo.einkaufsliste" in warning
+
+
+def test_the_rhythm_list_under_another_id_is_used_and_saved(app, supervisor, caplog):
+    s, ha = app((SHOP, "todo.shopping_rhythm_2"))
+    ha.entries["local_todo"] = [{"title": "Other", "entry_id": "lt0"}, {"title": "Shopping rhythm", "entry_id": "lt1"}]
+    ha.registry += [{"entity_id": "todo.other", "platform": "local_todo", "config_entry_id": "lt0"},
+                    {"entity_id": "todo.shopping_rhythm_2", "platform": "local_todo", "config_entry_id": "lt1"}]
+    with caplog.at_level(logging.INFO, "shopping"):
+        s.poll()
+    assert s.rhythm.on and s.rhythm.entity_id == "todo.shopping_rhythm_2" and not s.rhythm.unfilled
+    assert ha.flows == [] and ha.renamed == []   # an existing list: not renamed, not filled
+    (_, body, _), = supervisor.posts
+    assert body == {"options": {**OPTIONS, "shopping_rhythm_list": "todo.shopping_rhythm_2"}}
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_nothing_found_creates_the_lists_as_before(app, supervisor):
+    s, ha = app(())
+    ha.registry.append({"entity_id": "todo.other", "platform": "local_todo", "config_entry_id": "lt0"})
+    s.poll()
+    assert ha.flows == [("shopping_list", {}), ("local_todo", {"todo_list_name": "Shopping rhythm"})]
+    assert s.entity_id == SHOP and s.rhythm.on and s.rhythm.unfilled is False  # filled with the same poll
+    assert supervisor.posts == []
+
+
+def test_a_registry_that_cannot_be_read_falls_back_to_creating(app, supervisor):
+    s, ha = app(())
+
+    def broken():
+        raise OSError("connection refused")
+    ha.todo_entities = broken
+    s.poll()
+    assert [h for h, _ in ha.flows] == ["shopping_list", "local_todo"] and supervisor.posts == []
+
+
+def test_a_disabled_entity_is_not_used(app, supervisor, caplog):
+    s, ha = app((RHYTHM,))
+    ha.registry.append({"entity_id": GERMAN, "platform": "shopping_list", "config_entry_id": "sl1",
+                        "disabled_by": "user"})
+    ha.flow_fail = ValueError("config flow shopping_list: abort already_configured")
+    with caplog.at_level(logging.WARNING, "shopping"):
+        s.poll()
+    assert s.entity_id == SHOP and supervisor.posts == []
+    warning = caplog.records[0].getMessage()   # then, as before, that the list cannot be read
+    assert "the Shopping list integration is set up" in warning and "Create it by hand" not in warning
+
+
+def test_the_shopping_list_is_never_taken_as_the_rhythm_list(app, supervisor):
+    s, ha = app((SHOP, "todo.shopping_rhythm_2"), shopping_list="todo.shopping_rhythm_2")
+    ha.entries["local_todo"] = [{"title": "Shopping rhythm", "entry_id": "lt1"}]
+    ha.registry.append({"entity_id": "todo.shopping_rhythm_2", "platform": "local_todo", "config_entry_id": "lt1"})
+    ha.flow_fail = ValueError("config flow local_todo: abort already_configured")
+    s.poll()
+    assert not s.rhythm.on and supervisor.posts == []
+
+
+def test_todo_entities_reads_the_entity_registry(monkeypatch):
+    import contextlib
+    from ha import HA
+    sent = []
+
+    @contextlib.contextmanager
+    def ws():
+        def call(type_, **data):
+            sent.append(type_)
+            return [{"entity_id": "todo.einkaufsliste", "platform": "shopping_list"},
+                    {"entity_id": "light.kitchen", "platform": "hue"}, "junk"]
+        yield call
+    h = HA(make_cfg(ha_url="http://ha:8123", ha_token="t"))
+    monkeypatch.setattr(h, "_ws", ws)
+    assert h.todo_entities() == [{"entity_id": "todo.einkaufsliste", "platform": "shopping_list"}]
+    assert sent == ["config/entity_registry/list"]

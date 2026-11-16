@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.14.3
+
+Fix: the shopping list under another entity id (#74).
+
+- With the default *Shopping list* `todo.shopping_list` and the *Shopping list* integration under another id (in a
+  German Home Assistant `todo.einkaufsliste`, or renamed), the automatic shopping list did nothing and the log said
+  to create the list by hand, which was impossible (`abort already_configured`). The list is now found in the entity
+  registry, used, and written into the setting: `Shopping list: todo.shopping_list does not exist, using
+  todo.einkaufsliste (Shopping list integration), saved in the settings`. After the restart the setting shows it and
+  nothing is looked for again
+- The same for the *Rhythm list*: the *Local To-do* list "Shopping rhythm" under another id is used and saved, not
+  created a second time and not filled again
+- A value you set yourself is never replaced: the warning names the list that was found. If the setting cannot be
+  saved, the list is used all the same and one warning says what to set
+- The add-on now has `hassio_api` (to save that one setting through the Supervisor)
+
 ## 1.14.2
 
 - The log names the running version at every start (`BrainCall 1.14.2 starting, Python 3.12.x`), also with

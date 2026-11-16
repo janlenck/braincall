@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import config
 import logfilter
 from ha import fold
 
@@ -145,6 +146,11 @@ def create_list(ha, entity_id: str, what: str, display_name: str = "") -> bool:
         else:
             raise ValueError(f"it was created, but {entity_id} did not show up")
     except Exception as e:  # noqa: BLE001
+        if builtin and "already_configured" in str(e):  # set up, but its entity was not found under another id
+            log.warning("The %s %s is missing, but the Shopping list integration is set up: set the setting to its "
+                        "to-do entity (Settings > Devices & services > Shopping list); until then it is not used",
+                        what, entity_id)
+            return False
         log.warning("The %s %s is missing and could not be created: %s. Create it by hand (%s); until then it is "
                     "not used", what, entity_id, e, how)
         return False
@@ -155,6 +161,58 @@ def create_list(ha, entity_id: str, what: str, display_name: str = "") -> bool:
             log.info("The %s %s keeps its name: %s", what, entity_id, e)
     log.info("Created the %s %s in Home Assistant", what, entity_id)
     return True
+
+
+def find_list(ha, entity_id: str) -> tuple[str, str]:
+    """(entity id, what it is) of the list a missing entity_id stands for when it lives under another id (#74):
+    for todo.shopping_list the to-do entity of the Shopping list integration (a German Home Assistant calls it
+    todo.einkaufsliste, or it was renamed), for any other the Local To-do list named list_title(entity_id).
+    ("", "") when there is none. Raises if Home Assistant cannot be asked."""
+    if entity_id == BUILTIN_LIST:
+        platform, entries, what = "shopping_list", None, "Shopping list integration"
+    else:
+        title = list_title(entity_id)
+        entries = {e.get("entry_id") for e in ha.config_entries("local_todo") if e.get("title") == title}
+        if not entries:
+            return "", ""
+        platform, what = "local_todo", f'Local To-do list "{title}"'
+    for e in ha.todo_entities():
+        if (e.get("platform") == platform and not e.get("disabled_by")
+                and (entries is None or e.get("config_entry_id") in entries)):
+            return str(e["entity_id"]), what
+    return "", ""
+
+
+def missing_list(ha, cfg, key: str, what: str, display_name: str = "", taken=()) -> tuple[str, bool]:
+    """The list of the setting key (shopping_list, shopping_rhythm_list), whose entity is missing:
+    (entity id to use, created), ("", False) when there is none to use.
+
+    First it is looked for under another id. Found and the setting still has its default: that one is used and
+    written into the settings, so the next start finds it at once. A value the user set is never replaced: the
+    warning names the list that was found. Not found: created as before (create_list)."""
+    entity_id = cfg[key]
+    try:
+        found, how = find_list(ha, entity_id)
+    except Exception as e:  # noqa: BLE001  then it is created or the warning says what to do, as before
+        log.debug("Looking for the %s %s under another entity id failed: %s", what, entity_id, e)
+        found, how = "", ""
+    if found in taken:  # the other list of BrainCall, never both in one
+        found = ""
+    if not found:
+        return (entity_id, True) if create_list(ha, entity_id, what, display_name) else ("", False)
+    if entity_id != config.DEFAULTS.get(key):
+        log.warning("The %s %s does not exist; the %s is %s. Set %s to it to use it; until then no %s is used",
+                    what, entity_id, how, found, key, what)
+        return "", False
+    cfg[key] = found
+    try:
+        config.save_option(cfg, key, found)
+    except Exception as e:  # noqa: BLE001  it is used all the same, for this run
+        log.warning("%s: %s does not exist, using %s (%s). It could not be saved in the settings (%s): set %s to "
+                    "%s", what.capitalize(), entity_id, found, how, e, key, found)
+        return found, False
+    log.info("%s: %s does not exist, using %s (%s), saved in the settings", what.capitalize(), entity_id, found, how)
+    return found, False
 
 
 def _time(entry: dict) -> datetime | None:
@@ -203,7 +261,10 @@ class Shopping:
             log.log(TRACE, "Shopping list: Home Assistant is still starting")
             return False
         if not self.ha.entity_exists(self.entity_id):
-            create_list(self.ha, self.entity_id, "shopping list")
+            found, _ = missing_list(self.ha, self.cfg, "shopping_list", "shopping list",
+                                    taken=(self.rhythm.entity_id,) if self.rhythm is not None else ())
+            if found:
+                self.entity_id = found
         if self.rhythm is not None:
             self.rhythm.ensure()
         self.lists_checked = True
