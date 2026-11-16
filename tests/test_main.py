@@ -479,6 +479,13 @@ def test_only_health_is_open(server, main):
     assert status == 200 and body["phone"] is True
 
 
+def test_start_line_names_the_version(main):
+    """The log says which version runs, from the first line of every start."""
+    line = main.start_line()
+    assert line.startswith(f"BrainCall {config.version()} starting, Python 3.")
+    assert config.version().count(".") == 2
+
+
 def test_version(server, main):
     status, body = server("GET", "/api/version")
     assert status == 200
