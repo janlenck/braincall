@@ -714,12 +714,15 @@ def test_summary_of_an_outbound_call_says_who_was_called(brain):
     brain.summarize(["Mark: Hallo?"], "Mark (0170222)", [])
     brain.summarize(["Mark: Hallo?"], "Mark (0170222)", [], outbound=True)
     brain.summarize(["Mark (mailbox): … nach dem Ton."], "Mark (0170222)", [], outbound=True, mailbox=True)
-    inbound, outbound, mailbox = seen
+    brain.summarize(["Mark: Guten Tag.", "Claudine: Ist das Klavier da?"], "Mark (0170222)", [], outbound=True,
+                    unanswered=True)
+    inbound, outbound, mailbox, unanswered = seen
     assert "who called" in inbound and "Caller: Mark (0170222)" in inbound and "outgoing" not in inbound
     assert "outgoing call: Claudine, Jan Lenck's assistant, called Mark (0170222)" in outbound
     assert "Called: Mark (0170222)" in outbound and "whether a callback is wanted" not in outbound
     assert "call back only if the transcript asks for one" in outbound and "only a mailbox announcement" in outbound
     assert "Only a mailbox answered" in mailbox and "not a person speaking" in mailbox
+    assert "Nobody answered anything" in unanswered and "Do not say that someone answered" in unanswered  # #85
 
 
 def test_follow_up_without_a_result_is_partial(brain):

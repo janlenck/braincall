@@ -130,7 +130,7 @@ def test_incoming_while_busy_is_denied(main, events):
 # ---------------------------------------------------------------- after the call
 def session(*transcript, actions=(), mailbox=False):
     return SimpleNamespace(transcript=list(transcript), caller_turns=len(transcript), actions=list(actions),
-                           mailbox=mailbox, message_left=False)
+                           mailbox=mailbox, message_left=False, unanswered=False)
 
 
 @pytest.fixture
@@ -190,9 +190,9 @@ def test_after_call_summary_failure_falls_back_to_transcript(main, after, monkey
 
 
 def test_summary_is_told_the_direction_and_a_mailbox(after):
-    assert after("0999")["summarized"] == {"outbound": False, "mailbox": False}
+    assert after("0999")["summarized"] == {"outbound": False, "mailbox": False, "unanswered": False}
     s = session("0999 (mailbox): Bitte sprechen Sie nach dem Ton.", "Claudine: Hallo …", mailbox=True)
-    assert after("0999", inbound=False, s=s)["summarized"] == {"outbound": True, "mailbox": True}
+    assert after("0999", inbound=False, s=s)["summarized"] == {"outbound": True, "mailbox": True, "unanswered": False}
 
 
 @pytest.fixture
@@ -664,11 +664,11 @@ def planned(main, events, monkeypatch, tmp_path):
     return ctx
 
 
-def talked(*lines, mailbox=False, message_left=False):
-    """The session of a call in which the other side said something; mailbox / message_left: what the phone
-    system recognized (CallSession.mailbox, .message_left)."""
+def talked(*lines, mailbox=False, message_left=False, unanswered=False):
+    """The session of a call in which the other side said something; mailbox / message_left / unanswered: what
+    the phone system recognized (CallSession.mailbox, .message_left, .unanswered)."""
     return SimpleNamespace(transcript=list(lines or ("Seeblick: Ja, 19 Uhr geht.",)), caller_turns=1, actions=[],
-                           mailbox=mailbox, message_left=message_left)
+                           mailbox=mailbox, message_left=message_left, unanswered=unanswered)
 
 
 def test_due_task_is_called_followed_up_and_reported(main, planned):
@@ -734,6 +734,19 @@ def test_recognized_mailbox_without_a_message_is_retried_without_follow_up(main,
     main.run_tasks()
     again = planned.store.get(task["id"])
     assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "mailbox"
+    assert planned.followed == [] and planned.events["notify"] == []
+
+
+def test_call_in_which_nothing_we_said_was_answered_is_retried_without_follow_up(main, planned):
+    """#85: an unrecognized mailbox said "Guten Tag.", recorded our questions and hung up. It was reported as
+    partial ("jemand hat abgenommen, dann brach das Gespräch ab") and never tried again."""
+    task = planned.add(retries=1)
+    planned.sessions.append(talked("Seeblick: Guten Tag.", "Claudine: Steht das Klavier vor der Tür?",
+                                   unanswered=True))
+    planned.result = {"status": "partial", "summary": "Jemand hat abgenommen, dann brach das Gespräch ab."}
+    main.run_tasks()
+    again = planned.store.get(task["id"])
+    assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "no reply"
     assert planned.followed == [] and planned.events["notify"] == []
 
 
@@ -945,7 +958,7 @@ def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch
 
     class Session:
         transcript, caller_turns, actions = ["0888777: Sie hatten angerufen?"], 1, []
-        mailbox = message_left = False
+        mailbox = message_left = unanswered = False
 
         def __init__(self, *a):
             pass
@@ -981,6 +994,7 @@ def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch
 
     class Session:
         transcript, actions, mailbox, message_left = ["Mark: Du hattest angerufen?"], [], False, False
+        unanswered = False
 
         def __init__(self, *a):
             self.caller_turns = turns.pop(0)

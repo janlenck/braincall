@@ -279,7 +279,8 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
             name = caller_name(caller)
             try:
                 summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
-                                          session.actions, lang, outbound=not inbound, mailbox=session.mailbox)
+                                          session.actions, lang, outbound=not inbound, mailbox=session.mailbox,
+                                          unanswered=session.unanswered)
             except Exception as e:  # noqa: BLE001
                 log.warning("Summary failed: %s", e)
             notify = caller.get("notify") if caller else None
@@ -425,8 +426,9 @@ def call_back(task: dict, text: str):
 
 
 def settle_task(task: dict, session):
-    """After the call of a task (line already free): retry if nobody was reached, otherwise follow-up and result.
-    A message left on a mailbox ends the task as message_left: it is reported and not dialed again."""
+    """After the call of a task (line already free): retry if nobody was reached (also when nothing we said was
+    answered), otherwise follow-up and result. A message left on a mailbox ends the task as message_left: it is
+    reported and not dialed again."""
     try:
         now = datetime.now(timezone.utc)
         # a call back after a message was left: the task was reported as message_left already (TaskStore.not_reached)
@@ -435,6 +437,10 @@ def settle_task(task: dict, session):
             done = task_store.not_reached(task["id"], "no answer" if session is None else "nothing said", now)
         elif session.mailbox and not session.message_left:
             done = task_store.not_reached(task["id"], "mailbox", now)  # nothing to follow up
+        elif session.unanswered:
+            # only what was said when the call was picked up, nothing answered after (#85): an unrecognized
+            # mailbox, an announcement, or someone who hung up at once. Nobody was reached, nothing to follow up
+            done = task_store.not_reached(task["id"], "no reply", now)
         else:
             try:
                 result = brain.follow_up(task, session.transcript, list(session.actions), mailbox=session.mailbox)

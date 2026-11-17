@@ -1062,11 +1062,13 @@ class Brain:
         return False
 
     def summarize(self, transcript: list, caller: str, actions: list, language: str = "de",
-                  outbound: bool = False, mailbox: bool = False, channel: str = "phone") -> str:
+                  outbound: bool = False, mailbox: bool = False, channel: str = "phone",
+                  unanswered: bool = False) -> str:
         """Short summary of a finished call for the owner, translated into their language.
         caller: the other party; outbound: the assistant made the call; mailbox: the phone system recognized a
-        mailbox announcement (CallSession.mailbox). channel "voice" or "text": a conversation in Brain Assist
-        instead of a call (caller: who asked, and from which device)."""
+        mailbox announcement (CallSession.mailbox); unanswered: an outbound call in which the other side answered
+        nothing the assistant said (CallSession.unanswered). channel "voice" or "text": a conversation in Brain
+        Assist instead of a call (caller: who asked, and from which device)."""
         owner = (self.cfg.owner_name or "").strip() or "the owner"
         name = self.cfg.assistant_name or "Claude"
         if channel in ASSIST_HEAD:
@@ -1090,6 +1092,11 @@ class Brain:
             what = called + ("Only a mailbox answered: the lines of the other party are its announcement, not a "
                              "person speaking. Say that only the mailbox was reached and which message was left, "
                              "or that none was. ")
+        elif outbound and unanswered:
+            what = called + ("Nobody answered anything the assistant said: the lines of the other party were "
+                             "all said when the call was picked up, most likely a mailbox or an announcement. Say "
+                             "who was called and why, and that nobody replied, with what was heard. Do not say "
+                             "that someone answered or that the conversation broke off. ")
         elif outbound:
             what = called + ("Say who was called and why, what they answered or agreed to, and what was done "
                              "(appointments, list changes, switched devices). If the other party is only a mailbox "

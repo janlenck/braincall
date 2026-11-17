@@ -669,15 +669,100 @@ def test_no_thinking_sounds_into_a_possible_mailbox_announcement(mailbox):
     assert not s._queue_phrase("Ich bin noch dran.", session_mod.FILLER, before_answer=False)
 
 
-def test_the_opening_ends_with_the_first_answer_that_was_heard_out(mailbox):
+def test_the_opening_ends_when_the_callee_answers_what_we_said(mailbox):
+    """Heard out is not enough, a mailbox does not stop talking for us either (#85): the callee must answer."""
     def answer(ctx):
         ctx.say("Hallo, hier ist Claudine.")
         return False
 
     s = mailbox(answer, answer, heard="Ja, hallo?")
-    assert s._answer([dict(m) for m in INTRO], []) is False and not s._opening
-    utt(s, "Ich dachte schon, da geht nur die Mailbox ran.")  # said by a person later on
-    assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is False and not s.mailbox
+    assert s._answer([dict(m) for m in INTRO], []) is False and s._opening and s.unanswered is False  # inbound
+    s.outbound = True
+    assert s.unanswered  # nothing answered yet
+    utt(s, "Ich dachte schon, da geht nur die Mailbox ran.")  # a person, after our answer, not over it
+    assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is False
+    assert not s.mailbox and not s._opening and not s.unanswered
+
+
+def test_talking_over_our_answer_without_mailbox_words_ends_the_opening_after_it_is_answered(mailbox):
+    def answer(ctx):
+        ctx.say("Hallo, hier ist Claudine.")
+        return False
+
+    s = mailbox(answer, answer, heard="Ja, hallo?")
+    s._answer([dict(m) for m in INTRO], [])
+    u = utt(s, "Moment, wer ist da?")
+    u.overlapped = True  # said while we spoke: checked for a mailbox first
+    assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is False
+    assert not s.mailbox and not s._opening
+
+
+def test_the_rest_of_the_announcement_dropped_as_stale_still_gives_the_mailbox_away(mailbox, caplog):
+    """#85: "Guten Tag." got the greeting and an answer; "… nach dem Ton." went on during it and ended before the
+    last sentence. It was dropped as belonging to an earlier question and the mailbox recorded the questions."""
+    def answer(ctx):
+        ctx.say("Ich bin Claudine, eine KI-Assistentin, und rufe im Auftrag von Jan an.")
+        ctx.say("Steht vor der Haustür das Klavier?")
+        return False
+
+    s = mailbox(answer, message, heard="Guten Tag.")
+    s.outbound = True
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is False and s._opening
+    u = utt(s, "Dieser Anruf kann nicht entgegengenommen werden, bitte hinterlassen Sie eine Nachricht nach dem Ton.",
+            ended_at=s._stale_before - 5.9)
+    u.overlapped = True
+    with caplog.at_level(logging.INFO, logger="session"):
+        got = s._wait_input(1)
+        assert got == [u]  # kept, not dropped
+        assert s._answer(messages, s._transcribed(got)) is True
+    assert s.mailbox and s.message_left and not s.unanswered
+    assert "Mark: Dieser Anruf kann nicht entgegengenommen werden" in s.transcript[-4]
+    assert s.transcript[-2:] == ["Claudine: Jan möchte wissen, wann du kommst.", "Claudine: Bitte ruf ihn zurück."]
+    assert not any("Dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_dropped_utterance_is_logged_with_its_text(caplog):
+    s = make(FakeBrain(), workers=False, silence_timeout=0.3)
+    s._stale_before = time.monotonic()
+    utt(s, "Bitte hinterlassen Sie eine Nachricht nach dem Ton.", ended_at=s._stale_before - 2)
+    with caplog.at_level(logging.INFO, logger="session"):
+        assert s._wait_input(0.3) is session_mod.TIMEOUT  # not in the opening: dropped as before
+        deadline = time.monotonic() + 2
+        while not caplog.records and time.monotonic() < deadline:
+            time.sleep(0.01)
+    line, = [r.getMessage() for r in caplog.records]
+    assert "2.0 s before" in line and line.endswith("“Bitte hinterlassen Sie eine Nachricht nach dem Ton.”")
+
+
+def test_an_unanswered_outbound_call(mailbox):
+    def answer(ctx):
+        ctx.say("Steht das Klavier vor der Tür?")
+        return False
+
+    def said_and_left(ctx):
+        ctx.say("Jan kommt um fünf. Tschüss!")
+        return True
+
+    s = mailbox(answer, heard="Guten Tag.")
+    s.outbound = True
+    assert not s.unanswered  # nothing said yet
+    s._answer([dict(m) for m in INTRO], [])
+    assert s.unanswered  # the other side hung up, or silence ended the call
+    s = mailbox(said_and_left, heard="Ja?")
+    s.outbound = True
+    assert s._answer([dict(m) for m in INTRO], []) is True and not s.unanswered  # the model ended it: done
+
+
+def test_talking_over_the_greeting_of_an_outbound_call_keeps_thinking_sounds_out(mailbox):
+    s = mailbox(heard="Guten Tag.")
+    s.playing.set()  # the greeting
+    s.answer_started_at = time.monotonic() - 2
+    loud = np.full(160, 4000, np.int16)
+    for _ in range(80):
+        s._frame(loud, time.monotonic())
+    assert s._barged and s._suspect
+    assert not s._queue_phrase("Hmm…", session_mod.FILLER)
 
 
 def test_sound_of_the_other_side_is_timed_for_the_end_of_the_announcement():
@@ -729,6 +814,69 @@ def test_mailbox_call_from_answer_to_hang_up(monkeypatch):
         "Mark Tee (mailbox): Bitte sprechen Sie Ihre Nachricht nach dem Ton.",
         "Claudine: Hallo Mark, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an.",
         "Claudine: Jan möchte wissen, wann du kommst.", "Claudine: Bitte ruf ihn zurück."]
+
+
+def call_with(parts, texts, brain, **cfg):
+    """An outbound call with the real reader and voice detection: the other side speaks in `parts` (seconds after
+    the answer), transcribed as `texts` one after the other. Returns (session, call, times of our audio)."""
+    loud = bytes(0x80 + (60 if i % 2 else -60) for i in range(160))
+    t0 = time.monotonic()
+    written = []
+
+    def read_audio(n, blocking):
+        t = time.monotonic() - t0
+        return loud if any(a <= t < b for a, b in parts) else b"\x80" * 160
+
+    def hangup():
+        call.state = CallState.ENDED
+
+    call = SimpleNamespace(state=CallState.ANSWERED, read_audio=read_audio, hangup=hangup, RTPClients=[],
+                           write_audio=lambda chunk: written.append(time.monotonic() - t0))
+    speech = FakeSpeech()
+    texts = list(texts)
+    speech.transcribe = lambda pcm, language: texts.pop(0) if texts else ""
+    s = CallSession(call, brain, speech, make_cfg(owner_name="Jan Lenck", **cfg), FakeCache())
+    return s, call, written
+
+
+def test_mailbox_whose_announcement_starts_with_a_short_greeting(monkeypatch):
+    """#85 as a whole: "Guten Tag.", 0.4 s pause, the rest of the announcement, the beep. The short first part
+    must not get the greeting: the other side goes on without waiting for an answer."""
+    monkeypatch.setattr(session_mod, "MAILBOX_PAUSE_S", 0.5)
+    # 0.4 s heard as a pause, plus the fading end of "Tag" that counts as silence: "Guten Tag." ends on its own
+    parts = [(0.1, 0.8), (1.35, 4.0), (4.4, 4.6)]
+    texts = ["Guten Tag.", "Dieser Anruf kann nicht entgegengenommen werden, bitte hinterlassen Sie eine Nachricht "
+             "nach dem Ton.", ""]
+    brain = FakeBrain(message)
+    s, call, written = call_with(parts, texts, brain, end_silence_ms=450, speculative_ms=300)
+    s.run(outbound=True, message="Frag nach dem Klavier.", caller="04542", caller_name="Jan Office")
+    assert written and written[0] >= 4.6 + 0.5 - 0.1  # nothing into the announcement, the greeting after the beep
+    assert len(brain.seen) == 1 and brain.kw["call"]["mailbox"] is True
+    assert "you heard: “Guten Tag. Dieser Anruf kann nicht entgegengenommen werden" in brain.seen[0][0]["content"]
+    assert s.mailbox and s.message_left and call.state == CallState.ENDED
+    assert s.transcript[0].startswith("Jan Office: Guten Tag. Dieser Anruf")
+    assert s.transcript[1:] == ["Claudine: Hallo Jan, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an.",
+                                "Claudine: Jan möchte wissen, wann du kommst.", "Claudine: Bitte ruf ihn zurück."]
+
+
+def test_a_person_who_says_guten_tag_and_waits_gets_the_greeting_within_a_second():
+    parts = [(0.1, 0.8), (3.5, 4.0)]
+    texts = ["Guten Tag.", "Ja, worum geht es?"]
+
+    def answer(ctx):
+        ctx.say("Ich rufe wegen des Klaviers an.")
+        return False
+
+    def bye(ctx):
+        return True
+
+    brain = FakeBrain(answer, bye)
+    s, call, written = call_with(parts, texts, brain, end_silence_ms=450, speculative_ms=300)
+    s.run(outbound=True, message="Frag nach dem Klavier.", caller="04542", caller_name="Jan Office")
+    assert written and 0.8 + 0.45 <= written[0] <= 0.8 + session_mod.MAILBOX_GAP_S + 0.3
+    assert s.transcript[:2] == ["Jan Office: Guten Tag.",
+                                "Claudine: Hallo Jan, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an."]
+    assert not s.mailbox and not s._suspect and not s.unanswered and len(brain.seen) == 2
 
 
 def test_wanted_phrases_follow_the_configuration():

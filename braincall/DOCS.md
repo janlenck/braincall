@@ -216,7 +216,9 @@ after a yes. After you hung up it calls, tries again if nobody is reached (a cal
 then does the follow-up steps of the plan (calendar, shopping list, web search) and reports the result: as a
 notification (*Notify services*), as event `braincall_task_finished` and, if asked for, with a call back.
 On a mailbox it leaves a short message after the beep and does not call again: the task ends as "message left"
-(`message_left`).
+(`message_left`). This also works for an announcement that starts with a short "Guten Tag." and goes on after a
+short pause. A call in which nothing the assistant said got an answer (the other side only spoke when it picked up,
+then hung up) counts as not reached and is tried again.
 
 - During the call the callee only gets what the plan grants (free/busy times of certain days, one appointment with a
   fixed title), never details of your calendar and no control of the house.
