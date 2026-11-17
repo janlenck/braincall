@@ -44,6 +44,9 @@ ANSWER, GREETING, FILLER = "answer", "greeting", "filler"
 MAILBOX_S = 2.0         # outbound: a first utterance with more speech than this may be a mailbox announcement
 MAILBOX_PAUSE_S = 1.5   # a mailbox announcement is over, beep included, after this long without a sound
 MAILBOX_MAX_S = 40.0    # longest wait for that pause before the message is spoken anyway
+# outbound: a person who says "Guten Tag." waits for an answer, a recording goes on at once ("Guten Tag." - 0.4 s -
+# "Dieser Anruf kann nicht entgegengenommen werden …", #85). Speech again within this time is the same announcement
+MAILBOX_GAP_S = 1.0
 # Words only a mailbox announcement uses (de, en, uk): the box itself, or speaking "after the tone". Not "nicht
 # erreichbar" or "Nachricht hinterlassen" alone: a person answering for someone else says that as well.
 MAILBOX_WORDS = re.compile(
@@ -72,6 +75,7 @@ class Utterance:
         self.final = threading.Event()
         self.cancelled = threading.Event()
         self.while_thinking = False       # ended while the model prepared an answer it could not take it into
+        self.overlapped = False           # we played something (answer, greeting, filler) while it was said
         self.noted = False                # in the transcript and log
         if not tentative:
             self.final.set()
@@ -131,7 +135,11 @@ class CallSession:
         self.leave_message = True
         self.mailbox = False              # the phone system recognized a mailbox announcement
         self.message_left = False         # ... and at least one sentence of our message was played after it
-        self._opening = False             # until our first answer to the callee is through: a mailbox may still show
+        self._opening = False             # until the callee answers what we said (not over it): a mailbox may show
+        self._spoke = False               # outbound: an answer of the model was played to the other side
+        self._turns_spoke = 0             # caller_turns when that happened (unanswered)
+        self._said_and_left = False       # the model said its piece in its first answer and hung up itself
+        self.outbound = False
         self._suspect = False             # long first utterance: maybe a mailbox, no thinking sounds into it
         self._callee_text = ""            # what the callee said during the opening
         self._greet = ""                  # the cached greeting of this call
@@ -168,6 +176,15 @@ class CallSession:
     # ------------------------------------------------------------------ Status
     def alive(self) -> bool:
         return self.active and self.call.state == CallState.ANSWERED
+
+    @property
+    def unanswered(self) -> bool:
+        """Outbound: we said something, and the other side never answered any of it before the call ended (hung
+        up or silence), the model did not end it: nobody was reached in person, e.g. a mailbox that was not
+        recognized (#85). The task is tried again (main.settle_task). Not when the model said all in its first
+        answer and hung up itself, nor once the other side showed to be a person (the opening is over)."""
+        return (self.outbound and self._opening and self._spoke and self.caller_turns == self._turns_spoke
+                and not self.mailbox and not self._said_and_left)
 
     # ------------------------------------------------------------------ input
     def _reader(self):
@@ -245,6 +262,8 @@ class CallSession:
         if self._barge(now):
             log.info("%s interrupts (%d ms speech)", self.caller_label, self.seg_voiced * 20)
             self._barged = True
+            if self._opening and not self._spoke:
+                self._suspect = True  # talking over the greeting: maybe the rest of an announcement, no fillers
             with self._answer_lock:
                 self.interrupt.set()
                 self.playing.clear()  # the rest of the answer is dropped, listen with the normal threshold
@@ -286,14 +305,17 @@ class CallSession:
         spec, self._spec = self._spec, None
         if keep and spec is not None and not spec.cancelled.is_set():
             spec.pcm = np.concatenate(self._buf)  # the same speech plus the rest of the pause
+            spec.overlapped = self._overlaps_answer
             spec.detected_at = now
             spec.final.set()
         else:
             if spec is not None:
                 spec.cancelled.set()
             if keep:
-                self._finished(Utterance(np.concatenate(self._buf), now - self._silent * FRAME / RATE, now,
-                                         self.seg_voiced * FRAME / RATE))
+                u = Utterance(np.concatenate(self._buf), now - self._silent * FRAME / RATE, now,
+                              self.seg_voiced * FRAME / RATE)
+                u.overlapped = self._overlaps_answer
+                self._finished(u)
         self._pre.clear()
 
     def _finished(self, u: Utterance):
@@ -642,8 +664,22 @@ class CallSession:
     def _stale(self, u: Utterance) -> bool:
         if u.while_thinking or u.ended_at >= self._stale_before:
             return False
-        log.info("Dropped what %s said %.1f s before the last sentence of the answer (belongs to an earlier "
-                 "question)", self.caller_label, self._stale_before - u.ended_at)
+        before = self._stale_before - u.ended_at
+        if self._opening and self._text_of(u) and MAILBOX_WORDS.search(u.text):
+            # the rest of a mailbox announcement that went on while we spoke (#85): not an earlier question
+            log.debug("Kept what %s said %.1f s before the last sentence of the answer: a mailbox announcement",
+                      self.caller_label, before)
+            return False
+
+        def note():
+            text = self._text_of(u, 30)
+            log.info("Dropped what %s said %.1f s before the last sentence of the answer (belongs to an earlier "
+                     "question): %s", self.caller_label, before, f"“{text}”" if text else "nothing intelligible")
+
+        if u.done.is_set() or self.speech is None:
+            note()
+        else:  # the conversation does not wait for the transcription of what it drops
+            threading.Thread(target=note, name="dropped", daemon=True).start()
         return True
 
     def _drain(self) -> list:
@@ -718,6 +754,10 @@ class CallSession:
         while True:
             self._begin_turn()
             heard += self._transcribed(self._drain())  # said meanwhile (e.g. during the transcription)
+            if self._opening and self._spoke and any(not u.overlapped for u in heard):
+                # an answer to what we said, not talking over it: a person (who may well say "Mailbox"). Talking
+                # over us does not end the opening: it may be a part of an announcement before "nach dem Ton"
+                self._opening = False
             if self._opening and MAILBOX_WORDS.search(" ".join([self._callee_text]
                                                                + [u.text for u in heard if not u.noted])):
                 return self._mailbox(messages, heard)
@@ -748,8 +788,10 @@ class CallSession:
                          self.caller_label)
                 heard += more
                 continue
-            if self.caller_turns and self._turn_said and not self._turn_cut:
-                self._opening = False  # we answered the callee and were heard out: a person, not a mailbox
+            if self._turn_said and not self._spoke:
+                # a mailbox does not wait for us nor answer: the opening lasts until the other side answers this
+                self._spoke, self._turns_spoke = True, self.caller_turns
+                self._said_and_left = bool(hang)
             return hang
 
     def _mailbox_note(self, greeted: str) -> str:
@@ -861,10 +903,38 @@ class CallSession:
                 continue
             return u
 
-    def _text_of(self, u: Utterance) -> str:
-        if self.speech is not None and not u.done.wait(30):
+    def _text_of(self, u: Utterance, timeout: float = 30) -> str:
+        if self.speech is not None and not u.done.wait(timeout):
             return ""
         return u.text or ""
+
+    def _goes_on(self, after: float) -> bool:
+        """Outbound opening: the other side speaks again within MAILBOX_GAP_S of `after` (end of its last speech).
+        A person waits for an answer after "Guten Tag.", a recording does not."""
+        deadline = after + MAILBOX_GAP_S
+        while self.alive():
+            if self.user_speaking.is_set() or not self.utterances.empty():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+        return False
+
+    def _announcement_parts(self, first: Utterance) -> list:
+        """The other side went on speaking right after a short first utterance: the parts of what is most likely
+        one announcement, until it pauses longer than MAILBOX_GAP_S, gives a mailbox away or MAILBOX_MAX_S pass."""
+        parts = [first]
+        deadline = time.monotonic() + MAILBOX_MAX_S
+        # already given away: Claude prepares the message while the rest of the announcement runs
+        while not MAILBOX_WORDS.search(" ".join(self._text_of(p) for p in parts)) and time.monotonic() < deadline:
+            # listen() waits on as long as speech goes on; a noise that was no utterance ends it after the gap
+            u = self.listen(min(MAILBOX_GAP_S, max(0.1, deadline - time.monotonic())))
+            if not isinstance(u, Utterance):
+                break
+            parts.append(u)
+            if not self._goes_on(u.ended_at):
+                break
+        return parts
 
     # ------------------------------------------------------------------ call flow
     def _rights(self, name: str) -> str:
@@ -890,7 +960,7 @@ class CallSession:
         self.access = frozenset(access)  # decides the tools Claude gets (Brain.tools_for)
         self.web = web
         self.leave_message = leave_message
-        self._opening = outbound
+        self.outbound = self._opening = outbound
         self.call_info = {"number": caller, "name": caller_name, "grants": grants or {}}
         full = caller_name
         self.caller_label = full or caller or "unknown"            # for the log: "Jan Mobile"
@@ -917,13 +987,22 @@ class CallSession:
                     return
                 at = len(self.transcript)
                 person = first is TIMEOUT or first.voiced_s <= MAILBOX_S  # long speech may be a mailbox
+                parts = [first] if isinstance(first, Utterance) else []
+                if outbound and person and parts and self._goes_on(first.ended_at):
+                    parts = self._announcement_parts(first)
+                    # "Guten Tag." and on without waiting for an answer: a recording (#85). Only a noise that was
+                    # no utterance, and nothing that gives a mailbox away: a person after all
+                    person = len(parts) == 1 and not MAILBOX_WORDS.search(self._text_of(first))
+                    if not person:
+                        log.info("The other side goes on right after a short first utterance (%.1f s): no cached "
+                                 "greeting, maybe a mailbox", first.voiced_s)
+                elif greet and not person:
+                    log.info("Long first utterance (%.1f s): no cached greeting, maybe a mailbox", first.voiced_s)
                 self._suspect = outbound and not person
                 if greet and person and self._play_greeting(greet):
                     greeted = greet  # right away, while the first words are transcribed and Claude prepares
-                elif greet and not person:
-                    log.info("Long first utterance (%.1f s): no cached greeting, maybe a mailbox", first.voiced_s)
-                if isinstance(first, Utterance):
-                    heard = self._text_of(first)
+                if parts:
+                    heard = " ".join(t for t in (self._text_of(u) for u in parts) if t)
                 if heard:
                     log.info("%s: %s", self.caller_label, heard)
                     self.transcript.insert(at, f"{self.caller_label}: {heard}")

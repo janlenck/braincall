@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.14.4
+
+Fix: a mailbox whose announcement starts with a short greeting was not recognized (#85, follow-up to #65).
+
+- "Guten Tag." – 0.4 s – "Dieser Anruf kann nicht entgegengenommen werden, bitte hinterlassen Sie eine Nachricht nach
+  dem Ton." was split at the pause. The short first part counted as a person: the greeting was played into the
+  announcement, Claudine asked her questions onto the recording, and the rest of the announcement was dropped as
+  "belongs to an earlier question" without being looked at. The task ended as `partial` ("jemand hat abgenommen,
+  dann brach das Gespräch ab") and was not tried again
+- Outgoing calls: after a short first utterance the greeting waits up to 1 s. If the other side goes on speaking at
+  once, it is one announcement: no greeting and no thinking sounds into it, the parts are joined, and a recognized
+  mailbox gets the message after the beep. A person who says "Guten Tag." and waits hears the greeting at most 1 s
+  later
+- The opening, in which a mailbox can still show, lasts until the callee answers something Claudine said, not over
+  her (before: until her first answer had been heard out, which a mailbox does as well). What the other side says
+  over her meanwhile is checked for the words of a mailbox, also if it is dropped as belonging to an earlier question
+- `Dropped what … said …` names the text that was dropped
+- A planned call in which nothing Claudine said got an answer (only what was heard on picking up, then hung up or
+  silence) counts as not reached (`no reply`): no follow-up, tried again per `retries`. Its summary says that nobody
+  replied instead of "the conversation broke off"
+
 ## 1.14.3
 
 Fix: the shopping list under another entity id (#74).

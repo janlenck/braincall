@@ -427,16 +427,25 @@ Every change of a task's status (planned, running, planned again after an attemp
 No answer or busy: the next attempt follows after `task_retry_minutes`, at most `retries` times and only inside the
 time window; then the task ends as `not_reached`. A mailbox gets a short message, and that ends the task as
 `message_left`: it is reported and not dialed again. With `leave_message` false, or if the mailbox hangs up before the
-message, it counts as not reached and is tried again. If the callee calls back (between the attempts, or after a
+message, it counts as not reached and is tried again. The same holds for a call in which the other side answered
+nothing Claude said (only what was heard when it picked up, then it hung up or stayed silent): nobody was reached,
+the task is tried again without a follow-up. If the callee calls back (between the attempts, or after a
 message until the end of the time window), the call is answered (also from a number that is not in `callers`), the
 task continues there and its new result is reported.
 
 A mailbox is recognized by its announcement ("Mailbox", "Mobilbox", "Anrufbeantworter", "nach dem Ton", "voicemail",
-"after the tone" …) while the call opens: nothing is played into the announcement (no thinking sounds), Claude
+"after the tone" …) while the call opens, which lasts until the callee answers something Claude said: nothing is played into the announcement (no thinking sounds), Claude
 prepares the message meanwhile without any tool, and 1.5 s after the last sound (the beep) the greeting and the
 message follow, then the call ends. The message holds only what the task covers. If someone speaks into the message
 it is a person after all and the call goes on as a conversation. An announcement without such words is left to
 Claude as before.
+
+An announcement that starts with a short greeting ("Guten Tag." – a short pause – "Dieser Anruf kann nicht
+entgegengenommen werden, bitte hinterlassen Sie eine Nachricht nach dem Ton.") is recognized as well: a person who
+says "Guten Tag." waits for an answer, a recording goes on at once. If the other side speaks again within 1 s, the
+greeting is held back and the parts are taken as one announcement. Whatever the other side says over Claude during
+the opening is checked for the words of a mailbox even if it is dropped as belonging to an earlier question, and a
+dropped utterance is logged with its text (`Dropped what … said …: “…”`).
 
 **Rights in three phases.** The requester is not the person on the phone:
 
@@ -586,8 +595,9 @@ Not part of this yet (see #50): limits per person, and skills.
   (rebuilt when language, voice, TTS model, speaking style, assistant or owner name change). Incoming calls hear
   "Hallo, hier ist Claudine, die Assistentin von Jan Lenck." (known callers "Hallo Jan, hier ist Claudine.") right
   after answering. Outgoing calls play "Hallo, hier ist Claudine, ich rufe im Auftrag von Jan Lenck an." as soon as
-  the callee has said something short like "Hallo?", or after 2.5 s of silence. A longer first utterance may be a
-  mailbox announcement: no greeting and no thinking sounds are played into it; a recognized mailbox gets the
+  the callee has said something short like "Hallo?" and then waits (up to 1 s later), or after 2.5 s of silence. A
+  longer first utterance, or a short one the other side goes on from at once, may be a mailbox announcement: no
+  greeting and no thinking sounds are played into it; a recognized mailbox gets the
   greeting and the message after the beep (see [planned calls](#planned-calls-with-a-task)), otherwise the model
   greets. Claude is told the greeting has been spoken.
 - **End of speech:** an utterance counts as finished after `end_silence_ms` (default 450 ms) of silence. After
