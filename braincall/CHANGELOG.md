@@ -13,9 +13,9 @@ Fix: a mailbox whose announcement starts with a short greeting was not recognize
   once, it is one announcement: no greeting and no thinking sounds into it, the parts are joined, and a recognized
   mailbox gets the message after the beep. A person who says "Guten Tag." and waits hears the greeting at most 1 s
   later
-- The opening, in which a mailbox can still show, lasts until the callee answers something Claudine said (before:
-  until her first answer had been heard out, which a mailbox does as well). What the other side says over her
-  meanwhile is checked for the words of a mailbox, also if it is dropped as belonging to an earlier question
+- The opening, in which a mailbox can still show, lasts until the callee answers something Claudine said, not over
+  her (before: until her first answer had been heard out, which a mailbox does as well). What the other side says
+  over her meanwhile is checked for the words of a mailbox, also if it is dropped as belonging to an earlier question
 - `Dropped what … said …` names the text that was dropped
 - A planned call in which nothing Claudine said got an answer (only what was heard on picking up, then hung up or
   silence) counts as not reached (`no reply`): no follow-up, tried again per `retries`. Its summary says that nobody

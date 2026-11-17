@@ -135,7 +135,7 @@ class CallSession:
         self.leave_message = True
         self.mailbox = False              # the phone system recognized a mailbox announcement
         self.message_left = False         # ... and at least one sentence of our message was played after it
-        self._opening = False             # until the callee answers what we said: a mailbox may still show
+        self._opening = False             # until the callee answers what we said (not over it): a mailbox may show
         self._spoke = False               # outbound: an answer of the model was played to the other side
         self._turns_spoke = 0             # caller_turns when that happened (unanswered)
         self._said_and_left = False       # the model said its piece in its first answer and hung up itself
@@ -182,9 +182,9 @@ class CallSession:
         """Outbound: we said something, and the other side never answered any of it before the call ended (hung
         up or silence), the model did not end it: nobody was reached in person, e.g. a mailbox that was not
         recognized (#85). The task is tried again (main.settle_task). Not when the model said all in its first
-        answer and hung up itself."""
-        return (self.outbound and self._spoke and self.caller_turns == self._turns_spoke and not self.mailbox
-                and not self._said_and_left)
+        answer and hung up itself, nor once the other side showed to be a person (the opening is over)."""
+        return (self.outbound and self._opening and self._spoke and self.caller_turns == self._turns_spoke
+                and not self.mailbox and not self._said_and_left)
 
     # ------------------------------------------------------------------ input
     def _reader(self):
@@ -755,7 +755,8 @@ class CallSession:
             self._begin_turn()
             heard += self._transcribed(self._drain())  # said meanwhile (e.g. during the transcription)
             if self._opening and self._spoke and any(not u.overlapped for u in heard):
-                # an answer to what we said, not talking over it: a person (who may well say "Mailbox")
+                # an answer to what we said, not talking over it: a person (who may well say "Mailbox"). Talking
+                # over us does not end the opening: it may be a part of an announcement before "nach dem Ton"
                 self._opening = False
             if self._opening and MAILBOX_WORDS.search(" ".join([self._callee_text]
                                                                + [u.text for u in heard if not u.noted])):
@@ -787,8 +788,6 @@ class CallSession:
                          self.caller_label)
                 heard += more
                 continue
-            if self._opening and heard and self._spoke:
-                self._opening = False  # the callee said something after our answer and was answered: a person
             if self._turn_said and not self._spoke:
                 # a mailbox does not wait for us nor answer: the opening lasts until the other side answers this
                 self._spoke, self._turns_spoke = True, self.caller_turns
@@ -926,12 +925,14 @@ class CallSession:
         one announcement, until it pauses longer than MAILBOX_GAP_S, gives a mailbox away or MAILBOX_MAX_S pass."""
         parts = [first]
         deadline = time.monotonic() + MAILBOX_MAX_S
-        while time.monotonic() < deadline:
-            u = self.listen(max(0.1, deadline - time.monotonic()))
+        # already given away: Claude prepares the message while the rest of the announcement runs
+        while not MAILBOX_WORDS.search(" ".join(self._text_of(p) for p in parts)) and time.monotonic() < deadline:
+            # listen() waits on as long as speech goes on; a noise that was no utterance ends it after the gap
+            u = self.listen(min(MAILBOX_GAP_S, max(0.1, deadline - time.monotonic())))
             if not isinstance(u, Utterance):
                 break
             parts.append(u)
-            if MAILBOX_WORDS.search(" ".join(self._text_of(p) for p in parts)) or not self._goes_on(u.ended_at):
+            if not self._goes_on(u.ended_at):
                 break
         return parts
 
@@ -988,10 +989,13 @@ class CallSession:
                 person = first is TIMEOUT or first.voiced_s <= MAILBOX_S  # long speech may be a mailbox
                 parts = [first] if isinstance(first, Utterance) else []
                 if outbound and person and parts and self._goes_on(first.ended_at):
-                    person = False  # "Guten Tag." and on without waiting for an answer: a recording (#85)
-                    log.info("The other side goes on right after a short first utterance (%.1f s): no cached "
-                             "greeting, maybe a mailbox", first.voiced_s)
                     parts = self._announcement_parts(first)
+                    # "Guten Tag." and on without waiting for an answer: a recording (#85). Only a noise that was
+                    # no utterance, and nothing that gives a mailbox away: a person after all
+                    person = len(parts) == 1 and not MAILBOX_WORDS.search(self._text_of(first))
+                    if not person:
+                        log.info("The other side goes on right after a short first utterance (%.1f s): no cached "
+                                 "greeting, maybe a mailbox", first.voiced_s)
                 elif greet and not person:
                     log.info("Long first utterance (%.1f s): no cached greeting, maybe a mailbox", first.voiced_s)
                 self._suspect = outbound and not person

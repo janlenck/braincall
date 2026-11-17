@@ -684,17 +684,44 @@ def test_the_opening_ends_when_the_callee_answers_what_we_said(mailbox):
     assert not s.mailbox and not s._opening and not s.unanswered
 
 
-def test_talking_over_our_answer_without_mailbox_words_ends_the_opening_after_it_is_answered(mailbox):
+def test_talking_over_our_answer_does_not_end_the_opening(mailbox):
+    """A part of an announcement without mailbox words ("Dieser Anruf kann nicht entgegengenommen werden,") must
+    not switch the check off before "… nach dem Ton" comes."""
     def answer(ctx):
         ctx.say("Hallo, hier ist Claudine.")
         return False
 
-    s = mailbox(answer, answer, heard="Ja, hallo?")
+    s = mailbox(answer, answer, message, heard="Guten Tag.")
+    s.outbound = True
     s._answer([dict(m) for m in INTRO], [])
-    u = utt(s, "Moment, wer ist da?")
-    u.overlapped = True  # said while we spoke: checked for a mailbox first
+    u = utt(s, "Dieser Anruf kann nicht entgegengenommen werden,")
+    u.overlapped = True  # said while we spoke
     assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is False
-    assert not s.mailbox and not s._opening
+    assert not s.mailbox and s._opening and not s.unanswered  # something was said after we spoke
+    u = utt(s, "bitte hinterlassen Sie eine Nachricht nach dem Ton.")
+    u.overlapped = True
+    assert s._answer([dict(m) for m in INTRO], s._transcribed(s._drain())) is True and s.mailbox
+
+
+def test_a_person_after_all_is_never_unanswered(mailbox):
+    """Someone spoke into the message: a person. Answered and hung up afterwards, the task is not tried again."""
+    def cut(ctx):
+        ctx.say("Jan möchte wissen, wann du kommst.")
+        s.sentence_q.join()
+        s.interrupt.set()
+        return False
+
+    def answer(ctx):
+        ctx.say("Ah, du bist doch da.")
+        return False
+
+    s = mailbox(cut, answer)
+    s.outbound = True
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is False and not s.mailbox
+    utt(s, "Ja, ich bin da.")
+    s._answer(messages, s._transcribed(s._drain()))
+    assert not s.unanswered  # then the callee hangs up: a conversation took place
 
 
 def test_the_rest_of_the_announcement_dropped_as_stale_still_gives_the_mailbox_away(mailbox, caplog):
@@ -720,6 +747,26 @@ def test_the_rest_of_the_announcement_dropped_as_stale_still_gives_the_mailbox_a
     assert "Mark: Dieser Anruf kann nicht entgegengenommen werden" in s.transcript[-4]
     assert s.transcript[-2:] == ["Claudine: Jan möchte wissen, wann du kommst.", "Claudine: Bitte ruf ihn zurück."]
     assert not any("Dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_noise_after_a_short_first_utterance_does_not_hold_the_greeting(monkeypatch):
+    """user_speaking was set by a short noise that became no utterance: nothing comes, the greeting follows after
+    the gap and not after MAILBOX_MAX_S."""
+    s = make(workers=False)
+    first = utt(s, "Hallo?", queue_it=False)
+    first.done.set()
+    t0 = time.monotonic()
+    assert s._announcement_parts(first) == [first]
+    assert time.monotonic() - t0 < session_mod.MAILBOX_GAP_S + 0.5
+
+
+def test_a_short_first_utterance_that_gives_the_mailbox_away_is_not_waited_on(monkeypatch):
+    """"Hier ist die Mailbox" and on: Claude starts on the message at once, not after the next part."""
+    s = make(workers=False)
+    first = utt(s, "Hier ist die Mailbox von", queue_it=False)
+    s._transcribe_async(first)
+    monkeypatch.setattr(s, "listen", lambda timeout: pytest.fail("waits for the next part"))
+    assert s._announcement_parts(first) == [first]
 
 
 def test_a_dropped_utterance_is_logged_with_its_text(caplog):
