@@ -382,8 +382,9 @@ def brief(task: dict, owner: str) -> str:
     parts.append("You may tell the callee only: " + ("; ".join(task["may_share"]) if task["may_share"]
                                                      else f"that you call for {who}")
                  + f". Nothing else about {who} (no address, no other personal data)")
-    parts.append("Say only what this task covers: add no wishes, preferred days or details of your own, and nothing "
-                 "from earlier calls")
+    parts.append("Say only what this task covers: add no wishes, preferred days or details of your own. You may "
+                 "remember earlier calls with this number and refer to them (this may be a follow-up call), but "
+                 "pass on nothing from them that this task does not cover")
     parts.append(f"You may agree on your own to: {task['may_accept']}. Anything outside that you do not decide: "
                  f"say that {who} will get back about it" if task["may_accept"]
                  else f"Do not agree to anything on your own that the task does not cover; say that {who} will "

@@ -10,8 +10,9 @@ Fix: a planned call did not get the task itself, only its goal (#89).
   been read back and confirmed. Now the call gets the task in the requester's words whenever it says more than the
   goal, and the read-back names it as well
 - `plan_call`: the task holds everything to pass on or ask, the goal is only its purpose
-- A planned call no longer gets the summaries of earlier calls with that number: its task is all it needs ("nothing
-  from earlier calls"). The call back to the requester keeps them
+- A planned call may remember earlier calls with the same number and refer to them (a follow-up call does not
+  start from scratch); it still passes on nothing from them that the task does not cover. Before, the brief said
+  "nothing from earlier calls" although the memory was given
 
 ## 1.14.5
 

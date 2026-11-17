@@ -361,8 +361,7 @@ def outbound(number: str, message: str, task: dict | None = None):
                     language=(task or {}).get("language") or lang_for(caller),
                     access=access, caller_name=caller_name(caller),
                     instructions=caller["instructions"] if caller else "",
-                    # a planned call has its brief only: "nothing from earlier calls" (#89)
-                    previous="" if task else previous(number, access, caller),
+                    previous=previous(number, access, caller),
                     web=web_for(caller), grants=(task or {}).get("grants"),
                     leave_message=(task or {}).get("leave_message", True))
         log.info("Call ended")
