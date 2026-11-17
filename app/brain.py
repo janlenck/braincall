@@ -137,6 +137,7 @@ LANG_RULES = {
              "At the start, before the caller has said anything: German."),
 }
 
+HUNG_UP = "Hung up."  # result of hang_up; the phone system may take it back (CallSession._not_hung_up)
 TOOL_HANGUP = {
     "name": "hang_up",
     "description": "Ends the phone call. Say the goodbye as text in the same turn before calling this.",
@@ -1038,7 +1039,7 @@ class Brain:
                     out = "Not executed (aborted)."
                 elif b.name == "hang_up":
                     hang = True
-                    out = "Hung up."
+                    out = HUNG_UP
                 else:
                     t0 = time.monotonic()
                     out = (self._plan_call(b, tools, messages, counters, call) if b.name == "plan_call"

@@ -926,6 +926,60 @@ def test_a_person_who_says_guten_tag_and_waits_gets_the_greeting_within_a_second
     assert not s.mailbox and not s._suspect and not s.unanswered and len(brain.seen) == 2
 
 
+# ---------------------------------------------------------------- an interrupted goodbye (#87)
+class GoodbyeBrain:
+    """Says the summary and goodbye and calls hang_up in one turn, like Brain.turn (tool_use, tool_result)."""
+
+    def __init__(self, s, cut):
+        self.s, self.cut, self.turns = s, cut, 0
+
+    def turn(self, messages, on_sentence, should_abort, before_tool=None, **kw):
+        self.turns += 1
+        on_sentence("Danke, das hilft mir weiter.")
+        on_sentence("Ich halte fest: es war ein Kommafehler.")
+        assert before_tool(SimpleNamespace(name="hang_up", input={}, id="t1"))  # decided before it is spoken
+        if self.cut:
+            self.s.sentence_q.join()
+            self.s.interrupt.set()  # barge-in: the callee speaks into the goodbye
+        messages.append({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "hang_up",
+                                                           "input": {}}]})
+        messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                                      "content": "Hung up."}]})
+        return True
+
+
+def test_an_interrupted_goodbye_does_not_hang_up(caplog):
+    """#87: "Ich halte fest:" - the callee speaks - BYE. What they said was never heard."""
+    s = make()
+    s.brain = GoodbyeBrain(s, cut=True)
+    messages = [dict(m) for m in INTRO]
+    with caplog.at_level(logging.INFO, logger="session"):
+        assert s._answer(messages, []) is False  # the call goes on
+    result = messages[-1]["content"][0]["content"]
+    assert result.startswith("Not hung up: the callee interrupted you") and "still on" in result
+    assert any("Jan interrupts the goodbye: not hanging up" in r.getMessage() for r in caplog.records)
+
+
+def test_a_goodbye_that_was_heard_out_hangs_up():
+    s = make()
+    s.brain = GoodbyeBrain(s, cut=False)
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is True and messages[-1]["content"][0]["content"] == "Hung up."
+
+
+def test_an_interrupted_goodbye_written_as_text_gets_a_note():
+    def bye(ctx):
+        ctx.say("Tschüss!")
+        s.sentence_q.join()
+        s.interrupt.set()
+        return True  # e.g. "[hang_up]" written as text (Brain.turn: fake_hangup)
+
+    s = make(FakeBrain(bye))
+    messages = [dict(m) for m in INTRO]
+    assert s._answer(messages, []) is False
+    assert messages[-1]["role"] == "user" and messages[-1]["content"].startswith("[System: Not hung up")
+
+
 def test_wanted_phrases_follow_the_configuration():
     cfg = make_cfg(owner_name="Jan Lenck", callers=[
         {"number": "0151", "name": "Jan Mobile", "access": "admin"},

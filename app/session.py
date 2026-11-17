@@ -10,7 +10,7 @@ import numpy as np
 from pyVoIP.VoIP import CallState
 
 from audio import FRAME, RATE, encode_g711, rms, u8_to_s16
-from brain import MUTATING
+from brain import HUNG_UP, MUTATING
 import phrases as ph
 import rights
 import rtpfix
@@ -788,11 +788,31 @@ class CallSession:
                          self.caller_label)
                 heard += more
                 continue
+            if hang is True and self._turn_cut and self.alive():
+                # the goodbye was interrupted (barge-in): the callee has something more to say (#87)
+                log.info("%s interrupts the goodbye: not hanging up", self.caller_label)
+                self._not_hung_up(messages)
+                hang = False
             if self._turn_said and not self._spoke:
                 # a mailbox does not wait for us nor answer: the opening lasts until the other side answers this
                 self._spoke, self._turns_spoke = True, self.caller_turns
                 self._said_and_left = bool(hang)
             return hang
+
+    @staticmethod
+    def _not_hung_up(messages):
+        """The model hung up, but the callee interrupted the goodbye: the call goes on. The result of hang_up says
+        so; a hang-up written as text gets the note as the next user message."""
+        note = ("Not hung up: the callee interrupted you while you were speaking, so they may not have heard the "
+                "rest of your answer. The call is still on: answer what they say, and say goodbye and hang up again "
+                "when everything is settled.")
+        last = messages[-1] if messages else {}
+        if last.get("role") == "user" and isinstance(last.get("content"), list):
+            for r in last["content"]:
+                if isinstance(r, dict) and r.get("type") == "tool_result" and r.get("content") == HUNG_UP:
+                    r["content"] = note
+                    return
+        CallSession._add_user(messages, f"[System: {note}]")
 
     def _mailbox_note(self, greeted: str) -> str:
         """System note for the one turn on a mailbox: what the message is and what it must not contain."""

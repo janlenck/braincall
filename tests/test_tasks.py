@@ -141,7 +141,8 @@ def test_brief_says_what_may_be_shared_and_the_etiquette():
     for part in ("Reserve a table for 4 tonight", "Restaurant Seeblick", "Ist um 19 Uhr ein Tisch frei?",
                  "only: Name Jan Lenck; 4 Personen", "no address", "18:00 bis 21:00", "AI assistant",
                  "not to be called again", "no audio is recorded", "Termin eintragen",
-                 "Say only what this task covers", "nothing from earlier calls"):
+                 "Say only what this task covers", "nothing from earlier calls",
+                 "Before the goodbye answer every question the callee asked"):  # #87
         assert part in text, part
 
 

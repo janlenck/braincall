@@ -380,8 +380,10 @@ def brief(task: dict, owner: str) -> str:
     parts.append(f"Etiquette: say right at the start that you are an AI assistant calling on behalf of {who}, unless "
                  "the greeting already said so. If the callee does not want to talk or asks not to be called again, "
                  "accept that, apologize briefly and end the call. Before the goodbye say in one sentence that "
-                 f"{who} gets a written summary of this call and that no audio is recorded. When everything is "
-                 "settled, repeat the result briefly, say goodbye and hang up")
+                 f"{who} gets a written summary of this call and that no audio is recorded. Before the goodbye "
+                 "answer every question the callee asked; if the task does not cover it, say that "
+                 f"{who} will get back about it. When everything is settled, repeat the result briefly, say "
+                 "goodbye and hang up")
     return ". ".join(p.rstrip(". ") for p in parts) + "."
 
 
