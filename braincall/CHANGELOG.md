@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.14.5
+
+Fix: the call was hung up although the callee interrupted the goodbye (#87).
+
+- Claude decides to hang up in the same answer as the summary and the goodbye, before they are spoken. When the
+  callee spoke into it ("Ich halte fest:" – barge-in), the rest of the answer was dropped, but the hang-up still
+  happened: the callee heard neither the summary nor the goodbye, and what they said was never heard. Now an
+  interrupted goodbye does not hang up (`… interrupts the goodbye: not hanging up`): Claude is told the call is still
+  on and answers what the callee said. A goodbye that was heard out hangs up at once, as before
+- Planned calls: before the goodbye Claude answers every question the callee asked; what the task does not cover is
+  answered with "Jan will get back about it" (before: "Ist das ein Problem?" was left unanswered)
+
 ## 1.14.4
 
 Fix: a mailbox whose announcement starts with a short greeting was not recognized (#85, follow-up to #65).
