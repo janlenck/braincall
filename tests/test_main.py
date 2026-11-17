@@ -849,6 +849,30 @@ def test_outbound_dials_the_complete_number_without_spaces(main, monkeypatch):
     assert dialed == ["045424635", "045424635"] and not main.busy.locked()
 
 
+def test_a_planned_call_gets_no_memory_of_earlier_calls(main, monkeypatch):
+    """#89: "Das mit den Tomaten kenne ich aus meinen früheren Anrufen" although the brief says nothing from
+    earlier calls. A call without a task (the call back to the requester) keeps the memory."""
+    seen = []
+
+    class Session:
+        def __init__(self, *a):
+            pass
+
+        def run(self, **kw):
+            seen.append(kw["previous"])
+
+    call = SimpleNamespace(state=main.CallState.ANSWERED, call_id="c1")
+    monkeypatch.setattr(main, "phone", SimpleNamespace(call=lambda number: call, calls={},
+                                                       sip=SimpleNamespace(pending_invites={})))
+    monkeypatch.setattr(main, "CallSession", Session)
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    monkeypatch.setattr(main, "previous", lambda *a: "[System: earlier calls …]")
+    for task in ({"language": "de", "grants": {}, "leave_message": True}, None):
+        assert main.busy.acquire(blocking=False)
+        main.outbound("04542 4635", "test", task)
+    assert seen == ["", "[System: earlier calls …]"] and not main.busy.locked()
+
+
 def test_tasks_api(server, planned):
     assert server("GET", "/tasks", token=None)[0] == 401
     status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Tisch reservieren",

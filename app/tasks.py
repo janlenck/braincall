@@ -43,8 +43,10 @@ TOOL_PLAN_CALL = {
                                                         "taken from there"},
             "name": {"type": "string", "description": "person or business to call; for a person from the callers "
                                                       "list their name as listed"},
-            "task": {"type": "string", "description": "the whole task in the requester's words"},
-            "goal": {"type": "string", "description": "what the call should achieve, one sentence"},
+            "task": {"type": "string", "description": "the whole task in the requester's words, with everything "
+                                                      "to pass on or ask: the call is made from it"},
+            "goal": {"type": "string", "description": "what the call should achieve, one sentence (the purpose, "
+                                                      "not a replacement for the task)"},
             "questions": {"type": "array", "items": {"type": "string"}, "description": "what to ask the callee"},
             "may_share": {"type": "array", "items": {"type": "string"},
                           "description": "the only personal details you may give the callee, e.g. 'name Jan Lenck', "
@@ -330,12 +332,20 @@ def when(task: dict, cfg) -> str:
     return f"from {start:%A %Y-%m-%d %H:%M} until {end:%A %Y-%m-%d %H:%M}{limit}"
 
 
+def _more(task: dict) -> bool:
+    """The task in the requester's words says more than its goal (then the call needs both)."""
+    text, goal = (str(task.get(k) or "").strip().rstrip(".").casefold() for k in ("task", "goal"))
+    return bool(text) and text != goal
+
+
 def read_back(task: dict, cfg, known: bool) -> str:
     """What Claude is told after the first plan_call: the checked plan, to be read back before a yes."""
     parts = [f"Plan checked, NOT stored yet. Read it back briefly: you will call {task['name'] or 'the number'} "
              f"at {task['number']}" + ("" if known else " (say the number digit by digit, it is not in the callers "
                                                         "list)")
              + f", {when(task, cfg)}, goal: {task['goal']}."]
+    if _more(task):
+        parts.append(f"The task as the call gets it: {task['task']}")
     if task["may_share"]:
         parts.append(f"You will share only: {'; '.join(task['may_share'])}.")
     if task["may_accept"]:
@@ -361,6 +371,10 @@ def brief(task: dict, owner: str) -> str:
     """The reason of the call for Claude: what to achieve, what may be shared and decided, and the etiquette."""
     who = ((task["requester"]["name"] or owner).split("(")[0].split() or ["the owner"])[0]  # first name
     parts = [f"A task from {who}: {task['goal']}"]
+    if _more(task):
+        # the content to pass on is often only here, e.g. a message for the callee (#89)
+        parts.append(f"The task in {who}'s words (it is what this call covers; pass on what it asks you to pass "
+                     f"on): {task['task']}")
     if task["name"]:
         parts.append(f"The number should belong to {task['name']}")
     if task["questions"]:

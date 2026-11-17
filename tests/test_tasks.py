@@ -146,6 +146,23 @@ def test_brief_says_what_may_be_shared_and_the_etiquette():
         assert part in text, part
 
 
+def test_brief_carries_the_task_in_the_requesters_words():
+    """#89: goal "Jans Auftrag an das Office übermitteln", the message only in task: the call knew nothing."""
+    message = "Beim Office eine Nachricht hinterlassen: erst prüfen, dass niemand im Keller ist."
+    t = build(task=message, goal="Jans Auftrag an das Office übermitteln")
+    text = tasks.brief(t, "Jan")
+    assert "A task from Jan: Jans Auftrag an das Office übermitteln" in text
+    assert f"The task in Jan's words (it is what this call covers; pass on what it asks you to pass on): {message}" \
+        in text
+    assert f"The task as the call gets it: {message}" in tasks.read_back(t, cfg(), True)
+
+
+def test_brief_does_not_repeat_a_task_that_is_its_goal():
+    for t in (build(goal="Tisch für heute Abend reservieren."), build(goal="")):  # no goal: the task is the goal
+        assert "in Jan's words" not in tasks.brief(t, "Jan") and "as the call gets it" not in tasks.read_back(
+            t, cfg(), True)
+
+
 def test_clean_result_fixes_the_shape():
     r = tasks.clean_result({"status": "great", "summary": 5, "answers": ["x"], "steps": [{"step": "a", "done": 1}, 7],
                             "open_points": "eins", "do_not_call": 1})
