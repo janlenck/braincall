@@ -100,7 +100,8 @@ def task_event(task: dict) -> dict:
     return {"id": task["id"], "status": task["status"], "number": task["number"], "name": task["name"],
             "goal": task["goal"], "requester": task["requester"]["name"],
             "requester_ha_user": task["requester"].get("ha_user", ""), "next_try": task.get("next_try", ""),
-            "attempts": len(task["attempts"])}
+            "attempts": len(task["attempts"]), "contact": task.get("contact_id", ""),
+            "steps": len(task.get("steps") or [])}
 
 
 def announce_task(task: dict):
@@ -118,10 +119,10 @@ def contact_in_use(contact: dict) -> str:
     "" if nothing (contacts.Contacts.in_use)."""
     if task_store is None:
         return ""
-    now = datetime.now(timezone.utc)
     for t in task_store.all():
-        waiting = t["status"] == tasks.LEFT and now <= datetime.fromisoformat(t["not_after"])
-        if (t["status"] not in tasks.FINAL or waiting) and config.has_number(contact, t["number"], cfg.country_code):
+        mine = (t["contact_id"] == contact.get("id") if t.get("contact_id")
+                else config.has_number(contact, t["number"], cfg.country_code))  # a task from before #92
+        if t["status"] not in tasks.FINAL and mine:
             return t.get("goal") or t.get("name") or t["id"]
     return ""
 
@@ -133,6 +134,8 @@ def contact_merged(other: dict, merged: dict):
                          "numbers": [n["number"] for n in config.entry_numbers(other)]}, merged["id"])
     if moved:
         log.info("Memory: %d summaries of %s now belong to %s", moved, other["name"], merged["name"])
+    if task_store is not None and task_store.rekey_contact(other["id"], merged["id"]):
+        log.info("Tasks of %s now belong to %s", other["name"], merged["name"])
 
 
 contact_store = contacts.Contacts(cfg, in_use=contact_in_use, on_merge=contact_merged)
@@ -185,7 +188,10 @@ TASK_TITLE = {"de": "Auftrag Anruf bei {who}: {status}", "en": "Task call to {wh
               "uk": "Завдання, дзвінок до {who}: {status}"}
 STATUS_WORDS = {"de": {"done": "erledigt", "partial": "teilweise erledigt", "failed": "nicht geklappt",
                        "not_reached": "nicht erreicht", "message_left": "Nachricht hinterlassen",
-                       "cancelled": "abgebrochen"}}
+                       "cancelled": "abgebrochen", "waiting": "wartet auf Rückruf",
+                       "no_reply": "kein Rückruf"},
+                "en": {"waiting": "waiting for a call back", "no_reply": "no call back"},
+                "uk": {"waiting": "очікує зворотного дзвінка", "no_reply": "без зворотного дзвінка"}}
 
 
 def find_caller(number: str, wildcard: bool = True) -> dict | None:
@@ -499,14 +505,25 @@ def call_back(task: dict, text: str):
                      f"about it. Result ({task['status']}): {text}")
 
 
+def report_waiting(task: dict):
+    """A task waits for a call back (#92): a short notification with what came of it so far, no call back. The
+    final report comes when it ends."""
+    try:
+        lang = cfg.language if cfg.language in TASK_TITLE else "de"
+        status = STATUS_WORDS.get(lang, {}).get(task["status"], task["status"])
+        title = TASK_TITLE[lang].format(who=task["name"] or task["number"], status=status)
+        for service in cfg.notify_services or []:
+            ha.notify(str(service), title, tasks.report_text(task))
+    except Exception:  # noqa: BLE001
+        log.exception("Reporting task %s failed", task.get("id"))
+
+
 def settle_task(task: dict, session):
-    """After the call of a task (line already free): retry if nobody was reached (also when nothing we said was
-    answered), otherwise follow-up and result. A message left on a mailbox ends the task as message_left: it is
-    reported and not dialed again."""
+    """After a call of a task (line already free): retry if nobody was reached (also when nothing we said was
+    answered). Otherwise the call is a step of the task's history and the evaluation decides (#92): the next call,
+    waiting for a call back (also after a message on the mailbox), or the end with its report."""
     try:
         now = datetime.now(timezone.utc)
-        # a call back after a message was left: the task was reported as message_left already (TaskStore.not_reached)
-        reported = (task.get("result") or {}).get("status") == tasks.LEFT
         if session is None or not session.caller_turns:
             done = task_store.not_reached(task["id"], "no answer" if session is None else "nothing said", now)
         elif session.mailbox and not session.message_left:
@@ -528,15 +545,25 @@ def settle_task(task: dict, session):
                 status = tasks.LEFT  # the phone system knows; the follow-up only wrote the summary
             elif status == tasks.LEFT and not task["leave_message"]:
                 status = "not_reached"  # no message was to be left: what was said there does not end the task
+            if status != "not_reached":  # someone was reached, or a message was left: a step of the history (#92)
+                task_store.record_step(task["id"], session.transcript,
+                                       "message left" if status == tasks.LEFT else "talked", result.get("summary"))
+            if result.get("do_not_call"):  # the line of this call: a call back may come from another phone
+                task_store.block((task["attempts"] or [{}])[-1].get("number") or task["number"], task["id"])
+                if status in (tasks.WAIT, tasks.NEXT):  # nobody is called again: the task ends with what it has
+                    status = "partial"
             if status == "not_reached":
                 done = task_store.not_reached(task["id"], "mailbox", now)
-            elif status == tasks.LEFT:
-                done = task_store.finish(task["id"], {**result, "status": status}, "message left")
+            elif status in (tasks.LEFT, tasks.WAIT):
+                done = task_store.wait(task["id"], result, "message left" if status == tasks.LEFT else "talked")
+                report_waiting(done)
+            elif status == tasks.NEXT:
+                nxt = result["next_call"]
+                done = task_store.plan_next(task["id"], nxt["number"], nxt["not_before"], nxt["until"],
+                                            {**result, "status": "partial"})
             else:
-                if result.get("do_not_call"):
-                    task_store.block(task["number"], task["id"])
-                done = task_store.finish(task["id"], result)
-        if done["status"] in tasks.FINAL and not (reported and done["status"] == tasks.LEFT):
+                done = task_store.finish(task["id"], {**result, "status": status})
+        if done["status"] in tasks.FINAL:
             report_task(done)
     except Exception:  # noqa: BLE001
         log.exception("Task %s failed", task.get("id"))
@@ -557,9 +584,10 @@ def run_tasks():
             busy.release()
     if task is None:
         return
-    log.info("Task %s: calling %s (%s), attempt %d", task["id"], task["name"] or "?", task["number"],
-             len(task["attempts"]))
-    settle_task(task, outbound(task["number"], tasks.brief(task, OWNER_FIRST), task))
+    phone = config.phone_of(tasks.contact_of(cfg, task), task["number"], cfg.country_code)
+    log.info("Task %s: calling %s (%s%s), attempt %d, step %d", task["id"], task["name"] or "?", task["number"],
+             f", {phone}" if phone else "", task["tries"], len(task["steps"]) + 1)
+    settle_task(task, outbound(task["number"], tasks.brief(task, OWNER_FIRST, phone), task))
 
 
 def task_loop():
@@ -629,7 +657,8 @@ def on_incoming(call):
     name = caller_name(caller)
     instructions = caller["instructions"] if caller else ""
     if task:
-        instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST)).strip()
+        phone = config.phone_of(tasks.contact_of(cfg, task), number, cfg.country_code)
+        instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST, phone)).strip()
     access = ",".join(sorted(rights))
     try:
         log.info("Answering call from %s (%s, access %s%s)", number, caller_label(caller, number) or "unknown", access,
@@ -1014,10 +1043,11 @@ class Handler(BaseHTTPRequestHandler):
         if not str(body.get("task") or "").strip():
             return self._send(400, {"error": "no task"})
         caller = find_caller(number, wildcard=False)
-        fixed = {**body, "number": number, "name": name or caller_name(caller)}
+        name = name or caller_name(caller)
+        fixed = {**body, "number": number, **({"name": name} if name else {})}  # no name: the plan may find one
         if not body.get("goal"):
             try:
-                fixed = {**brain.plan(fixed["task"], number, fixed["name"]), **fixed}  # what was given wins
+                fixed = {**brain.plan(fixed["task"], number, fixed.get("name", "")), **fixed}  # what was given wins
             except Exception as e:  # noqa: BLE001
                 log.warning("Planning the task failed: %s", e)
                 return self._send(502, {"error": f"planning failed: {e}"})
@@ -1032,13 +1062,25 @@ class Handler(BaseHTTPRequestHandler):
         task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
             return self._send(400, {"error": error})
+        if task["previous"]:  # continues a finished task of the same contact: its history goes along (#92)
+            earlier, refusal = tasks.earlier_task(cfg, task, task_store.get(task["previous"]))
+            if refusal:
+                return self._send(400, {"error": refusal.removeprefix("Not planned: ")})
+            task["earlier"] = earlier
+        if caller is None and not task["name"]:  # every task has a contact (#92), and a contact a name
+            return self._send(400, {"error": "the number belongs to no contact: give the name of the person or "
+                                             "business (it is saved as a contact)"})
         new_contact, refusal = brain.contact_for_task(task, caller is not None)
         if refusal:  # e.g. the name belongs to another contact: refused like by voice, nothing stored
             return self._send(409, {"error": refusal.removeprefix("Not planned: ")})
         if body.get("override_do_not_call"):
             task_store.unblock(number)
-        if new_contact:
-            contact_store.save(new_contact, origin="task")
+        if new_contact:  # saved first: the task points to it (#92)
+            saved, errors = contact_store.save(new_contact, origin="task")
+            if saved:
+                task["contact_id"] = saved["id"]
+            else:
+                log.info("Contact for task %s not saved: %s", task["id"], contacts.problems(errors))
         self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802
@@ -1145,6 +1187,8 @@ def main():
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
     try:
         log.info("Contacts: %s", contact_store.setup())
+        if task_store is not None and task_store.reconcile_contacts():
+            log.info("Tasks: contacts found for tasks stored before 1.16.0")
     except OSError as e:
         log.error("Contacts: %s could not be written (%s); the callers from the settings are used",
                   contact_store.path, e)

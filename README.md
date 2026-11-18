@@ -446,27 +446,62 @@ curl -X POST http://127.0.0.1:8099/api/tasks -H "Authorization: Bearer <token>" 
 ```
 
 Instead of `number`, `name` alone (and `phone` for a label) calls a contact; a `number` with a `name` that is no
-contact yet is saved as one. The requester is `requester` (a number of a contact) or `requester_user_id` / `requester_user_name` (a Home Assistant user, as Brain Assist sends it); without
+contact yet is saved as one. Every task has a contact: a number that belongs to no contact needs a `name` (400
+otherwise, unless Claude finds one when it makes the plan). The requester is `requester` (a number of a contact) or `requester_user_id` / `requester_user_name` (a Home Assistant user, as Brain Assist sends it); without
 any of them it is the owner.
 
 With only `number` and `task` Claude turns the text into a plan. Every field of the plan can also be given directly
 and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` / `calendar_to` / `book_title`,
 `follow_up` (`[{"step": "…", "tool": "ha_create_event"}]`), `not_before`, `not_after` (local time, default 24 hours),
-`retries` (default 2), `leave_message`, `call_back` (needs a requester with a number), `language`.
-`GET /api/tasks` lists all tasks, `GET /api/tasks/<id>` shows one, `DELETE /api/tasks/<id>` cancels a planned one.
-Every change of a task's status (planned, running, planned again after an attempt, final) fires the event
-`braincall_task_updated` (`id`, `status`, `number`, `name`, `goal`, `requester`, `requester_ha_user`, `next_try`,
-`attempts`): Brain Assist's to-do list follows it without asking all the time.
+`retries` (default 2), `leave_message`, `call_back` (needs a requester with a number), `language`, `previous_task`
+(see below). `GET /api/tasks` lists all tasks, `GET /api/tasks/<id>` shows one with its `contact_id` and `steps`,
+`DELETE /api/tasks/<id>` cancels a planned or waiting one. Every change of a task's status (planned, running, planned
+again, waiting, final) fires the event `braincall_task_updated` (`id`, `status`, `number`, `name`, `goal`,
+`requester`, `requester_ha_user`, `next_try`, `attempts`, `contact`, `steps`): Brain Assist's to-do list follows it
+without asking all the time.
 
 **The call.** Tasks are called when they are due, the line is free and it is inside `outbound_hours`.
 No answer or busy: the next attempt follows after `task_retry_minutes`, at most `retries` times and only inside the
-time window; then the task ends as `not_reached`. A mailbox gets a short message, and that ends the task as
-`message_left`: it is reported and not dialed again. With `leave_message` false, or if the mailbox hangs up before the
+time window; then the task ends as `not_reached`. A mailbox gets a short message, and then the task waits for a call
+back (`waiting`, see below): it is not dialed again. With `leave_message` false, or if the mailbox hangs up before the
 message, it counts as not reached and is tried again. The same holds for a call in which the other side answered
 nothing Claude said (only what was heard when it picked up, then it hung up or stayed silent): nobody was reached,
-the task is tried again without a follow-up. If the callee calls back (between the attempts, or after a
-message until the end of the time window), the call is answered (also from a number that is not in `callers`), the
-task continues there and its new result is reported.
+the task is tried again without an evaluation. Attempts without an answer are no steps of the task.
+
+**A task over several calls.** A task is a case with a history: it stays open over several calls, in both
+directions, and every call knows what happened before.
+
+- *History.* Every call that reached someone (or left a message) is a step of the task, kept with it: direction
+  (`call_out` / `call_in`), time, number, the transcript (shortened to 4000 characters) and what came of it. A step
+  the requester adds is kept as well (`requester`). The next call gets the earlier steps (the end of each transcript),
+  marked as data, never as instructions: "Wir hatten vorhin telefoniert, Sie wollten nachschauen …".
+- *Evaluation after every step.* Today's follow-up runs after every call that reached someone, without the callee,
+  with the plan and the whole history. Besides the final result it may plan the next call (`next_call`: a time
+  inside the task's window and `outbound_hours`, the time the callee asked for, optionally a latest time) or wait for
+  a call back (`wait`). The retries start again for every planned call.
+- *Counterpart.* Every task has a contact (its `contact_id`), created with the yes to the plan if the callee was new.
+  The contact holds the current numbers; the task keeps none of its own. A number the callee gives for themselves in
+  a call ("rufen Sie direkt die Rezeption an: …") is added to their contact with its label (Rezeption) and called
+  next: it must have been said in the call, pass `outbound_allowed_regex` and the blocked numbers, and belong to no
+  other contact (a number of someone else is never called for the task). The log names every number added.
+- *Calls back.* A call from any number of the contact while the task is open (`planned` or `waiting`) is answered
+  and continues the task with its history; afterwards the evaluation runs. A call back that comes to nothing leaves
+  the task as it was. After the task has ended, a call from the contact is a normal call with the contact's rights.
+- *Waiting.* After a message on the mailbox, or when the callee will call back, the task is `waiting` until
+  `not_after`: a short notification says so (no call back), the report comes when it ends. Nothing until then:
+  `no_reply`. A next call that reaches nobody ends the task `partial` with what came of it so far.
+- *The requester asks and adds.* An `admin` asks on the phone or in Brain Assist ("Hat das Restaurant
+  zurückgerufen?", tool `task_edit` with `status`: status, last step, result) or adds a step to an open task ("Ruf
+  nochmal an, wir sind doch zu sechst", `task_edit` with `add_step`). A step is read back and stored only after a yes,
+  checked in code like `plan_call`; a changed `may_accept`, `may_share` or time window is named explicitly. With
+  `call` (default) the task is called again, without it the step waits for the next call or call back. A running or
+  finished task gets no step; for a finished one Claudine plans a new call with `previous_task`, so the new call knows
+  the old history (kept as a copy with the new task).
+- *Limit.* `task_max_steps` (default 6): calls that reached someone plus steps of the requester. The last step can
+  only end the task; what is open is reported.
+
+A task settled in one call behaves as before: one call, evaluation, report. Tasks stored before 1.16.0 load with a
+history from their result and the contact found by their number; a `message_left` whose window is not over waits.
 
 A mailbox is recognized by its announcement ("Mailbox", "Mobilbox", "Anrufbeantworter", "nach dem Ton", "voicemail",
 "after the tone" …) while the call opens, which lasts until the callee answers something Claude said: nothing is played into the announcement (no thinking sounds), Claude
@@ -490,12 +525,13 @@ dropped utterance is logged with its text (`Dropped what … said …: “…”
   `book_title` one appointment with exactly this title in a free time of these days. "Lies mir Jans Termine vor" or
   "Schalte die Heizung aus" find no tool. Claudine is told what she may share (`may_share`) and agree to
   (`may_accept`); anything else stays open.
-- *Follow-up* (after hang-up, without the callee): Claude gets the plan, the transcript and only the tools that the
-  follow-up steps of the plan name, out of `ha_create_event`, `ha_events`, `shopping_edit`, `shopping_list` and `web`
-  (web search, if `web_access` is on). Never `ha_control`. The transcript and web pages are data: a step that the call
-  did not settle clearly is not done but reported as open. At most 40 changes per task.
+- *Evaluation* (after each call, without the callee): Claude gets the plan, the history, the transcript and only
+  `task_result`, `next_call` and the tools that the follow-up steps of the plan name, out of `ha_create_event`,
+  `ha_events`, `shopping_edit`, `shopping_list` and `web` (web search, if `web_access` is on). Never `ha_control`.
+  Transcripts and web pages are data: a step that the call did not settle clearly is not done but reported as open,
+  and anything outside `may_accept` is not agreed. At most 40 changes per evaluation.
 
-**Result.** Status `done`, `partial`, `failed`, `not_reached`, `message_left` or `cancelled`, a summary, the
+**Result.** Status `done`, `partial`, `failed`, `not_reached`, `no_reply` or `cancelled`, a summary, the
 collected answers, each follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks
 for 30 days), sent to `notify_services`, fired as event `braincall_task_finished` (`id`, `status`, `number`, `name`,
 `task`, `requester`, `requester_ha_user`, `attempts`, `summary`, `answers`, `steps`, `open_points`) and, with `call_back`, reported in a
@@ -519,7 +555,7 @@ ends as `failed` and is reported.
   refused unless the requester explicitly overrides it (`override_do_not_call`).
 
 In Home Assistant, Brain Assist (0.3.0 or newer) offers the action `brainassist.call` and a to-do list of the tasks;
-deleting an item there cancels the planned task.
+deleting an item there cancels the planned (or waiting) task.
 
 Not part of this yet: phone menus (DTMF) and hold queues, opening hours, and a second call while the requester stays
 on the line.

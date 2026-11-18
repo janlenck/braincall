@@ -181,6 +181,9 @@ configuration:
     description: Most further attempts a task may ask for if nobody is reached.
   task_retry_minutes:
     name: Pause between attempts (minutes)
+  task_max_steps:
+    name: Most steps per task
+    description: Calls that reached someone, plus steps the requester adds. After that the task ends with what it has. Attempts without an answer do not count.
   outbound_hours:
     name: Hours for planned calls
     description: e.g. 09:00-20:00; planned calls are only made in this time of day. Empty = any time.
