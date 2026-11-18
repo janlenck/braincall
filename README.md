@@ -44,6 +44,8 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/assist.py` | Brain Assist: who a request of Home Assistant's assistant comes from (`ha_user`, `ha_device`), the conversations, the answer stream of `POST /api/converse` |
 | `app/discovery.py` | as an add-on: tells Home Assistant where the API is and its token, so Brain Assist needs nothing typed |
 | `app/rights.py` | what a person may do, in words for Claude; the stricter of two access sets |
+| `app/contacts.py` | contacts (`contacts.json`): move from `callers`, checks, changes without restart, `contact_edit` |
+| `app/web/contacts.html` | the contacts page (plain HTML and JavaScript, texts in de, en, uk, it, es, fr) |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
 | `firewall.ps1` | Windows firewall rules (run as administrator) |
 | `braincall/` | Home Assistant add-on: options form, Dockerfile, documentation |
@@ -86,17 +88,48 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 
 ## Callers and permissions
 
-`callers` is the one list of who may call and what they may do, incoming and outgoing (and who may use
-[Brain Assist](#brain-assist), with `ha_user` / `ha_device`):
+The **contacts** are who may call and what they may do, incoming and outgoing (and who may use
+[Brain Assist](#brain-assist), with `ha_user` / `ha_device`). Since 1.15 they are in `contacts.json` in the log
+folder (add-on: its config folder, part of Home Assistant's backups), one entry per person:
 
 ```json
-"callers": [
-  { "number": "0151xxxxxxx", "name": "Jan Mobile", "access": "admin" },
-  { "number": "0170xxxxxxx", "name": "Maryna", "access": "calendar", "language": "uk",
-    "instructions": "If Jan is free, book her wish date titled \"Maryna comes\"." },
-  { "number": "*", "name": "Unknown", "access": "guest" }
-]
+{"contacts": [
+  {"id": "c1a2", "name": "Jan", "numbers": [{"number": "0151xxxxxxx", "label": "Handy"},
+                                           {"number": "04542xxxxx", "label": "laut"}],
+   "email": "jan@example.com", "ha_user": "jan", "access": ["admin"], "origin": "settings", "added": "2026-11-18"},
+  {"id": "m3x8", "name": "Maryna", "numbers": [{"number": "0170xxxxxxx"}], "access": ["calendar"],
+   "language": "uk", "instructions": "If Jan is free, book her wish date titled \"Maryna comes\".",
+   "origin": "settings", "added": "2026-11-18"}
+]}
 ```
+
+- **Edit them** on the contacts page: in Home Assistant the entry *Brain Call* in the sidebar (administrators only),
+  without Home Assistant `http://<host>:8099/contacts` with the API token. Proper fields: numbers with a label and
+  an order, rights as checkboxes, Home Assistant user and device as choices, language as a choice. Or by voice,
+  as an `admin` on the phone or in Brain Assist: "Speicher Willi mit Handynummer 0170 …", "Jan hat eine neue
+  Büronummer", "Mach aus Jan laut bei Jan das Telefon laut" (merge), "Was hast du für Willi gespeichert?". Every
+  change by voice is read back and stored only after a yes; `admin` is never given or taken by voice. Or by hand
+  in the file.
+- **No restart:** every change (page, voice, by hand) applies from the next call or Assist request.
+- **The file is lean:** only what differs from the default is written (no empty texts, no `null`, no empty
+  `label`, no `"access": ["guest"]`, no `language` equal to the system language).
+- **Names are unique** (without regard to case), so "Ruf Jan an" means one person. A number and a mail address
+  belong to one contact only.
+- **Several numbers per person:** a call from any of them is that person, with one memory. The log and the
+  notification name the phone ("Jan (laut)"), everything said to others only the person ("im Auftrag von Jan").
+  "Ruf Jan an" calls the first number, "Ruf Jan im Büro an" the one labelled so.
+- **First start of 1.15:** the people of the setting `callers` move into `contacts.json` (their `number` becomes
+  the first entry of `numbers`; a second entry with the same name gets "(2)", see the log). As an add-on `callers`
+  is then emptied; with a `config.json` of your own the file is never rewritten, the log asks you to remove them.
+- `callers` keeps only the **rules for everyone else**, the `"*"` entries: `{"number": "*", "access": "guest"}`
+  for unknown numbers, `{"ha_user": "*" …}` / `{"ha_device": "*" …}` for Brain Assist. Without a `"*"` number
+  unknown numbers are rejected.
+- **Contacts from planned calls:** planning a call to a number that is no contact yet saves it as a contact
+  (`guest`, `origin: task`) with the yes to the plan, so a call back is recognized and "Ruf das Restaurant nochmal
+  an" needs no search. A number the callee gives during the call is not saved without a request.
+- **Language:** `language` is the language a call with this person starts in, any two-letter code. After a call in
+  which the person spoke another language for most of it and at its end, it is updated by itself (logged:
+  `Contact Jan: language de → en`); the system language is left out.
 
 - `access` (several possible, `"shopping, calendar"` or a list) decides which tools Claude gets in the call.
   The code enforces it, not the prompt: a caller cannot talk the assistant into more.
@@ -117,7 +150,7 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
 - `web` (`true`/`false`) overrides who may search the web (see [Web search](#web-search)); default: `admin` and
   `read`. Guests and the `"*"` entry never get it.
 - `instructions` are appended to the prompt for this caller; they can narrow, not widen, the access.
-- `language` fixes the language of this caller.
+- `language`: the language calls with this person start in (see above).
 - Numbers are compared completely; `+49…`, `0049…` and `0…` count as the same (`country_code`).
   A listed number wins over `"*"`. Without `"*"` unknown numbers are rejected.
 - Withheld numbers are never answered: the call is rejected right away, logged as unknown and reported
@@ -129,8 +162,8 @@ Keys in the agent window: `X` quit, `A` test call to `default_number`, `L` open 
   [Brain Assist](#brain-assist) conversation per person in `logs/calls.jsonl` and gives the last three calls and
   the last three Assist conversations to Claude the next time, e.g. so Maryna does not have to repeat last
   week's date. `30` keeps only the last 30 days (older entries are deleted), `"forever"` has no age limit.
-  - A summary is stored under the number and under `ha_user` of the caller's entry, and found by either: an
-    entry with both has one memory on the phone and in Assist. A voice device without a user (`ha_device`) has
+  - A summary is stored under the number, the contact and `ha_user` of the caller's entry, and found by any of
+    them and by every number of the contact: a contact has one memory on all phones and in Assist. A voice device without a user (`ha_device`) has
     its own memory. Lines from before 1.12 have only the number and are found the same way; nothing is migrated.
   - An Assist conversation is summarized when it is over: 15 minutes after its last request, or as soon as the
     same user starts a new one on the same device (one more short request to Claude each). Conversations still
@@ -390,10 +423,12 @@ the caller said something in reply (a `confirmed=true` from the model alone is n
 the plan that was read back: another number, time window, grant or follow-up tool is read back again.
 One line: the planned call starts after the requester hung up.
 
-The callee is any number the rules below allow, or a person from `callers` by name ("Ruf Mark an"): their number is
-taken from the entry. A name that is not unique among the entries with a number, or a person without a number, is
-refused and Claudine asks for the number. The requester is always a person: their `callers` entry, found by the phone
-number or, in [Brain Assist](#brain-assist), by the Home Assistant user. Someone without a number in their entry (a
+The callee is any number the rules below allow, or a contact by name ("Ruf Mark an"): their first number, or with
+`phone` the one with that label ("Ruf Mark im Büro an"; read back as "Mark (Büro)"). A contact without a number, or a
+label that fits none, is refused and Claudine asks. A number that is no contact yet becomes one with the yes to the
+plan (see [Callers and permissions](#callers-and-permissions)); if the name belongs to another contact, Claudine asks
+first. The requester is always a person: their contact, found by any of their phone numbers or, in
+[Brain Assist](#brain-assist), by the Home Assistant user. Someone without a number in their entry (a
 dashboard user) gets the result as notification and event, never by call back.
 
 In Brain Assist an `admin` plans calls the same way, by voice or in the chat, with the same read-back and yes; a voice
@@ -410,8 +445,8 @@ curl -X POST http://127.0.0.1:8099/api/tasks -H "Authorization: Bearer <token>" 
   "requester": "0151 1234567", "call_back": true, "not_after": "2026-11-10T19:00"}'
 ```
 
-Instead of `number`, `name` alone calls a person from `callers`. The requester is `requester` (a number from
-`callers`) or `requester_user_id` / `requester_user_name` (a Home Assistant user, as Brain Assist sends it); without
+Instead of `number`, `name` alone (and `phone` for a label) calls a contact; a `number` with a `name` that is no
+contact yet is saved as one. The requester is `requester` (a number of a contact) or `requester_user_id` / `requester_user_name` (a Home Assistant user, as Brain Assist sends it); without
 any of them it is the owner.
 
 With only `number` and `task` Claude turns the text into a plan. Every field of the plan can also be given directly
@@ -511,6 +546,8 @@ such requests now get `401`, add the header.
 | `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
 | `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
 | `DELETE /api/memory?number=…` / `ha_user=…` / `ha_device=…` | forgets what is remembered of a person; answers `{"forgotten": n}` |
+| `GET /contacts` | the contacts page (asks for the token once) |
+| `GET /api/contacts`, `POST /api/contacts`, `PUT` / `DELETE /api/contacts/<id>`, `POST /api/contacts/<id>/merge` `{"other": id}` | [contacts](#callers-and-permissions); a refused change answers `400 {"errors": [{"field", "code", …}]}`, deleting a contact an open planned call needs `409` |
 
 `/tasks` and `/shopping/…` without `/api` still work.
 

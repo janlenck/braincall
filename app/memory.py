@@ -21,7 +21,7 @@ log = logging.getLogger("memory")
 
 KEEP = 3            # summaries given to Claude: the most recent ones of calls, and as many of Assist conversations
 MAX_CHARS = 800     # per summary, so old entries cannot crowd out the conversation
-KEYS = ("number", "ha_user", "ha_device")   # what a summary is stored under and found by
+KEYS = ("number", "ha_user", "ha_device", "contact")   # what a summary is stored under and found by
 PHONE = "phone"
 CHANNELS = (PHONE, "assist-voice", "assist-text")
 
@@ -56,12 +56,17 @@ def _covers(current: frozenset, recorded: frozenset) -> bool:
 
 
 def who(caller: dict | None, number: str = "") -> dict:
-    """Whom a phone call was with, for add() and recent(): the number, and the Home Assistant user of the
-    caller's entry so that Brain Assist finds the same notes. The "*" entry stands for many people: only the
-    number counts there."""
+    """Whom a phone call was with, for add() and recent(): the number, the contact (#93) and the Home Assistant user
+    of the caller's entry, so that the notes of all their numbers and of Brain Assist are found. The "*" entry
+    stands for many people: only the number counts there."""
     user = str((caller or {}).get("ha_user") or "").strip()
     listed = bool(caller) and caller.get("number") != "*"
-    return {"number": number, "ha_user": user if listed and user != "*" else ""}
+    out = {"number": number, "ha_user": user if listed and user != "*" else ""}
+    if listed and caller.get("id"):
+        out["contact"] = caller["id"]
+    if listed and len(caller.get("numbers") or []) > 1:  # notes from their other phones, too
+        out["numbers"] = [n["number"] for n in caller["numbers"]]
+    return out
 
 
 class CallMemory:
@@ -87,18 +92,24 @@ class CallMemory:
         return config.norm_number(number, self.country_code)
 
     def _keys(self, whom) -> dict:
-        """whom (a number, or {"number", "ha_user", "ha_device"}) in the form it is stored and compared:
-        the number normalized, names and ids without regard to case. Only what is set."""
+        """whom (a number, or {"number", "ha_user", "ha_device", "contact", "numbers"}) in the form it is stored and
+        compared: numbers normalized, names and ids without regard to case. Only what is set. "numbers" (all
+        numbers of the contact) is only for finding: lines from before contacts have just the number called from."""
         whom = whom if isinstance(whom, dict) else {"number": whom}
         keys = {"number": self._key(whom.get("number") or ""),
                 "ha_user": str(whom.get("ha_user") or "").strip().casefold(),
-                "ha_device": str(whom.get("ha_device") or "").strip().casefold()}
-        return {k: v for k, v in keys.items() if v}
+                "ha_device": str(whom.get("ha_device") or "").strip().casefold(),
+                "contact": str(whom.get("contact") or "").strip()}
+        keys = {k: v for k, v in keys.items() if v}
+        numbers = {self._key(n) for n in whom.get("numbers") or []} - {""}
+        if numbers:
+            keys["numbers"] = numbers
+        return keys
 
     @staticmethod
     def _same(entry: dict, keys: dict) -> bool:
-        """An entry belongs to someone if any of its keys is theirs."""
-        return any(entry.get(k) == v for k, v in keys.items())
+        """An entry belongs to someone if any of its keys is theirs (any of their numbers, too)."""
+        return any(entry.get("number") in v if k == "numbers" else entry.get(k) == v for k, v in keys.items())
 
     def _fresh(self, when: datetime | None, now: datetime) -> bool:
         if when is None:
@@ -143,6 +154,9 @@ class CallMemory:
             return
         now = now or datetime.now(timezone.utc)
         when = when or now
+        keys.pop("numbers", None)  # only for finding; stored is the number of this call
+        if not keys:
+            return
         entry = {"time": when.isoformat(timespec="seconds"), **keys}
         if channel == PHONE:
             entry["direction"] = "in" if inbound else "out"
@@ -184,6 +198,25 @@ class CallMemory:
         calls = [e for e in found if e.get("channel", PHONE) == PHONE][-KEEP:]
         chats = [e for e in found if e.get("channel", PHONE) != PHONE][-KEEP:]
         return [{**e, "summary": e["summary"][:MAX_CHARS]} for e in found if any(e is x for x in calls + chats)]
+
+    def rekey(self, whom, contact: str) -> int:
+        """Puts the summaries of whom (a contact merged into another, contacts.merge) under the contact id of the
+        one it was merged into, so they are found through it. Returns how many. Works whatever caller_memory is."""
+        keys = self._keys(whom)
+        if not (keys and contact):
+            return 0
+        with self.lock:
+            if not self.path.exists():
+                return 0
+            entries, _ = self._load()
+            moved = 0
+            for e in entries:
+                if self._same(e, keys) and e.get("contact") != contact:
+                    e["contact"] = contact
+                    moved += 1
+            if moved:
+                self._save(entries)
+            return moved
 
     def forget(self, whom) -> int:
         """Deletes everything remembered of a person (by number, ha_user or ha_device). Returns how many

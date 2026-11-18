@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 
 import config
+import contacts as contacts_mod
 import tasks as tasks_mod
 import web as web_mod
 
@@ -405,8 +406,42 @@ CLASSIFY_SCHEMA = {
 }
 READ_TOOLS = [TOOL_SEARCH, TOOL_LIST, TOOL_STATE, TOOL_FORECAST, TOOL_ENERGY, TOOL_STATISTICS, TOOL_HISTORY,
               TOOL_AUTOMATION, TOOL_AUTOMATIONS, TOOL_EVENTS]
+TOOL_CONTACT_EDIT = {
+    "name": "contact_edit",
+    "description": "Shows or changes the contacts (the people and businesses the phone knows). action show: what is "
+                   "stored for name. add: a new contact. change: change the contact name (new_name, numbers, mail, "
+                   "language, rights, instructions). delete: delete it. merge: merge the contact merge_from into "
+                   "name (e.g. 'Jan laut' into 'Jan', its number gets the label 'laut'). Every change: call it "
+                   "first without confirmed, the phone system checks it and tells you what to read back; only after "
+                   "the caller said yes, call it again with the same values and confirmed=true. Rights can be read, "
+                   "calendar and shopping, never admin (that is set on the contacts page in Home Assistant).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["show", "add", "change", "delete", "merge"]},
+            "name": {"type": "string", "description": "the contact, as it is called"},
+            "new_name": {"type": "string", "description": "change: the new name"},
+            "add_numbers": {"type": "array", "description": "numbers to add; a label that the contact already has "
+                                                           "replaces that number (a new office number)",
+                            "items": {"type": "object", "properties": {"number": {"type": "string"},
+                                                                       "label": {"type": "string"}},
+                                      "required": ["number"]}},
+            "remove_numbers": {"type": "array", "items": {"type": "string"},
+                               "description": "numbers or labels to remove"},
+            "email": {"type": "string", "description": "the mail address; empty removes it"},
+            "language": {"type": "string", "description": "two-letter code of the language calls start in, e.g. "
+                                                          "uk, it; empty = the system language"},
+            "rights": {"type": "array", "items": {"type": "string", "enum": ["read", "calendar", "shopping"]},
+                       "description": "the complete new rights; empty list = guest"},
+            "instructions": {"type": "string", "description": "notes for calls with this contact; empty removes them"},
+            "merge_from": {"type": "string", "description": "merge: the contact merged into name"},
+            "confirmed": {"type": "boolean", "description": "only true after the caller said yes to the read-back"},
+        },
+        "required": ["action", "name"],
+    },
+}
 # recorded for the summary after the call, and only run for words the caller really finished saying
-MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call")
+MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit")
 ADMIN = frozenset({"admin"})
 MAX_FOLLOW_REQUESTS = 12   # requests of one follow-up after a planned call
 MAX_FOLLOW_CHANGES = 40    # changing tool calls of one follow-up (e.g. ingredients added to the shopping list)
@@ -473,12 +508,6 @@ _SMILEY = re.compile(r"(?<!\S)[:;]-?[)(DPp](?!\w)")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")      # [Baumarkt Mölln](https://…) -> Baumarkt Mölln
 _URL = re.compile(r"\(?\b(?:https?://|www\.)[^\s)]*\)?")  # URLs are never read out
 _FAKE_HANGUP = re.compile(r"\[[^\]]*(tool call|hang_up|auflegen)|(hang_up|auflegen)\]")
-
-
-def config_same(cfg, a: str, b: str) -> bool:
-    """Whether two numbers are the same line (see config.norm_number)."""
-    na = config.norm_number(a, cfg.country_code)
-    return bool(na) and na == config.norm_number(b, cfg.country_code)
 
 
 class SentenceSplitter:
@@ -595,6 +624,7 @@ class Brain:
         self.tool_busy = {**TOOL_BUSY, "description": TOOL_BUSY["description"].replace("{owner}", owner)}
         self.web_budget = web_mod.Budget(cfg)
         self.tasks = None  # tasks.TaskStore while planned calls are on (set by main)
+        self.contacts = None  # contacts.Contacts (set by main): contact_edit for admins
         self.shopping = None  # shopping.Shopping while the automatic shopping list is on (set by main)
 
     def tools_for(self, access, web=None, messages=None, limits=None, grants=None) -> list:
@@ -615,6 +645,8 @@ class Brain:
                 tools.append(TOOL_CREATE_EVENT)
         if self.planning(access):
             tools.append(tasks_mod.TOOL_PLAN_CALL)
+        if self.contacts is not None and "admin" in access:
+            tools.append(TOOL_CONTACT_EDIT)
         if web_mod.allowed(self.cfg, access, web):
             search, fetch, _ = limits or web_mod.turn_limits(self.cfg, self.web_budget, messages or [])
             tools = tools + web_mod.tools(self.cfg, search, fetch)
@@ -792,15 +824,28 @@ class Brain:
         if self.tasks.blocked(task["number"]) and not data.get("override_do_not_call"):
             return ("Not planned: this number asked not to be called again. Tell the caller; only if they explicitly "
                     "want to call anyway, call plan_call again with override_do_not_call=true.")
-        known = any(c["number"] != "*" and config_same(self.cfg, c["number"], task["number"])
+        known = any(c["number"] != "*" and config.has_number(c, task["number"], self.cfg.country_code)
                     for c in self.cfg.callers or [])
+        new_contact, refusal = self.contact_for_task(task, known)
+        if refusal:
+            return refusal
         pending = counters.setdefault("plan_confirm", {})
         key = tasks_mod.confirm_key(task, self.cfg, data) + str(bool(data.get("override_do_not_call")))
         if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
             task = pending.pop(key)[1]  # the plan as it was read back, not this call's wording of it
+            # the contact as read back with it, not from this call's wording (name, language)
+            new_contact, refusal = self.contact_for_task(task, any(
+                c["number"] != "*" and config.has_number(c, task["number"], self.cfg.country_code)
+                for c in self.cfg.callers or []))
+            if refusal:
+                return refusal
             if data.get("override_do_not_call"):
                 self.tasks.unblock(task["number"])
             self.tasks.add(task)
+            if new_contact:  # every task has a contact as its anchor (#93): called back, called again by name
+                saved, errors = self.contacts.save(new_contact, origin="task")
+                if errors:
+                    log.info("Contact for task %s not saved: %s", task["id"], contacts_mod.problems(errors))
             soon = datetime.fromisoformat(task["next_try"]) <= now
             if (call or {}).get("channel") in ASSIST_HEAD:  # no line of this conversation is in the way
                 return (f"Stored (task {task['id']}). " + ("The call starts in a moment." if soon else
@@ -810,7 +855,122 @@ class Brain:
                                                         "say goodbye and hang up." if soon else
                                                         f"You will call {tasks_mod.when(task, self.cfg)}."))
         pending[key] = (len(messages), task)
-        return tasks_mod.read_back(task, self.cfg, known)
+        return tasks_mod.read_back(task, self.cfg, known) + (
+            f" With the yes you also save {new_contact['name']} as a new contact with this number." if new_contact
+            else "")
+
+    def contact_for_task(self, task: dict, known: bool) -> tuple[dict | None, str]:
+        """The contact a planned call to a number nobody has yet creates (#93): (contact data, "") or (None, "") if
+        none is made (known number, no name, no contacts), or (None, why not planned) if the name is taken by
+        another contact."""
+        if known or self.contacts is None or not task.get("name"):
+            return None, ""
+        other = self.contacts.by_name(task["name"])
+        if other is not None:
+            return None, (f"Not planned: there is already a contact named {other['name']} with other numbers "
+                          f"({contacts_mod.describe(other, self.cfg.language or '')}). Ask whether this is one of "
+                          "their numbers (then add it with contact_edit first and plan the call by name and phone) "
+                          "or someone else (then give them a name that tells them apart).")
+        data = {"name": task["name"], "numbers": [{"number": task["number"]}], "language": task.get("language") or ""}
+        wanted, errors = self.contacts.preview(data, origin="task")
+        if errors:
+            return None, f"Not planned: the callee cannot be saved as a contact: {contacts_mod.problems(errors)}."
+        return data, ""
+
+    def _contact_edit(self, block, tools: list, messages: list, counters: dict) -> str:
+        """contact_edit (admins): shows a contact, or checks a change and stores it only once the caller said
+        something after it was read back (like plan_call). Never gives or takes admin."""
+        log.debug("Tool %s %s", block.name, block.input)
+        store = self.contacts
+        if block.name not in {t["name"] for t in tools} or store is None:
+            return "Not allowed in this call."
+        data = block.input or {}
+        action = str(data.get("action") or "").strip()
+        name = " ".join(str(data.get("name") or "").split())
+        target = store.by_name(name) if name else None
+        lang = self.cfg.language or ""
+        names = ", ".join(c["name"] for c in store.all()[:40])
+        if action == "show":
+            return contacts_mod.describe(target, lang) if target else f"No contact named {name!r}. Contacts: {names}."
+        if action in ("change", "delete", "merge") and target is None:
+            return f"No contact named {name!r}: ask which one is meant. Contacts: {names}."
+        if action == "add" and target is not None:
+            return (f"There is already a contact named {target['name']} ({contacts_mod.describe(target, lang)}). "
+                    "Change that one, or ask for a name that tells them apart.")
+        if action not in ("add", "change", "delete", "merge"):
+            return "Unknown action."
+        other = None
+        if action == "merge":
+            other = store.by_name(str(data.get("merge_from") or ""))
+            if other is None or other["id"] == target["id"]:
+                return f"No other contact named {data.get('merge_from')!r} to merge. Contacts: {names}."
+            if ("admin" in (target.get("access") or [])) != ("admin" in (other.get("access") or [])):
+                return ("Not merged: one of them is an admin and the other is not, so merging would give or take "
+                        "admin rights. That is only done on the contacts page in Home Assistant.")
+        wanted = None
+        if action in ("add", "change"):
+            base = json.loads(json.dumps(target)) if target else {"name": name, "numbers": [], "access": []}
+            if "admin" in (base.get("access") or []) and data.get("rights") is not None:
+                return "Not changed: the rights of an admin are only changed on the contacts page in Home Assistant."
+            if str(data.get("new_name") or "").strip():
+                base["name"] = data["new_name"]
+            numbers = config.entry_numbers(base)
+            drop = {str(x).strip().casefold() for x in data.get("remove_numbers") or [] if str(x).strip()}
+            drop_keys = {config.norm_number(x, self.cfg.country_code) for x in drop} - {""}
+            numbers = [n for n in numbers if n["label"].casefold() not in drop
+                       and config.norm_number(n["number"], self.cfg.country_code) not in drop_keys]
+            for n in data.get("add_numbers") or []:
+                number, label = str(n.get("number") or "").strip(), str(n.get("label") or "").strip()
+                if not number:
+                    continue
+                same = next((x for x in numbers if label and x["label"].casefold() == label.casefold()), None)
+                if same:
+                    same["number"] = number
+                else:
+                    numbers.append({"number": number, "label": label})
+            base["numbers"] = numbers
+            for key in ("email", "language", "instructions"):
+                if data.get(key) is not None:
+                    base[key] = data[key]
+            if data.get("rights") is not None:
+                rights = [r for r in data["rights"] if r in ("read", "calendar", "shopping")]
+                if len(rights) != len([r for r in data["rights"] if r != "guest"]):
+                    return "Not changed: admin is only given on the contacts page in Home Assistant."
+                base["access"] = rights
+            wanted, errors = store.preview(base, target["id"] if target else "", origin="request")
+            if errors:
+                return "Not stored: " + contacts_mod.problems(errors, base["numbers"]) + "."
+        if action == "delete" or action == "merge":
+            busy = store.in_use(target if action == "delete" else other)
+            if busy:
+                return f"Not possible now: an open planned call needs this contact ({busy})."
+        pending = counters.setdefault("contact_confirm", {})
+        key = json.dumps([action, target["id"] if target else "", other["id"] if other else "",
+                          {k: v for k, v in (wanted or {}).items() if k not in ("id", "added")}], sort_keys=True)
+        if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key]):
+            del pending[key]
+            if action == "delete":
+                why = store.delete(target["id"])
+                return f"Not deleted: {why}." if why else f"Deleted {target['name']}. Tell the caller briefly."
+            if action == "merge":
+                merged, why = store.merge(target["id"], other["id"])
+                return (f"Not merged: {why}." if merged is None else
+                        f"Merged: {contacts_mod.describe(merged, lang)}. Tell the caller briefly.")
+            stored, errors = store.save(wanted, target["id"] if target else "", origin="request")
+            if errors:
+                return "Not stored: " + contacts_mod.problems(errors, wanted.get("numbers")) + "."
+            return f"Stored: {contacts_mod.describe(stored, lang)}. Tell the caller briefly; it applies at once."
+        pending[key] = len(messages)
+        if action == "delete":
+            what = f"delete the contact {target['name']} ({contacts_mod.describe(target, lang)})"
+        elif action == "merge":
+            what = (f"merge {other['name']} into {target['name']}: {target['name']} then has the numbers "
+                    + ", ".join(n["number"] for n in config.entry_numbers(target) + config.entry_numbers(other)))
+        else:
+            what = ("add the contact " if action == "add" else "change the contact to ") + \
+                contacts_mod.describe(wanted, lang)
+        return (f"Checked, NOT stored yet. Read it back briefly: you will {what}. Only after a yes, call "
+                "contact_edit again with the same values and confirmed=true. Read numbers digit by digit.")
 
     @staticmethod
     def _repair(messages: list):
@@ -872,8 +1032,9 @@ class Brain:
         """After web content entered the conversation, a changing tool only runs with confirmed=true after the
         caller said something since the tool was last refused (a web page cannot confirm for the caller).
         Returns "" (go ahead) or the refusal for Claude."""
-        if block.name not in MUTATING or block.name == "plan_call" or not web_mod.has_content(messages):
-            return ""  # plan_call always asks first (_plan_call), e.g. for a number found on the web
+        if block.name not in MUTATING or block.name in ("plan_call", "contact_edit") \
+                or not web_mod.has_content(messages):
+            return ""  # plan_call and contact_edit always ask first, e.g. for a number found on the web
         pending = counters.setdefault("web_confirm", {})
         key = self._confirm_key(block)
         if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,
@@ -1043,6 +1204,7 @@ class Brain:
                 else:
                     t0 = time.monotonic()
                     out = (self._plan_call(b, tools, messages, counters, call) if b.name == "plan_call"
+                           else self._contact_edit(b, tools, messages, counters) if b.name == "contact_edit"
                            else self._run_tool(b, tools, access, counters, call))
                     if after_tool is not None:
                         after_tool(b.name, time.monotonic() - t0)
@@ -1064,7 +1226,7 @@ class Brain:
 
     def summarize(self, transcript: list, caller: str, actions: list, language: str = "de",
                   outbound: bool = False, mailbox: bool = False, channel: str = "phone",
-                  unanswered: bool = False) -> str:
+                  unanswered: bool = False, spoken: dict | None = None) -> str:
         """Short summary of a finished call for the owner, translated into their language.
         caller: the other party; outbound: the assistant made the call; mailbox: the phone system recognized a
         mailbox announcement (CallSession.mailbox); unanswered: an outbound call in which the other side answered
@@ -1114,9 +1276,20 @@ class Brain:
                   f"{'Called' if outbound else 'Caller'}: {caller}\n"
                   f"Actions: {'; '.join(actions) or 'none'}\n"
                   "Transcript:\n" + "\n".join(transcript))
+        if spoken is not None:  # the contact's language for the next call (#93)
+            prompt += ("\n\nAfter the summary, on a line of its own, write LANGUAGE: and the two-letter ISO 639-1 "
+                       f"code of the language {caller} spoke for most of the call and at its end (e.g. LANGUAGE: "
+                       "en), or LANGUAGE: none if unclear.")
         msg = self.client.messages.create(model=self.cfg.claude_model, max_tokens=600,
                                           messages=[{"role": "user", "content": prompt}])
-        return "".join(b.text for b in msg.content if b.type == "text").strip()
+        text = "".join(b.text for b in msg.content if b.type == "text").strip()
+        if spoken is not None:
+            found = re.search(r"^\s*LANGUAGE:\s*([a-z]{2,3}|none)\s*$", text, re.M | re.I)
+            if found:
+                code = found.group(1).lower()
+                spoken["language"] = "" if code == "none" else code
+            text = re.sub(r"^\s*LANGUAGE:.*$", "", text, flags=re.M | re.I).strip()
+        return text
 
     def classify_products(self, names: list) -> dict:
         """What kind of product each name of the shopping list is (rhythm list, #70): staple, consumable or

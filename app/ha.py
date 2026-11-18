@@ -766,6 +766,50 @@ class HA:
             log.debug("auth/current_user: %s", e)
             return None
 
+    def user_admin(self, user_id: str):
+        """Whether this Home Assistant user is an administrator (True/False), None if unknown (the token may not
+        list users). For the contacts page: Home Assistant shows it to administrators only (panel_admin), and this
+        keeps others out who open its address directly."""
+        try:
+            with self._ws() as call:
+                users = call("config/auth/list") or []
+        except (HAError, OSError, websocket.WebSocketException) as e:
+            log.debug("config/auth/list: %s", e)
+            return None
+        user = next((u for u in users if u.get("id") == user_id), None)
+        if user is None:
+            return False
+        return bool(user.get("is_admin")) or "system-admin" in (user.get("group_ids") or [])
+
+    def people_and_devices(self) -> dict:
+        """Choices for the contacts page: the persons with a user ({"value": user id, "label": name}), and the
+        devices and areas ({"value": id, "label": name}). Whatever cannot be read stays empty."""
+        out = {"users": [], "devices": []}
+        try:
+            for s in self._states():
+                attrs = s.get("attributes") or {}
+                if s["entity_id"].startswith("person.") and attrs.get("user_id"):
+                    out["users"].append({"value": attrs["user_id"],
+                                         "label": attrs.get("friendly_name") or s["entity_id"][7:]})
+        except (HAError, OSError, ValueError) as e:
+            log.debug("Persons for the contacts page: %s", e)
+        try:
+            with self._ws() as call:
+                areas = {a["area_id"]: a.get("name") or a["area_id"] for a in call("config/area_registry/list") or []}
+                devices = call("config/device_registry/list") or []
+            for area_id, name in sorted(areas.items(), key=lambda a: a[1].casefold()):
+                out["devices"].append({"value": area_id, "label": name, "kind": "area"})
+            for d in sorted(devices, key=lambda d: str(d.get("name_by_user") or d.get("name") or "").casefold()):
+                name = d.get("name_by_user") or d.get("name")
+                if name and not d.get("disabled_by") and d.get("entry_type") != "service":
+                    area = areas.get(d.get("area_id") or "")
+                    out["devices"].append({"value": d["id"], "label": f"{name} ({area})" if area else name,
+                                           "kind": "device"})
+        except (HAError, OSError, websocket.WebSocketException, KeyError, TypeError) as e:
+            log.debug("Devices and areas for the contacts page: %s", e)
+        out["users"].sort(key=lambda u: u["label"].casefold())
+        return out
+
     def _config_rest(self, s: dict) -> dict:
         """Definition of one automation or script from the REST config API (needs the id of automations.yaml)."""
         domain, _, object_id = s["entity_id"].partition(".")

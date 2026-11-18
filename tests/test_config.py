@@ -70,9 +70,10 @@ def test_callers_are_normalised():
         {"number": " 0151 ", "name": " Jan ", "access": "admin", "language": "uk", "notify": True, "web": False},
         {"number": "*", "access": "nonsense", "notify": "yes", "web": "yes"},
     ])
-    assert out[0] == {"number": "0151", "ha_user": "", "ha_device": "", "name": "Jan",
+    assert out[0] == {"id": "", "number": "0151", "numbers": [{"number": "0151", "label": ""}], "email": "",
+                      "ha_user": "", "ha_device": "", "name": "Jan",
                       "access": frozenset({"admin"}), "instructions": "", "language": "uk", "notify": True,
-                      "web": False}
+                      "web": False, "origin": "", "added": ""}
     assert out[1]["access"] == frozenset({"guest"})
     assert out[1]["notify"] is None  # only real booleans count
     assert out[1]["web"] is None
@@ -80,7 +81,7 @@ def test_callers_are_normalised():
 
 def test_callers_without_number_are_dropped():
     assert config._callers([{"name": "Nobody"}, "junk", {"number": ""}]) == []
-    assert len([w for w in config.WARNINGS if "without number" in w]) == 3
+    assert len([w for w in config.WARNINGS if "without number" in w or "not an object" in w]) == 3
 
 
 def test_callers_for_brain_assist_need_no_number():

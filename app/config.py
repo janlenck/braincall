@@ -158,18 +158,46 @@ def parse_access(value) -> frozenset:
     return frozenset(found) or frozenset({"guest"})
 
 
+def entry_numbers(x: dict) -> list[dict]:
+    """The numbers of a callers entry or contact as [{"number", "label"}], in their order: "numbers" (each a dict
+    or a plain string), with an old single "number" first. "*" is no number (it stands for everyone else)."""
+    out = []
+    if not isinstance(x, dict):
+        return out
+    raw = [x.get("number")] + (x.get("numbers") if isinstance(x.get("numbers"), list) else [])
+    for n in raw:
+        number, label = (n.get("number"), n.get("label")) if isinstance(n, dict) else (n, "")
+        number, label = str(number or "").strip(), str(label or "").strip()
+        if number and number != "*" and number not in (o["number"] for o in out):
+            out.append({"number": number, "label": label})
+    return out
+
+
+def is_rule(entry: dict) -> bool:
+    """A callers entry for everyone else ("*" as number, ha_user or ha_device): a rule, not a person."""
+    return "*" in (entry.get("number"), entry.get("ha_user"), entry.get("ha_device"))
+
+
 def _callers(items) -> list:
-    """The entries of callers. One needs a number, or for Brain Assist a Home Assistant user (ha_user: name or id)
-    or device (ha_device: name or id of the device or of its area). An entry without number is never dialed and
-    matches no call."""
+    """The entries of callers (and contacts, contacts.py) as the code uses them. One needs a number, a mail address,
+    or for Brain Assist a Home Assistant user (ha_user: name or id) or device (ha_device: name or id of the device or
+    of its area). An entry without number is never dialed and matches no call.
+    "numbers" holds every number with its label; "number" is the first one (or "*"), for code that needs one."""
     out = []
     for x in items if isinstance(items, list) else []:
-        number, ha_user, ha_device = (str(x.get(k) or "").strip() if isinstance(x, dict) else ""
-                                      for k in ("number", "ha_user", "ha_device"))
-        if not (number or ha_user or ha_device):
-            WARNINGS.append(f"Caller without number, ha_user or ha_device ignored: {x}")
+        if not isinstance(x, dict):
+            WARNINGS.append(f"Caller entry ignored (not an object): {x}")
             continue
-        out.append({"number": number,
+        numbers = entry_numbers(x)
+        star = str(x.get("number") or "").strip() == "*"
+        ha_user, ha_device, email = (str(x.get(k) or "").strip() for k in ("ha_user", "ha_device", "email"))
+        if not (numbers or star or ha_user or ha_device or email):
+            WARNINGS.append(f"Caller without number, mail address, ha_user or ha_device ignored: {x}")
+            continue
+        out.append({"id": str(x.get("id") or "").strip(),
+                    "number": "*" if star else (numbers[0]["number"] if numbers else ""),
+                    "numbers": numbers,
+                    "email": email,
                     "ha_user": ha_user,
                     "ha_device": ha_device,
                     "name": str(x.get("name") or "").strip(),
@@ -177,8 +205,26 @@ def _callers(items) -> list:
                     "instructions": str(x.get("instructions") or "").strip(),
                     "language": str(x.get("language") or "").strip(),
                     "notify": x.get("notify") if isinstance(x.get("notify"), bool) else None,
-                    "web": x.get("web") if isinstance(x.get("web"), bool) else None})
+                    "web": x.get("web") if isinstance(x.get("web"), bool) else None,
+                    "origin": str(x.get("origin") or "").strip(),
+                    "added": str(x.get("added") or "").strip()})
     return out
+
+
+def phone_of(entry: dict | None, number: str, country_code: str = "") -> str:
+    """The label of the entry's number that matches ("laut"); "" if it has none or does not match."""
+    key = norm_number(number, country_code)
+    for n in (entry or {}).get("numbers") or []:
+        if key and norm_number(n["number"], country_code) == key:
+            return n["label"]
+    return ""
+
+
+def has_number(entry: dict | None, number: str, country_code: str = "") -> bool:
+    """Whether one of the entry's numbers is this number ("+49…", "0049…" and "0…" are the same)."""
+    key = norm_number(number, country_code)
+    return bool(key) and any(norm_number(n["number"], country_code) == key
+                             for n in (entry or {}).get("numbers") or [])
 
 
 def _shopping(cfg, data: dict):
@@ -383,6 +429,8 @@ def load() -> Config:
         if os.environ.get(env):
             cfg[key] = os.environ[env]
     cfg["supervisor_token"] = os.environ.get("SUPERVISOR_TOKEN", "")
+    # as written in the settings: contacts.py moves the people into contacts.json and keeps only the "*" rules
+    cfg["callers_raw"] = json.loads(json.dumps(cfg.callers)) if isinstance(cfg.callers, list) else []
     cfg["callers"] = _callers(cfg.callers)
     _shopping(cfg, data)
     if cfg.web_allowed_domains and cfg.web_blocked_domains:
