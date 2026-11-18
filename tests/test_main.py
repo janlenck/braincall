@@ -1025,6 +1025,18 @@ def test_tasks_api_refuses(server, planned):
     assert planned.store.all()[0]["status"] == "planned" and len(planned.store.all()) == 1
 
 
+def test_tasks_api_continues_a_finished_task(server, planned):
+    """#92: previous_task passes the history of a finished task of the same callee on."""
+    old = planned.add()
+    assert server("POST", "/api/tasks", {"name": "Seeblick", "number": "04542 1234", "task": "x", "goal": "x",
+                                         "previous_task": old["id"]})[1]["error"].startswith(
+        f"task {old['id']} is still open")
+    planned.store.cancel(old["id"])
+    status, task = server("POST", "/api/tasks", {"name": "Seeblick", "number": "04542 1234", "task": "x",
+                                                 "goal": "x", "previous_task": old["id"]})
+    assert status == 201 and task["earlier"]["id"] == old["id"] and task["earlier"]["status"] == "cancelled"
+
+
 def test_tasks_api_plans_free_text_with_claude(server, planned, main, monkeypatch):
     monkeypatch.setattr(main.brain, "plan", lambda text, number, name: {
         "number": "0999", "name": "Restaurant Seeblick", "goal": "Reserve a table for 4",

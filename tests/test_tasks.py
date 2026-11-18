@@ -1094,3 +1094,114 @@ def test_a_call_back_refers_to_the_last_call():
     task["steps"][0]["outcome"] = "talked"
     note = tasks.callback_note(task, "Jan", "Büro")
     assert note.startswith("You talked with them before for this task") and "(Büro)" in note
+
+
+# ---------------------------------------------------------------- the requester asks and adds a step (#92)
+def task_edit(id_="e1", **inp):
+    return ToolUseBlock(type="tool_use", id=id_, name="task_edit", input=inp)
+
+
+def waiting_task(brain, **kw):
+    t = brain.tasks.add(build(not_after="2026-11-10T22:00", **kw))
+    brain.tasks.claim(NOON)
+    brain.tasks.record_step(t["id"], ["Seeblick: Ich schaue nach und rufe zurück."], "talked", "Ruft zurück.")
+    brain.tasks.wait(t["id"], {"status": "wait", "summary": "Ruft zurück.", "open_points": ["Tisch für 4"]})
+    return t
+
+
+def test_task_edit_is_for_admins_who_may_plan(brain):
+    assert "task_edit" in names(brain.tools_for(parse_access("admin")))
+    assert "task_edit" not in names(brain.tools_for(parse_access("read")))
+
+
+def test_the_requester_asks_what_became_of_a_task(brain, conversation, today):
+    t = waiting_task(brain)
+    turn(brain, conversation, message(task_edit(action="status", task="seeblick")), message("…"))
+    text = last_result(conversation)
+    assert f"Task {t['id']}: call Restaurant Seeblick" in text and "waiting for a call back until 2026-11-10 22:00" \
+        in text
+    assert "you called them, talked: Ruft zurück." in text and "open: Tisch für 4" in text
+    turn(brain, conversation, message(task_edit(action="status", task="Mark")), message("…"))
+    assert last_result(conversation) == "No such task."
+
+
+def test_a_step_is_read_back_and_stored_after_a_yes(brain, conversation, today):
+    t = waiting_task(brain, may_accept="a table for 4 between 18:00 and 21:00")
+    args = {"action": "add_step", "task": "Seeblick", "text": "Wir sind doch zu sechst.",
+            "may_accept": "a table for 6 between 18:00 and 21:00"}
+    turn(brain, conversation, message(task_edit(**args, confirmed=True)), message("Soll ich?"))
+    read_back = last_result(conversation)
+    assert read_back.startswith("Step checked, NOT stored yet") and "Wir sind doch zu sechst." in read_back
+    assert "CHANGED: from now on you may agree to: a table for 6 between 18:00 and 21:00 (before: a table for 4" \
+        in read_back and "call again as soon as the line is free" in read_back
+    assert brain.tasks.get(t["id"])["status"] == "waiting"  # confirmed=true alone is no yes
+    conversation.append({"role": "user", "content": "Ja."})
+    turn(brain, conversation, message(task_edit(**args, confirmed=True)), message("Mach ich."))
+    assert last_result(conversation).startswith("Stored. The call to Restaurant Seeblick starts")
+    done = brain.tasks.get(t["id"])
+    assert done["status"] == "planned" and done["next_try"] == "2026-11-10T12:00+01:00" and done["tries"] == 0
+    assert done["may_accept"] == "a table for 6 between 18:00 and 21:00"
+    step = done["steps"][-1]
+    assert (step["kind"], step["by"], step["text"]) == ("requester", "Jan Mobile", "Wir sind doch zu sechst.")
+    assert step["changes"] == {"may_accept": "a table for 6 between 18:00 and 21:00"}
+    assert tasks.reached(done) == 2
+    text = tasks.brief(done, "Jan")
+    assert "Jan added to the task since (as much part of it as the rest" in text and "zu sechst" in text
+    assert "You may agree on your own to: a table for 6" in text
+
+
+def test_a_step_without_a_call_keeps_the_task_waiting(brain, conversation, today):
+    t = waiting_task(brain)
+    args = {"action": "add_step", "task": t["id"], "text": "Falls sie zurückrufen: auch draußen ist ok.",
+            "call": False}
+    turn(brain, conversation, message(task_edit(**args)), message("Soll ich?"))
+    assert "Nobody is called for it now" in last_result(conversation)
+    conversation.append({"role": "user", "content": "Ja."})
+    turn(brain, conversation, message(task_edit(**args, confirmed=True)), message("Gut."))
+    assert brain.tasks.get(t["id"])["status"] == "waiting" and len(brain.tasks.get(t["id"])["steps"]) == 2
+
+
+def test_a_finished_or_running_task_gets_no_step(brain, conversation, today):
+    t = brain.tasks.add(build())
+    brain.tasks.claim(NOON)
+    turn(brain, conversation, message(task_edit(action="add_step", task="Seeblick", text="x")), message("…"))
+    assert last_result(conversation) == "Not now: a call of this task is running. Add the step after it."
+    brain.tasks.finish(t["id"], {"status": "done", "summary": "Reserviert."})
+    turn(brain, conversation, message(task_edit(action="add_step", task="Seeblick", text="x")), message("…"))
+    assert f"has ended (done). Plan a new call with plan_call and previous_task={t['id']}" in \
+        last_result(conversation)
+
+
+def test_no_step_after_task_max_steps(brain, conversation, today):
+    brain.cfg["task_max_steps"] = 1
+    waiting_task(brain)
+    turn(brain, conversation, message(task_edit(action="add_step", task="Seeblick", text="x")), message("…"))
+    assert "has had its 1 steps (task_max_steps)" in last_result(conversation)
+
+
+def test_a_new_call_continues_a_finished_task(brain, conversation, today):
+    old = waiting_task(brain)
+    brain.tasks.finish(old["id"], {"status": "partial", "summary": "Kein Tisch für 4 frei.", "open_points": ["x"]})
+    args = plan(goal="Ask again for a table", previous_task=old["id"])
+    turn(brain, conversation, message(plan_call(**args)), message("Stimmt das?"))
+    assert "It continues the earlier task (Reserve a table for 4 tonight)" in last_result(conversation)
+    conversation.append({"role": "user", "content": "Ja."})
+    turn(brain, conversation, message(plan_call(**args, confirmed=True)), message("Tschüss!"))
+    new = next(t for t in brain.tasks.all() if t["id"] != old["id"])
+    assert new["previous"] == old["id"] and new["earlier"]["summary"] == "Kein Tisch für 4 frei."
+    assert new["steps"] == [] and tasks.reached(new) == 0  # the old steps do not count
+    text = tasks.brief(new, "Jan")
+    assert "From the earlier task 2026-11-10 (Reserve a table for 4 tonight, partial): Kein Tisch für 4 frei." \
+        in text and "Ich schaue nach und rufe zurück." in text
+
+
+def test_previous_task_must_be_a_finished_one_of_the_same_callee(brain, conversation, today):
+    open_ = waiting_task(brain)
+    turn(brain, conversation, message(plan_call(**plan(previous_task=open_["id"]))), message("…"))
+    assert "is still open (waiting). Add a step to it with task_edit" in last_result(conversation)
+    brain.tasks.finish(open_["id"], {"status": "done", "summary": "ok"})
+    turn(brain, conversation, message(plan_call(**plan(number="0170222", name="Mark", previous_task=open_["id"]))),
+         message("…"))
+    assert "was with Restaurant Seeblick, not with this callee" in last_result(conversation)
+    turn(brain, conversation, message(plan_call(**plan(previous_task="nope"))), message("…"))
+    assert "there is no task with the id given as previous_task" in last_result(conversation)

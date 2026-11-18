@@ -115,6 +115,8 @@ def tool_key(name: str, data: dict, cfg) -> str:
         return "calendar"
     if name == "ha_create_event":
         return "write" if data.get("confirmed") else "calendar"
+    if name == "task_edit" and data.get("action") == "add_step":
+        return "write" if data.get("confirmed") else ""  # read back first: no phrase before that
     if name in ("shopping_list", "shopping_history"):
         return "list"
     if name in ("shopping_edit", "shopping_rhythm"):

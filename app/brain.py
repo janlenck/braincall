@@ -441,7 +441,9 @@ TOOL_CONTACT_EDIT = {
     },
 }
 # recorded for the summary after the call, and only run for words the caller really finished saying
-MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit")
+MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit",
+            "task_edit")
+ASKING = ("plan_call", "contact_edit", "task_edit")  # read back and stored only after a yes, checked in code
 ADMIN = frozenset({"admin"})
 MAX_FOLLOW_REQUESTS = 12   # requests of one follow-up after a planned call
 MAX_FOLLOW_CHANGES = 40    # changing tool calls of one follow-up (e.g. ingredients added to the shopping list)
@@ -452,6 +454,10 @@ TASKS_PROMPT = """- You can make a call on your own later with plan_call ("Ruf i
   or look it up on the web if you can; never guess a number), the goal, what you may tell the callee, what you may
   agree to on your own, when to call, what to do afterwards and whether to call back with the result. Then call
   plan_call; the phone system checks the plan and tells you what to read back. Store it only after a clear yes.
+- A task can take several calls and stays open until it is settled (waiting for a call back, or a next call).
+  task_edit status tells what became of the tasks ("Hat das Restaurant zurückgerufen?"); task_edit add_step adds
+  something to an open task ("Ruf nochmal an, wir sind doch zu sechst"), read back and stored after a yes like a
+  plan. For a task that has ended, plan a new call with plan_call and previous_task, so the call knows the old one.
   While this call lasts the line is busy: after planning a call that should start now, say goodbye and hang up.
 """
 # The same in Brain Assist: there is no line of this conversation, so the planned call may start at once; the person
@@ -653,7 +659,7 @@ class Brain:
             if grants.get("book_title") and self.cfg.calendar_write and "ha_create_event" not in have:
                 tools.append(TOOL_CREATE_EVENT)
         if self.planning(access):
-            tools.append(tasks_mod.TOOL_PLAN_CALL)
+            tools += [tasks_mod.TOOL_PLAN_CALL, tasks_mod.TOOL_TASK_EDIT]
         if self.contacts is not None and "admin" in access:
             tools.append(TOOL_CONTACT_EDIT)
         if web_mod.allowed(self.cfg, access, web):
@@ -830,6 +836,11 @@ class Brain:
         task, refusal = tasks_mod.build(self.cfg, data, requester, now, source="phone")
         if task is None:
             return refusal
+        if task["previous"]:  # continues a finished task of the same contact: its history goes along (#92)
+            earlier, refusal = tasks_mod.earlier_task(self.cfg, task, self.tasks.get(task["previous"]))
+            if refusal:
+                return refusal
+            task["earlier"] = earlier
         if self.tasks.blocked(task["number"]) and not data.get("override_do_not_call"):
             return ("Not planned: this number asked not to be called again. Tell the caller; only if they explicitly "
                     "want to call anyway, call plan_call again with override_do_not_call=true.")
@@ -869,6 +880,103 @@ class Brain:
         return tasks_mod.read_back(task, self.cfg, known) + (
             f" With the yes you also save {new_contact['name']} as a new contact with this number." if new_contact
             else "")
+
+    def _task_edit(self, block, tools: list, messages: list, counters: dict, call: dict | None) -> str:
+        """task_edit (#92): status of the tasks, or a step added to an open one. A step is read back first and
+        stored only once the caller said something after that (like plan_call); the step stored is the one read
+        back. Changed grants are named explicitly in the read-back."""
+        log.debug("Tool %s %s", block.name, block.input)
+        if block.name not in {t["name"] for t in tools} or self.tasks is None:
+            return "Not allowed in this call."
+        data = block.input or {}
+        tz = ZoneInfo(self.cfg.timezone)
+        now = datetime.now(tz)
+        found = tasks_mod.find(self.tasks.all(), data.get("task"), self.cfg)
+        if data.get("action") == "status":
+            recent = [t for t in found if t["status"] not in tasks_mod.FINAL
+                      or now - datetime.fromisoformat(t.get("finished") or t["created"]) <= timedelta(days=3)]
+            if not recent:
+                return "No such task." if data.get("task") else "No open tasks and none finished in the last days."
+            return "\n".join(tasks_mod.status_text(t) for t in recent[:5])
+        if data.get("action") != "add_step":
+            return "Unknown action: status or add_step."
+        open_ = [t for t in found if t["status"] not in tasks_mod.FINAL]
+        if not data.get("task"):
+            return "Not added: name the task (whom it calls, or its id)."
+        if not open_:
+            if found:
+                t = found[0]
+                return (f"Not added: the task with {t['name'] or t['number']} has ended ({t['status']}). Plan a new "
+                        f"call with plan_call and previous_task={t['id']} (its history goes with it).")
+            return "Not added: no such task (task_edit status shows them)."
+        if len(open_) > 1:
+            return "Not added: several open tasks fit: " + " ".join(tasks_mod.status_text(t) for t in open_) + \
+                " Name the one by its id."
+        t = open_[0]
+        if t["status"] == tasks_mod.RUNNING:
+            return "Not now: a call of this task is running. Add the step after it."
+        if tasks_mod.reached(t) >= int(self.cfg.task_max_steps or 1):
+            return (f"Not added: the task has had its {self.cfg.task_max_steps} steps (task_max_steps). Plan a new "
+                    f"call with plan_call and previous_task={t['id']} once it has ended, or cancel it.")
+        text = " ".join(str(data.get("text") or "").split())[:tasks_mod.MAX_TEXT]
+        if not text:
+            return "Not added: what is the step? Give it as text in the requester's words."
+        end = datetime.fromisoformat(t["not_after"])
+        changes = {}
+        if str(data.get("not_after") or "").strip():
+            new_end = tasks_mod.parse_time(data["not_after"], self.cfg)
+            if new_end is None or new_end <= now:
+                return "Not added: not_after is not readable or already over (format 2026-11-10T18:00)."
+            changes["not_after"] = new_end.isoformat(timespec="minutes")
+            end = new_end
+        if data.get("may_accept") is not None and str(data["may_accept"]).strip() != t["may_accept"]:
+            changes["may_accept"] = str(data["may_accept"]).strip()[:tasks_mod.MAX_TEXT]
+        share = [x for x in tasks_mod._texts(data.get("may_share")) if x not in t["may_share"]]
+        if share:
+            changes["may_share"] = share
+        call_now = data.get("call") is not False
+        start = now
+        if call_now and str(data.get("not_before") or "").strip():
+            start = tasks_mod.parse_time(data["not_before"], self.cfg)
+            if start is None:
+                return "Not added: not_before is not readable (format 2026-11-10T18:00)."
+            start = max(start, now)
+        if call_now and start >= end:
+            return f"Not added: the task's time window ends {end:%Y-%m-%d %H:%M}; give a later not_after."
+        by = str((call or {}).get("name") or "").strip() or t["requester"]["name"]
+        step = {"text": text, "by": by, "changes": changes, "call": call_now,
+                "not_before": start.astimezone(tz).isoformat(timespec="minutes")}
+        pending = counters.setdefault("task_confirm", {})
+        key = json.dumps([t["id"], text, changes, call_now, data.get("not_before") or ""], sort_keys=True,
+                         ensure_ascii=False)
+        if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
+            step = pending.pop(key)[1]
+            done, why = self.tasks.add_requester_step(t["id"], step, now)
+            if done is None:
+                return f"Not added: {why}."
+            return ("Stored. " + (f"The call to {done['name'] or done['number']} starts as soon as the line is "
+                                  "free." if step["call"] and datetime.fromisoformat(step["not_before"]) <= now
+                                  else f"You will call {done['name'] or done['number']} from "
+                                       f"{step['not_before'].replace('T', ' ')}." if step["call"]
+                                  else "It is used in the next call or call back.") + " Tell the person briefly.")
+        pending[key] = (len(messages), step)
+        parts = [f"Step checked, NOT stored yet. Read it back briefly: for the task with {t['name'] or t['number']} "
+                 f"({t['goal']}, now {t['status']}) you add: {text}."]
+        if call_now:
+            parts.append("You will call again " + ("as soon as the line is free." if start <= now else
+                                                   f"from {start:%A %Y-%m-%d %H:%M}."))
+        else:
+            parts.append("Nobody is called for it now: it is used in the next call or call back.")
+        if "may_accept" in changes:
+            parts.append(f"CHANGED: from now on you may agree to: {changes['may_accept'] or 'nothing on your own'} "
+                         f"(before: {t['may_accept'] or 'nothing on your own'}).")
+        if share:
+            parts.append(f"CHANGED: you may also share: {'; '.join(share)}.")
+        if "not_after" in changes:
+            parts.append(f"CHANGED: the task now runs until {end:%A %Y-%m-%d %H:%M}.")
+        parts.append("Ask whether that is right. Only after a yes call task_edit again with the same values and "
+                     "confirmed=true.")
+        return " ".join(parts)
 
     def contact_for_task(self, task: dict, known: bool) -> tuple[dict | None, str]:
         """The contact a planned call to a number nobody has yet creates (#93): (contact data, "") or (None, "") if
@@ -1046,9 +1154,8 @@ class Brain:
         """After web content entered the conversation, a changing tool only runs with confirmed=true after the
         caller said something since the tool was last refused (a web page cannot confirm for the caller).
         Returns "" (go ahead) or the refusal for Claude."""
-        if block.name not in MUTATING or block.name in ("plan_call", "contact_edit") \
-                or not web_mod.has_content(messages):
-            return ""  # plan_call and contact_edit always ask first, e.g. for a number found on the web
+        if block.name not in MUTATING or block.name in ASKING or not web_mod.has_content(messages):
+            return ""  # plan_call, contact_edit and task_edit always ask first, e.g. for a number found on the web
         pending = counters.setdefault("web_confirm", {})
         key = self._confirm_key(block)
         if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,
@@ -1219,6 +1326,7 @@ class Brain:
                     t0 = time.monotonic()
                     out = (self._plan_call(b, tools, messages, counters, call) if b.name == "plan_call"
                            else self._contact_edit(b, tools, messages, counters) if b.name == "contact_edit"
+                           else self._task_edit(b, tools, messages, counters, call) if b.name == "task_edit"
                            else self._run_tool(b, tools, access, counters, call))
                     if after_tool is not None:
                         after_tool(b.name, time.monotonic() - t0)
@@ -1441,6 +1549,9 @@ class Brain:
                   .replace("{now}", datetime.now(tz).strftime("%A, %Y-%m-%d %H:%M")))
         plan = {k: task[k] for k in ("name", "number", "task", "goal", "questions", "may_accept", "follow_up")}
         plan["requester"] = task["requester"]["name"]
+        added = [s["text"] for s in task.get("steps") or [] if s.get("kind") == tasks_mod.REQUESTER]
+        if added:
+            plan["added_by_the_requester_since"] = added  # part of the plan, confirmed like it
         earlier = tasks_mod.history(task)
         messages = [{"role": "user", "content":
                      "Plan (confirmed by the requester):\n" + json.dumps(plan, ensure_ascii=False, indent=1)

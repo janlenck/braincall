@@ -1062,6 +1062,11 @@ class Handler(BaseHTTPRequestHandler):
         task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
             return self._send(400, {"error": error})
+        if task["previous"]:  # continues a finished task of the same contact: its history goes along (#92)
+            earlier, refusal = tasks.earlier_task(cfg, task, task_store.get(task["previous"]))
+            if refusal:
+                return self._send(400, {"error": refusal.removeprefix("Not planned: ")})
+            task["earlier"] = earlier
         if caller is None and not task["name"]:  # every task has a contact (#92), and a contact a name
             return self._send(400, {"error": "the number belongs to no contact: give the name of the person or "
                                              "business (it is saved as a contact)"})
