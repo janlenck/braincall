@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import math
 import os
+import queue
 import signal
 import socket
 import sys
@@ -173,6 +174,15 @@ api_up = threading.Event()  # set once the HTTP API listens
 sip_watchdog: threading.Thread | None = None  # the thread of watchdog(), once started
 watchdog_seen = 0.0  # time.monotonic() of the SIP watchdog loop's last round
 phone_lock = threading.Lock()  # swapping the phone (connect) vs. picking the one to stop on shutdown
+# what the line is doing (#100): /health, /api/status and the braincall_state event, for Brain Assist's entities.
+# Not `busy`: that lock is also held while the watchdog reconnects or a planned call is picked
+IDLE, RINGING, IN_CALL, DIALING = "idle", "ringing", "in_call", "dialing"
+line_lock = threading.Lock()
+line = {"line": IDLE, "call": None}
+sip_confirmed = ""  # the SIP status as the watchdog confirmed it (not pyVoIP's moment of re-registering)
+state_events: queue.Queue = queue.Queue()  # sent one after the other by one thread: in order, never during a call
+state_sender: threading.Thread | None = None
+state_sender_lock = threading.Lock()
 
 
 def detect_local_ip(target: str) -> str:
@@ -412,6 +422,74 @@ def finish(answered: bool, number: str, started: float, session, message: str, c
                      args=(answered, number, started, time.time(), session, message, caller, inbound)).start()
 
 
+# ---------------------------------------------------------------------- line state (#100)
+def set_line(state: str, number: str = "", caller=None, direction: str = ""):
+    """The line changes: idle, ringing (incoming, before it is answered), dialing (outbound, until answered) or
+    in_call. `since` is when the line got into this state. A change fires braincall_state. Never raises: a call
+    goes on and the line is freed whatever happens here."""
+    try:
+        with line_lock:
+            if state == line["line"] and state == IDLE:
+                return
+            line["line"] = state
+            line["call"] = None if state == IDLE else {
+                "number": number, "caller_name": caller_name(caller), "direction": direction,
+                "since": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        announce_state()
+    except Exception:  # noqa: BLE001
+        log.exception("Line state %s not set", state)
+
+
+def sip_value() -> str:
+    """The SIP status as text; "unknown" if the phone cannot say."""
+    try:
+        return sip_status().value
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def line_status() -> dict:
+    """line, sip and the current call (number, caller_name, direction, since; None while idle)."""
+    with line_lock:
+        return {"line": line["line"], "sip": sip_value(), "call": dict(line["call"]) if line["call"] else None}
+
+
+def announce_state(sip: str | None = None):
+    """Fires braincall_state with the line, the SIP status and the current call; in the background.
+    sip: a newly confirmed SIP status (note_sip). Otherwise the event has the last confirmed one, so a change of the
+    line during pyVoIP's re-registration does not announce a moment of REGISTERING. Queued while line_lock is held:
+    the events go out in the order of their snapshots."""
+    global sip_confirmed, state_sender
+    with line_lock:
+        if sip is not None:
+            sip_confirmed = sip
+        data = {"line": line["line"], "sip": sip_confirmed or sip_value(),
+                "call": dict(line["call"]) if line["call"] else None}
+        state_events.put(data)
+    with state_sender_lock:
+        if state_sender is None or not state_sender.is_alive():
+            state_sender = threading.Thread(target=send_states, name="state events", daemon=True)
+            state_sender.start()
+
+
+def note_sip():
+    """Confirms the SIP status (watchdog, after connecting); a change fires braincall_state."""
+    current = sip_value()
+    if current != sip_confirmed:
+        announce_state(current)
+
+
+def send_states():
+    while True:
+        data = state_events.get()
+        try:
+            ha.fire_event("braincall_state", data)
+        except Exception:  # noqa: BLE001
+            log.exception("Event braincall_state failed")
+        finally:
+            state_events.task_done()
+
+
 def _ringing(call) -> bool:
     return call.state in (CallState.DIALING, CallState.RINGING) and call.call_id not in sip_failed
 
@@ -437,6 +515,7 @@ def outbound(number: str, message: str, task: dict | None = None):
             return None
         dial = norm(number)  # the complete number, without spaces or dashes (they would cut it off in the INVITE)
         log.info("Calling %s (reason: %s)", dial, message or "-")
+        set_line(DIALING, number, caller, "out")
         call = phone.call(dial)
         _wait_ringing(call, float(cfg.ring_timeout))
         if _ringing(call):
@@ -453,6 +532,7 @@ def outbound(number: str, message: str, task: dict | None = None):
             log.warning("Call rejected: SIP %s", sip_failed.get(call.call_id, call.state.value))
             return None
         answered = True
+        set_line(IN_CALL, number, caller, "out")
         session = CallSession(call, brain, speech, cfg, phrase_cache)
         access = caller["access"] if caller else GUEST
         session.run(outbound=True, message=message, caller=number,
@@ -480,6 +560,7 @@ def outbound(number: str, message: str, task: dict | None = None):
                     except Exception:  # noqa: BLE001
                         log.exception("Hanging up the cancelled call failed")
                 phone.calls.pop(call.call_id, None)  # pyVoIP never drops unanswered calls -> RTP port stays taken
+        set_line(IDLE)
         finish(answered, number, started, session, message, caller, inbound=False)
         busy.release()
     return session
@@ -690,6 +771,7 @@ def on_incoming(call):
         return
     started = time.time()
     session = None
+    set_line(RINGING, number, caller, "in")
     if task_store is not None:  # someone we tried to reach for a task calls back: the task goes on in this call
         task = task_store.claim_callback(number, datetime.now(timezone.utc))
     rights = caller["access"] if caller else GUEST
@@ -703,6 +785,7 @@ def on_incoming(call):
         log.info("Answering call from %s (%s, access %s%s)", number, caller_label(caller, number) or "unknown", access,
                  f", calling back for task {task['id']}" if task else "")
         call.answer()
+        set_line(IN_CALL, number, caller, "in")
         session = CallSession(call, brain, speech, cfg, phrase_cache)
         session.run(outbound=False, caller=number, access=rights,
                     language=(task or {}).get("language") or lang_for(caller),
@@ -712,6 +795,7 @@ def on_incoming(call):
     except Exception:  # noqa: BLE001
         log.exception("Incoming call failed")
     finally:
+        set_line(IDLE)
         finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True)
         busy.release()
         if task:
@@ -798,10 +882,12 @@ def watchdog():
         watchdog_seen = time.monotonic()
         if sip_status() == PhoneStatus.REGISTERED:
             lost = None
+            note_sip()
             continue
         if lost is None:
             lost = time.monotonic()  # also pyVoIP's own re-registration every 2 min: registered again next round
             continue
+        note_sip()  # unregistered for a second round: no re-registration, braincall_state says so
         if time.monotonic() - lost < RECONNECT_AFTER or not busy.acquire(blocking=False):
             continue
         try:
@@ -809,6 +895,7 @@ def watchdog():
                         RECONNECT_AFTER // 60, sip_status().value)
             connect(old=phone)
             log.info("SIP status: %s", sip_status().value)
+            note_sip()
         except Exception as e:  # noqa: BLE001
             log.warning("Reconnecting failed: %s - next try in %s min", e, RECONNECT_AFTER // 60)
         finally:
@@ -833,8 +920,8 @@ def health() -> tuple[int, dict]:
     """GET /health: 200 while healthy, 503 with the problems; the status fields in both cases."""
     found = problems()
     return (503 if found else 200), {"status": "unhealthy" if found else "ok", "problems": found,
-                                     "sip": sip_status().value, "busy": busy.locked(), "phone": PHONE,
-                                     "time": datetime.now().isoformat(timespec="seconds")}
+                                     "sip": sip_status().value, "busy": busy.locked(), "line": line["line"],
+                                     "phone": PHONE, "time": datetime.now().isoformat(timespec="seconds")}
 
 
 def probe_api() -> tuple[int, dict]:
@@ -1059,7 +1146,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "unauthorized"})
             return self._send(200, {"api": assist.API_VERSION, "version": config.version(), "phone": PHONE,
                                     "assistant": cfg.assistant_name or "Claude",
-                                    "home_assistant": bool(ha.enabled), "tasks": task_store is not None})
+                                    "home_assistant": bool(ha.enabled), "tasks": task_store is not None,
+                                    "line": True})
+        if self.path == "/api/status":  # the line with the current call (#100); /health has no number or name
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(200, {**line_status(), "phone": PHONE})
         if urlsplit(self.path).path == "/shopping/history" and shopping_list is not None:
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -1361,6 +1453,7 @@ def main():
             if stopping.is_set():
                 return
             log.info("SIP status: %s", sip_status().value)
+            note_sip()
         else:
             log.info("Phone: off (sip_user and sip_password not set), only the HTTP API runs (Brain Assist)")
         log.info("Home Assistant: %s", "connected" if ha.enabled else "not configured")

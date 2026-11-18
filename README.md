@@ -579,9 +579,10 @@ such requests now get `401`, add the header.
 
 | Request | Purpose |
 |---|---|
-| `GET /health` | status without token: `status` (`ok` / `unhealthy`), `problems`, `sip`, `busy`, `phone`, `time`; `503` when unhealthy |
+| `GET /health` | status without token: `status` (`ok` / `unhealthy`), `problems`, `sip`, `busy`, `line`, `phone`, `time`; `503` when unhealthy |
+| `GET /api/status` | the line: `line` (`idle` / `ringing` / `dialing` / `in_call`), `sip`, `phone` and `call` (`number`, `caller_name`, `direction` `in`/`out`, `since`; `null` while idle) |
 | `POST /call` | call a number now: `{"message": "…", "number": "…"}` |
-| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant` |
+| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant`, `tasks`, `line` (`true`: `/api/status` and `braincall_state` exist) |
 | `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |
 | `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
 | `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
