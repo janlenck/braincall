@@ -79,15 +79,18 @@ class Contacts:
     """contacts.json, the live list in cfg.callers, and the checks and changes shared by page and voice.
 
     in_use(contact) -> str: what an open task needs this contact for ("" = nothing), so it is not deleted meanwhile.
+    on_merge(other, merged): called after a merge, so the memory of the contact merged away stays reachable.
     """
 
-    def __init__(self, cfg, path=None, in_use=None):
+    def __init__(self, cfg, path=None, in_use=None, on_merge=None):
         self.cfg = cfg
         self.path = Path(path) if path else Path(cfg.log_dir) / FILE
         self.lock = threading.RLock()
         self.items: list[dict] = []
         self.mtime = None
         self.in_use = in_use or (lambda contact: "")
+        # on_merge(other, merged): after other was merged into merged, so its memory moves along (main)
+        self.on_merge = on_merge or (lambda other, merged: None)
         # the "*" entries of the settings: rules for everyone else, kept as they are
         self.rules = [c for c in cfg.callers or [] if config.is_rule(c)]
 
@@ -154,14 +157,18 @@ class Contacts:
     def _load(self):
         try:
             text = self.path.read_text(encoding="utf-8-sig")
-            data = json.loads(config._strip_jsonc(text)) if text.strip() else {}
-        except (OSError, json.JSONDecodeError) as e:
+            if not text.strip():
+                raise ValueError("the file is empty")
+            data = json.loads(config._strip_jsonc(text))
+            raw = data.get("contacts") if isinstance(data, dict) else data
+            if not isinstance(raw, list):
+                raise ValueError('no list "contacts" in it')
+        except (OSError, ValueError) as e:  # also a file caught half written by hand: the last good list stays
             log.error("Contacts: %s could not be read (%s); the contacts stay as they were", self.path, e)
             self.mtime = self._stat()
             return
-        raw = data.get("contacts") if isinstance(data, dict) else data
         items, seen = [], set()
-        for c in raw if isinstance(raw, list) else []:
+        for c in raw:
             if not isinstance(c, dict):
                 continue
             c = dict(c)
@@ -384,7 +391,12 @@ class Contacts:
             self._write()
             self._apply()
             log.info("Contacts: merged %s into %s", b["name"], a["name"])
-            return self.get(into), ""
+            result = self.get(into)
+        try:
+            self.on_merge(b, result)
+        except Exception:  # noqa: BLE001  the contacts are merged; only the memory of the other stays where it was
+            log.exception("Contacts: moving the memory of %s failed", b["name"])
+        return result, ""
 
     def set_language(self, cid: str, language: str) -> bool:
         """The language a contact spoke last (after a call): stored without asking, the system language as

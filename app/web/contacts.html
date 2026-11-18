@@ -724,6 +724,7 @@ form.addEventListener("input", e => {
 form.addEventListener("change", e => {
   const el = e.target, d = state.draft;
   if (!d) return;
+  state.serverErrors = [];  // a changed selection may make the contact valid: no stale error from the last save
   if (el.id === "f-user") d.ha_user = el.value;
   else if (el.id === "f-device") d.ha_device = el.value;
   else if (el.id === "f-lang") d.language = el.value;
@@ -745,6 +746,7 @@ form.addEventListener("click", e => {
     state.serverErrors = []; setFlash(""); return renderForm(focus);
   }
   if (b.dataset.switch) {
+    state.serverErrors = [];
     const k = b.dataset.switch, def = k === "notify" ? notifyDefault(d) : webDefault(d);
     const eff = typeof d[k] === "boolean" ? d[k] : def, nv = !eff;
     if (nv === def) delete d[k]; else d[k] = nv;

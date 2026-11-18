@@ -199,6 +199,25 @@ class CallMemory:
         chats = [e for e in found if e.get("channel", PHONE) != PHONE][-KEEP:]
         return [{**e, "summary": e["summary"][:MAX_CHARS]} for e in found if any(e is x for x in calls + chats)]
 
+    def rekey(self, whom, contact: str) -> int:
+        """Puts the summaries of whom (a contact merged into another, contacts.merge) under the contact id of the
+        one it was merged into, so they are found through it. Returns how many. Works whatever caller_memory is."""
+        keys = self._keys(whom)
+        if not (keys and contact):
+            return 0
+        with self.lock:
+            if not self.path.exists():
+                return 0
+            entries, _ = self._load()
+            moved = 0
+            for e in entries:
+                if self._same(e, keys) and e.get("contact") != contact:
+                    e["contact"] = contact
+                    moved += 1
+            if moved:
+                self._save(entries)
+            return moved
+
     def forget(self, whom) -> int:
         """Deletes everything remembered of a person (by number, ha_user or ha_device). Returns how many
         summaries were deleted. Works whatever caller_memory is set to: the file may be from earlier."""

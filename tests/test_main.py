@@ -1193,3 +1193,26 @@ def test_a_contacts_language_follows_the_last_call(main, events, monkeypatch):
     main.after_call(True, "0151111", ended - 30, ended, one, "test", jan, True)    # too short
     main.after_call(True, "0999", ended - 30, ended, two, "test", main.find_caller("0999"), True)  # not a contact
     assert stored == [("j1", "en")]
+
+
+def test_ingress_refuses_when_the_admin_check_is_not_possible(main, monkeypatch):
+    """Review of #94: unknown means no, and it is not cached (the next request asks Home Assistant again)."""
+    answers = [None, True]
+    monkeypatch.setattr(main.ha, "user_admin", lambda user: answers.pop(0))
+    monkeypatch.setattr(type(main.ha), "enabled", property(lambda self: True))
+    monkeypatch.setattr(main, "_admins", {})
+    assert main.ingress_admin("u1") is False
+    assert main.ingress_admin("u1") is True and answers == []
+
+
+def test_tasks_api_refuses_a_name_that_belongs_to_another_contact(server, contact_book, main, monkeypatch):
+    """Review of #94: like by voice, an unknown number under the name of an existing contact is refused."""
+    import tasks
+    monkeypatch.setitem(main.cfg, "outbound_allowed_regex", "")
+    store = tasks.TaskStore(contact_book.path.parent / "tasks.json", main.cfg)
+    monkeypatch.setattr(main, "task_store", store)
+    monkeypatch.setattr(main.brain, "contacts", contact_book)
+    status, body = server("POST", "/api/tasks", {"number": "0160 9999", "name": "Jan", "task": "x", "goal": "x"})
+    assert status == 409 and "already a contact named Jan" in body["error"] and store.all() == []
+    status, _ = server("POST", "/api/tasks", {"number": "0160 9999", "name": "Seeblick", "task": "x", "goal": "x"})
+    assert status == 201 and contact_book.by_name("Seeblick")["origin"] == "task"

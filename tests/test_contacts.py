@@ -197,3 +197,29 @@ def test_a_broken_file_keeps_the_contacts(tmp_path):
     os.utime(s.path, (later, later))
     s.refresh()
     assert [c["name"] for c in cfg.callers] == before
+
+
+def test_an_empty_or_misshapen_file_keeps_the_contacts_an_empty_list_clears_them(tmp_path):
+    """Review of #94: a file caught half written (empty) or without a list must not wipe the live contacts."""
+    s, cfg = store(tmp_path)
+    s.setup()
+    before = [c["name"] for c in cfg.callers]
+    for text in ("", "   ", '{"people": []}', '{"contacts": {}}', "42"):
+        s.path.write_text(text)
+        stamp = time.time() + 5 + len(text)
+        os.utime(s.path, (stamp, stamp))
+        s.refresh()
+        assert [c["name"] for c in cfg.callers] == before, text
+        assert len(s.items) == 4
+    s.path.write_text('{"contacts": []}')
+    os.utime(s.path, (time.time() + 99, time.time() + 99))
+    s.refresh()
+    assert s.items == [] and all(config.is_rule(c) for c in cfg.callers)
+
+
+def test_merge_tells_who_was_merged(tmp_path):
+    merged = []
+    s, _ = store(tmp_path, on_merge=lambda other, into: merged.append((other["name"], into["name"])))
+    s.setup()
+    s.merge(s.by_name("Jan")["id"], s.by_name("Jan laut")["id"])
+    assert merged == [("Jan laut", "Jan")]

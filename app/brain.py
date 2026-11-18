@@ -833,6 +833,12 @@ class Brain:
         key = tasks_mod.confirm_key(task, self.cfg, data) + str(bool(data.get("override_do_not_call")))
         if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
             task = pending.pop(key)[1]  # the plan as it was read back, not this call's wording of it
+            # the contact as read back with it, not from this call's wording (name, language)
+            new_contact, refusal = self.contact_for_task(task, any(
+                c["number"] != "*" and config.has_number(c, task["number"], self.cfg.country_code)
+                for c in self.cfg.callers or []))
+            if refusal:
+                return refusal
             if data.get("override_do_not_call"):
                 self.tasks.unblock(task["number"])
             self.tasks.add(task)
@@ -867,7 +873,9 @@ class Brain:
                           "or someone else (then give them a name that tells them apart).")
         data = {"name": task["name"], "numbers": [{"number": task["number"]}], "language": task.get("language") or ""}
         wanted, errors = self.contacts.preview(data, origin="task")
-        return (data if wanted else None), ""
+        if errors:
+            return None, f"Not planned: the callee cannot be saved as a contact: {contacts_mod.problems(errors)}."
+        return data, ""
 
     def _contact_edit(self, block, tools: list, messages: list, counters: dict) -> str:
         """contact_edit (admins): shows a contact, or checks a change and stores it only once the caller said
@@ -896,6 +904,9 @@ class Brain:
             other = store.by_name(str(data.get("merge_from") or ""))
             if other is None or other["id"] == target["id"]:
                 return f"No other contact named {data.get('merge_from')!r} to merge. Contacts: {names}."
+            if ("admin" in (target.get("access") or [])) != ("admin" in (other.get("access") or [])):
+                return ("Not merged: one of them is an admin and the other is not, so merging would give or take "
+                        "admin rights. That is only done on the contacts page in Home Assistant.")
         wanted = None
         if action in ("add", "change"):
             base = json.loads(json.dumps(target)) if target else {"name": name, "numbers": [], "access": []}

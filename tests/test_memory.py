@@ -253,3 +253,14 @@ def test_a_contact_remembers_across_its_numbers(tmp_path):
     assert saved[1]["contact"] == "j1" and "numbers" not in saved[1]
     found = [e["summary"] for e in m.recent(memory.who(jan, "0151111"), {"admin"})]
     assert found == ["old line from the mobile", "from the other phone"]
+
+
+def test_rekey_moves_the_memory_of_a_merged_contact(tmp_path):
+    """Review of #94: merging an Assist-only contact (ha_user B) into A keeps B's summaries reachable."""
+    m = memory.CallMemory(tmp_path / "calls.jsonl", 30, "49")
+    m.add({"ha_user": "b-user", "contact": "bbbb"}, "from B in Assist", {"admin"})
+    m.add({"number": "0151111"}, "from A", {"admin"})
+    assert m.rekey({"contact": "bbbb", "ha_user": "b-user"}, "aaaa") == 1
+    found = [e["summary"] for e in m.recent({"contact": "aaaa", "number": "0151111"}, {"admin"})]
+    assert found == ["from B in Assist", "from A"]
+    assert m.rekey({"contact": "bbbb"}, "aaaa") == 0

@@ -153,3 +153,28 @@ def test_summary_names_the_language_spoken():
     assert "LANGUAGE:" in b.client.messages.prompts[0]
     b.client = SimpleNamespace(messages=Once("Kurz."))
     assert b.summarize(["x"], "Jan", [], "de") == "Kurz." and "LANGUAGE" not in b.client.messages.prompts[0]
+
+
+def test_merging_an_admin_and_a_guest_by_voice_is_refused(brain):
+    """Review of #94: a merge must not give or take admin rights by voice."""
+    read_back, _ = two_turns(brain, {"action": "merge", "name": "Jan Lenck", "merge_from": "Walter"}, confirm=False)
+    assert read_back.startswith("Not merged: one of them is an admin")
+    read_back, _ = two_turns(brain, {"action": "merge", "name": "Walter", "merge_from": "Jan laut"}, confirm=False)
+    assert read_back.startswith("Not merged") and brain.contacts.by_name("Jan laut")
+
+
+def test_the_contact_saved_is_the_one_read_back(brain, tmp_path):
+    """Review of #94: a confirming plan_call with another name stores the task and the contact as read back."""
+    brain.cfg["outbound_allowed_regex"] = ""
+    brain.tasks = tasks.TaskStore(tmp_path / "tasks.json", brain.cfg)
+    store = assist.Conversations()
+    first = {"number": "04542 5555", "name": "Seeblick", "task": "Tisch reservieren"}
+    events, fake, _ = run(brain, {"text": "Ruf an", "user_name": "Jan"}, message(plan(**first), stop="tool_use"),
+                          message("Soll ich?"), store=store, callers=PEOPLE)
+    events, fake, _ = run(brain, {"text": "Ja", "conversation_id": events[0]["conversation_id"], "user_name": "Jan"},
+                          message(plan("p2", **{**first, "name": "Seeblick am See"}, confirmed=True),
+                                  stop="tool_use"),
+                          message("Gut."), store=store, callers=PEOPLE)
+    assert tool_result(fake, "p2").startswith("Stored (task")
+    assert brain.contacts.by_name("Seeblick")["numbers"] == [{"number": "045425555"}]
+    assert brain.contacts.by_name("Seeblick am See") is None

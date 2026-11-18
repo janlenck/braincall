@@ -126,7 +126,16 @@ def contact_in_use(contact: dict) -> str:
     return ""
 
 
-contact_store = contacts.Contacts(cfg, in_use=contact_in_use)
+def contact_merged(other: dict, merged: dict):
+    """contacts.Contacts.on_merge: the memory of the contact merged away is found through the one it went into."""
+    moved = calls.rekey({"contact": other["id"], "ha_user": other.get("ha_user") or "",
+                         "ha_device": other.get("ha_device") or "",
+                         "numbers": [n["number"] for n in config.entry_numbers(other)]}, merged["id"])
+    if moved:
+        log.info("Memory: %d summaries of %s now belong to %s", moved, other["name"], merged["name"])
+
+
+contact_store = contacts.Contacts(cfg, in_use=contact_in_use, on_merge=contact_merged)
 brain.contacts = contact_store
 CONTACTS_INTERVAL = 2  # seconds between looks at contacts.json for a change made by hand
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
@@ -745,7 +754,7 @@ _choices = [0.0, {}]            # time, persons and devices for the contacts pag
 def ingress_admin(user_id: str) -> bool:
     """Whether a Home Assistant user may use the contacts page through ingress: administrators only. Home
     Assistant shows the page to administrators only (panel_admin); this keeps out others who open the address
-    directly. Unknown (the token cannot list users): allowed, Home Assistant has logged them in."""
+    directly, since the page can give admin rights. Unknown (the token cannot list users): refused, not cached."""
     now = time.monotonic()
     known = _admins.get(user_id)
     if known and now - known[0] < 300:
@@ -753,10 +762,11 @@ def ingress_admin(user_id: str) -> bool:
     result = ha.user_admin(user_id) if user_id and ha.enabled else None
     if result is None:
         if "warned" not in _admins:
-            _admins["warned"] = (now, True)
-            log.warning("Contacts page: cannot check whether a Home Assistant user is an administrator (the token "
-                        "cannot list users); every logged-in user who opens its address can use it")
-        result = True
+            _admins["warned"] = (now, False)
+            log.warning("Contacts page: cannot check whether the Home Assistant user is an administrator (the token "
+                        "of Home Assistant must belong to an administrator to list users); the page refuses until "
+                        "it can. It is also at /contacts on the API port, with the API token")
+        return False
     _admins[user_id] = (now, result)
     return result
 
@@ -1022,9 +1032,11 @@ class Handler(BaseHTTPRequestHandler):
         task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
             return self._send(400, {"error": error})
+        new_contact, refusal = brain.contact_for_task(task, caller is not None)
+        if refusal:  # e.g. the name belongs to another contact: refused like by voice, nothing stored
+            return self._send(409, {"error": refusal.removeprefix("Not planned: ")})
         if body.get("override_do_not_call"):
             task_store.unblock(number)
-        new_contact, _ = brain.contact_for_task(task, caller is not None)  # a taken name: the task goes on without
         if new_contact:
             contact_store.save(new_contact, origin="task")
         self._send(201, task_store.add(task))

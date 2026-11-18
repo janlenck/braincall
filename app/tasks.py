@@ -216,7 +216,8 @@ def pick_number(entry: dict, phone: str = "") -> tuple[str, str, str]:
     want = " ".join(str(phone or "").split()).casefold()
     if not want:
         return numbers[0]["number"], numbers[0]["label"], ""
-    fits = [n for n in numbers if n["label"] and (n["label"].casefold() == want or n["label"].casefold() in want)]
+    fits = [n for n in numbers if n["label"] and n["label"].casefold() == want] or \
+        [n for n in numbers if n["label"] and n["label"].casefold() in want]
     if len(fits) == 1:
         return fits[0]["number"], fits[0]["label"], ""
     labels = ", ".join(n["label"] or n["number"] for n in numbers)

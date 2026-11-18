@@ -851,3 +851,12 @@ def test_a_contact_with_several_numbers_is_called_on_the_one_asked_for():
     task, _ = tasks.build(c, {"name": "Jan", "phone": "Büro", "task": "x"}, JAN, NOON)
     assert "you will call Jan (Büro) at 0401234" in tasks.read_back(task, c, True)
     assert tasks.find_requester(c, "+4940 1234")["number"] == "040 1234"
+
+
+def test_an_exact_label_wins_over_a_part_of_another():
+    """Review of #94: "Home Office" must not be ambiguous because "Office" is part of it."""
+    c = make_cfg(outbound_allowed_regex="", callers=[
+        {"name": "Jan", "numbers": [{"number": "0151111", "label": "Office"},
+                                    {"number": "040 1", "label": "Home Office"}]}])
+    assert tasks.callee(c, {"name": "Jan", "phone": "Home Office"}) == ("040 1", "Jan", "")
+    assert tasks.callee(c, {"name": "Jan", "phone": "office"}) == ("0151111", "Jan", "")
