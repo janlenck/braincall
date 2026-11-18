@@ -223,3 +223,15 @@ def test_merge_tells_who_was_merged(tmp_path):
     s.setup()
     s.merge(s.by_name("Jan")["id"], s.by_name("Jan laut")["id"])
     assert merged == [("Jan laut", "Jan")]
+
+
+# ---------------------------------------------------------------- order
+def test_all_is_alphabetical_ignoring_case_and_accents(tmp_path):
+    path = tmp_path / "contacts.json"
+    names = ["Zoe", "willi", "Änne", "Bert", "anna", "Ölaf", "Otto"]
+    path.write_text(json.dumps({"contacts": [{"id": f"{i:04x}", "name": n, "numbers": [{"number": f"0170{i}"}]}
+                                             for i, n in enumerate(names)]}))
+    s, _ = store(tmp_path)
+    s.setup()
+    assert [c["name"] for c in s.all()] == ["anna", "Änne", "Bert", "Ölaf", "Otto", "willi", "Zoe"]
+    assert [c["name"] for c in read(path)] == names  # the file keeps its order
