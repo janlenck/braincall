@@ -454,6 +454,10 @@ TASKS_PROMPT = """- You can make a call on your own later with plan_call ("Ruf i
   or look it up on the web if you can; never guess a number), the goal, what you may tell the callee, what you may
   agree to on your own, when to call, what to do afterwards and whether to call back with the result. Then call
   plan_call; the phone system checks the plan and tells you what to read back. Store it only after a clear yes.
+- Something the requester wants done after the call only after being asked (e.g. "frag ihn, ob er will, dass die
+  Garage geöffnet wird, und frag mich dann, ob ich sie öffnen soll"), or that needs a tool no follow-up step has
+  (switching devices): do not refuse the task. Put the question into ask_requester: you call the requester back,
+  ask it, and they give the order in that call with their own rights.
 - A task can take several calls and stays open until it is settled (waiting for a call back, or a next call).
   task_edit status tells what became of the tasks ("Hat das Restaurant zurückgerufen?"); task_edit add_step adds
   something to an open task ("Ruf nochmal an, wir sind doch zu sechst"), read back and stored after a yes like a
@@ -480,6 +484,8 @@ directions: the earlier steps of this task, if any, come with the plan.
   Nobody can confirm anything now: the requester confirmed the plan, so call ha_create_event with confirmed=true.
   A step that the call did not settle clearly (no date agreed, answer ambiguous) is NOT done: report it as open.
   Anything that is not a step of the plan is not done either; mention it under open_points if it matters.
+- What the plan lists under ask_requester is not yours: the requester is asked in the call back and decides it there.
+  Do not report it as open or failed; collect in the summary and answers what the requester needs for it.
 - Recipes: prefer a page with a clear ingredient list, scale it to the number of people, add each ingredient once
   with its amount (look at the shopping list first, do not add what is already on it), and keep the link for the
   result. If a page cannot be read, try another source and say so.
@@ -1443,7 +1449,8 @@ class Brain:
         prompt = (f"{owner} gave this task for a phone call that the assistant makes on its own. Turn it into a plan: "
                   "the fields of the answer schema, with \"\" or [] for what the task does not give (retries null "
                   "for the default). Keep to the task: grant and share only what it clearly calls for, and list as "
-                  "follow_up only what it asks to be done after the call. leave_message is true unless the task "
+                  "follow_up only what it asks to be done after the call; what the requester wants to be asked "
+                  "first (\"frag mich dann, ob …\") goes to ask_requester. leave_message is true unless the task "
                   "says otherwise. Times are local; now is "
                   f"{now}.\n\nNumber: {number}\nName: {name or 'unknown'}\nTask: {text}")
         # structured output, not a forced tool call: tool_choice "tool"/"any" is refused by some models (#72)
@@ -1549,6 +1556,8 @@ class Brain:
                   .replace("{language}", LANG_NAMES[lang])
                   .replace("{now}", datetime.now(tz).strftime("%A, %Y-%m-%d %H:%M")))
         plan = {k: task[k] for k in ("name", "number", "task", "goal", "questions", "may_accept", "follow_up")}
+        if task.get("ask_requester"):
+            plan["ask_requester"] = task["ask_requester"]
         plan["requester"] = task["requester"]["name"]
         added = [s["text"] for s in task.get("steps") or [] if s.get("kind") == tasks_mod.REQUESTER]
         if added:

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.19.1
+
+Bug fixed: a task with an action "after asking me" (e.g. open the garage) got no call back, and in a call back
+Claudine refused orders from the requester as if they came from the callee (#102).
+
+- New plan field `ask_requester`: what the requester wants to be asked after the call ("Soll ich die Garage
+  öffnen?"). It makes the call back mandatory, is read back with the plan and part of what the yes confirms; without
+  a phone number of the requester the task is not planned. The callee is told it is not theirs to decide, the
+  evaluation does not report it as open
+- The call back asks these questions before the goodbye and tells Claudine that the requester talks with their own
+  rights: whatever they order there (also beyond the task) is their order, done with their tools and the usual
+  confirmation. Rights do not change: device control still comes only from someone allowed to use it
+
 ## 1.19.0
 
 Home Assistant can see what the line is doing (#100), for Brain Assist's status entities.

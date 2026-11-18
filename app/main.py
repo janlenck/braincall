@@ -599,9 +599,7 @@ def call_back(task: dict, text: str):
         busy.release()
         log.warning("Task %s: no call back to %s, SIP not registered", task["id"], number)
         return
-    outbound(number, f"You call back with the result of the task “{task['goal']}” (call to "
-                     f"{task['name'] or task['number']}). Report it briefly in your own words and answer questions "
-                     f"about it. Result ({task['status']}): {text}")
+    outbound(number, tasks.call_back_brief(task, text, OWNER_FIRST))
 
 
 def report_waiting(task: dict):
