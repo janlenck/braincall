@@ -89,6 +89,7 @@ DEFAULTS = {
     "tasks": True,
     "task_max_retries": 3,           # most further attempts a task may ask for if nobody is reached
     "task_retry_minutes": 15,        # pause between attempts
+    "task_max_steps": 6,             # calls that reached someone plus steps of the requester, per task (#92)
     "outbound_hours": "09:00-20:00",  # planned calls only in this time of day; "" = any time
     "outbound_max_calls_per_day": 20,  # planned calls (attempts) per day; 0 = no limit
     # never dialed, whoever asks (also POST /call): numbers starting with these

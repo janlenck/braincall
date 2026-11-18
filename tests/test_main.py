@@ -716,6 +716,54 @@ def test_an_open_task_keeps_its_contact_by_id(main, planned):
     assert main.contact_in_use(moved) == ""
 
 
+def next_call(when, summary="Schaut nach, ob für 4 frei ist."):
+    return {"status": "next_call", "summary": summary, "answers": {}, "steps": [], "open_points": [],
+            "do_not_call": False, "next_call": {"number": "045421234", "not_before": when, "until": None,
+                                                "added": ""}}
+
+
+def test_the_evaluation_plans_the_next_call_of_the_task(main, planned):
+    """#92: the callee asks to be called again; the task stays open, the second call ends it with one report."""
+    task = planned.add(retries=1, call_back=True)
+    later = main.datetime.now().astimezone() + timedelta(hours=1)
+    planned.sessions.append(talked("Seeblick: Rufen Sie in einer Stunde nochmal an."))
+    planned.result = next_call(later)
+    main.run_tasks()
+    t = planned.store.get(task["id"])
+    assert t["status"] == "planned" and t["tries"] == 0 and t["next_try"] == later.isoformat(timespec="minutes")
+    assert [s["result"] for s in t["steps"]] == ["Schaut nach, ob für 4 frei ist."]
+    assert planned.events["notify"] == []  # not over yet: nothing reported
+    main.run_tasks()
+    assert len(planned.dialed) == 1  # not due yet
+    planned.store.tasks[0]["next_try"] = "2026-01-01T00:00+01:00"
+    planned.sessions.append(talked("Seeblick: Ja, 19 Uhr geht."))
+    planned.result = {"status": "done", "summary": "Tisch um 19 Uhr reserviert."}
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "done" and len(done["steps"]) == 2
+    assert [d[0] for d in planned.dialed] == ["045421234", "045421234", "0151111"]
+    assert len(planned.events["notify"]) == 1
+
+
+def test_a_next_call_that_reaches_nobody_ends_the_task_partial(main, planned):
+    task = planned.add(retries=0)
+    planned.sessions.append(talked("Seeblick: Rufen Sie später nochmal an."))
+    planned.result = next_call(main.datetime.now().astimezone() - timedelta(minutes=1))
+    main.run_tasks()
+    main.run_tasks()  # nobody answers the second call, no retry left
+    done = planned.store.get(task["id"])
+    assert done["status"] == "partial" and "Schaut nach, ob für 4 frei ist." in done["result"]["summary"]
+    assert planned.events["notify"][-1][1] == "Auftrag Anruf bei Seeblick: teilweise erledigt"
+
+
+def test_a_callee_who_wants_no_more_calls_ends_the_task(main, planned):
+    task = planned.add()
+    planned.sessions.append(talked("Seeblick: Rufen Sie hier nie wieder an."))
+    planned.result = {**next_call(main.datetime.now().astimezone()), "do_not_call": True}
+    main.run_tasks()
+    assert planned.store.get(task["id"])["status"] == "partial" and planned.store.blocked("04542 1234")
+
+
 def test_unanswered_task_call_is_retried_without_follow_up(main, planned):
     task = planned.add(retries=1)
     main.run_tasks()
@@ -739,24 +787,31 @@ def test_mailbox_counts_as_not_reached(main, planned):
 LEFT = {"status": "message_left", "summary": "Nur die Mailbox erreicht, um Rückruf gebeten."}
 
 
-def test_message_on_the_mailbox_ends_the_task_without_another_call(main, planned):
-    """#65: the task was dialed twice more after the message had been left."""
+def test_message_on_the_mailbox_makes_the_task_wait_without_another_call(main, planned):
+    """#65: the task was dialed twice more after the message had been left. #92: it waits for the call back
+    (a short notification, no call back to the requester) and ends as no_reply when its window is over."""
     task = planned.add(retries=2, call_back=True)
     planned.sessions.append(talked("Seeblick (mailbox): Bitte sprechen Sie nach dem Ton.", "Claudine: Hallo …",
                                    mailbox=True, message_left=True))
     planned.result = {"status": "partial", "summary": LEFT["summary"]}  # the phone system knows better
     main.run_tasks()
-    done = planned.store.get(task["id"])
-    assert done["status"] == "message_left" and done["attempts"][0]["outcome"] == "message left"
+    waiting = planned.store.get(task["id"])
+    assert waiting["status"] == "waiting" and waiting["attempts"][0]["outcome"] == "message left"
+    assert [s["outcome"] for s in waiting["steps"]] == ["message left"]
     assert planned.mailbox is True  # the follow-up is told, it only writes the summary
-    assert planned.events["notify"] == [("notify.phone", "Auftrag Anruf bei Seeblick: Nachricht hinterlassen",
+    assert planned.events["notify"] == [("notify.phone", "Auftrag Anruf bei Seeblick: wartet auf Rückruf",
                                          LEFT["summary"])]
-    assert planned.events["events"][-1][1]["status"] == "message_left"
-    assert [d[0] for d in planned.dialed] == ["045421234", "0151111"]  # the callee once, then the requester
-    assert "Result (message_left)" in planned.dialed[1][1]
+    assert wait_for(lambda: planned.events["events"][-1][1]["status"] == "waiting")
+    assert [d[0] for d in planned.dialed] == ["045421234"]  # the callee once, no call back yet
     planned.store.tasks[0]["next_try"] = "2026-01-01T00:00+01:00"
     main.run_tasks()
-    assert len(planned.dialed) == 2  # final: never dialed again
+    assert len(planned.dialed) == 1  # never dialed again
+    planned.store.tasks[0]["not_after"] = "2026-01-01T00:00+01:00"  # the window is over: nobody called back
+    main.run_tasks()
+    done = planned.store.get(task["id"])
+    assert done["status"] == "no_reply" and LEFT["summary"] in done["result"]["summary"]
+    assert planned.events["notify"][-1][1] == "Auftrag Anruf bei Seeblick: kein Rückruf"
+    assert [d[0] for d in planned.dialed] == ["045421234", "0151111"]  # now the requester gets the result
 
 
 def test_recognized_mailbox_without_a_message_is_retried_without_follow_up(main, planned):
@@ -781,12 +836,12 @@ def test_call_in_which_nothing_we_said_was_answered_is_retried_without_follow_up
     assert planned.followed == [] and planned.events["notify"] == []
 
 
-def test_message_left_reported_by_the_follow_up_ends_the_task_too(main, planned):
+def test_message_left_reported_by_the_follow_up_makes_the_task_wait_too(main, planned):
     task = planned.add(retries=2)  # the phone system did not recognize the announcement, Claude did
     planned.sessions.append(talked("Seeblick: Sprechen Sie jetzt.", "Claudine: Hallo …"))
     planned.result = dict(LEFT)
     main.run_tasks()
-    assert planned.store.get(task["id"])["status"] == "message_left" and planned.mailbox is False
+    assert planned.store.get(task["id"])["status"] == "waiting" and planned.mailbox is False
 
 
 def test_message_left_does_not_count_when_no_message_was_to_be_left(main, planned):
@@ -798,7 +853,7 @@ def test_message_left_does_not_count_when_no_message_was_to_be_left(main, planne
     assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "mailbox"
 
 
-def test_mailbox_follow_up_failure_still_ends_as_message_left(main, planned, monkeypatch):
+def test_mailbox_follow_up_failure_still_waits_for_the_call_back(main, planned, monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("API down")
     task = planned.add()
@@ -806,7 +861,7 @@ def test_mailbox_follow_up_failure_still_ends_as_message_left(main, planned, mon
     monkeypatch.setattr(main.brain, "follow_up", boom)
     main.run_tasks()
     done = planned.store.get(task["id"])
-    assert done["status"] == "message_left" and done["result"]["summary"].startswith("Only the mailbox answered")
+    assert done["status"] == "waiting" and done["result"]["summary"].startswith("Only the mailbox answered")
 
 
 def test_task_waits_while_the_line_is_busy_or_sip_is_down(main, planned, monkeypatch):
@@ -1027,7 +1082,7 @@ def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch
     planned.sessions.append(talked("Mark (mailbox): …", mailbox=True, message_left=True))
     planned.result = dict(LEFT)
     main.run_tasks()
-    assert planned.store.get(task["id"])["status"] == "message_left" and len(planned.events["notify"]) == 1
+    assert planned.store.get(task["id"])["status"] == "waiting" and len(planned.events["notify"]) == 1
     ran, turns = {}, [0, 1]  # first call back: nothing said; second: a conversation
 
     class Session:
@@ -1051,7 +1106,7 @@ def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch
     monkeypatch.setattr(main, "CallSession", Session)
     monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
     planned.result = {"status": "done", "summary": "Mark kommt am Samstag."}
-    for expected, notified in (("message_left", 1), ("done", 2)):
+    for expected, notified in (("waiting", 1), ("done", 2)):
         call, denied = incoming("0888777")
         call.answer = lambda: None
         main.on_incoming(call)

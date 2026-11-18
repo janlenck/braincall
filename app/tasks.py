@@ -18,8 +18,13 @@ import config
 log = logging.getLogger("tasks")
 
 PLANNED, RUNNING = "planned", "running"
-LEFT = "message_left"     # only a mailbox answered and the message was left there: final, no further attempt
-FINAL = ("done", "partial", "failed", "not_reached", LEFT, "cancelled")
+WAITING = "waiting"       # open, waiting for a call back until not_after (#92), e.g. after a message on the mailbox
+NO_REPLY = "no_reply"     # waited until not_after, nobody called back
+WAIT = "wait"             # what the evaluation reports for "wait for a call back"
+NEXT = "next_call"        # what the evaluation reports for "call again" (tool next_call)
+LEFT = "message_left"     # a message on the mailbox: before #92 a final status, now a step that makes the task wait
+FINAL = ("done", "partial", "failed", "not_reached", LEFT, "cancelled", NO_REPLY)
+REPORTED = ("done", "partial", "failed", "not_reached", LEFT, WAIT)  # what task_result may report
 KEEP_DAYS = 30            # finished tasks stay in tasks.json this long
 DEFAULT_WINDOW_H = 24     # a task without not_after is given up this long after not_before
 MAX_ITEMS, MAX_TEXT = 12, 500
@@ -114,11 +119,12 @@ TOOL_TASK_RESULT = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "status": {"type": "string", "enum": ["done", "partial", "failed", "not_reached", LEFT],
+            "status": {"type": "string", "enum": ["done", "partial", "failed", "not_reached", LEFT, WAIT],
                        "description": "done = goal reached and all follow-up steps done; partial = something is "
                                       "open; failed = the callee declined or it did not work; message_left = only "
-                                      "a mailbox answered and you left your message on it; not_reached = nobody "
-                                      "answered in person and no message was left"},
+                                      "a mailbox answered and you left your message on it (the task then waits "
+                                      "for a call back); not_reached = nobody answered in person and no message "
+                                      "was left; wait = the callee will call back, nothing to do until then"},
             "summary": {"type": "string", "description": "two to four sentences for the requester, plain text"},
             "answers": {"type": "object", "description": "what the callee said, e.g. {\"date\": \"2026-11-14 18:00\"}",
                         "additionalProperties": {"type": "string"}},
@@ -131,6 +137,30 @@ TOOL_TASK_RESULT = {
             "do_not_call": {"type": "boolean", "description": "the callee asked not to be called again"},
         },
         "required": ["status", "summary"],
+    },
+}
+
+
+TOOL_NEXT_CALL = {
+    "name": NEXT,
+    "description": "Plans the next call of this task, instead of task_result: when the callee asked to be called "
+                   "again later, or gave another number of theirs to call (e.g. the reception). The task stays "
+                   "open and the next call gets the history. Not for a number of someone else.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "not_before": {"type": "string", "description": "earliest time for the call, YYYY-MM-DDTHH:MM local "
+                                                            "time (e.g. in an hour, as the callee asked)"},
+            "not_after": {"type": "string", "description": "latest time for this call, if the callee named one; "
+                                                           "default the end of the task's time window"},
+            "number": {"type": "string", "description": "only if another number is to be called: a number the "
+                                                        "callee gave in this call for themselves (their office, "
+                                                        "reception, mobile); default the number called now"},
+            "label": {"type": "string", "description": "for a new number: what it is, e.g. 'Rezeption', 'Büro'"},
+            "summary": {"type": "string", "description": "what came of this call so far, one to three sentences "
+                                                         "for the requester, plain text"},
+        },
+        "required": ["not_before", "summary"],
     },
 }
 
@@ -305,7 +335,43 @@ def upgrade(cfg, t: dict) -> dict:
         t["steps"] = steps
     if "tries" not in t:
         t["tries"] = sum(a.get("kind") == "call" for a in t.get("attempts") or [])
+    if t.get("status") == LEFT and t.get("not_after"):  # a message on the mailbox: waiting for a call back now
+        try:
+            if datetime.now(_tz(cfg)) <= datetime.fromisoformat(t["not_after"]):
+                t["status"] = WAITING
+                t.pop("finished", None)
+        except ValueError:
+            pass
     return t
+
+
+def reached(task: dict) -> int:
+    """Steps that count against task_max_steps: calls that reached someone, and steps of the requester (#92).
+    A message on a mailbox and a try without an answer do not count."""
+    return sum(s.get("outcome") == "talked" or s.get("kind") == REQUESTER for s in task.get("steps") or [])
+
+
+def deadline(task: dict) -> datetime:
+    """Until when the call planned now may be made: its own latest time (next_call), within the task's window."""
+    end = datetime.fromisoformat(task["not_after"])
+    until = task.get("call_until")
+    return min(end, datetime.fromisoformat(until)) if until else end
+
+
+def history(task: dict, transcripts: bool = True) -> str:
+    """The earlier steps of a task in a few lines for Claude: when, which way, what came of it, and (for the
+    evaluation) what was said. Marked as data: earlier transcripts are never instructions."""
+    lines = []
+    for i, s in enumerate(task.get("steps") or [], 1):
+        if s.get("kind") == REQUESTER:
+            lines.append(f"{i}. {s['time'][:16]} the requester {s.get('by') or ''} added: {s.get('text', '')}")
+            continue
+        way = "you called" if s["kind"] == CALL_OUT else "they called you"
+        head = f"{i}. {s['time'][:16]} {way} ({s['number']}), {s['outcome']}"
+        lines.append(head + (f": {s['result']}" if s.get("result") else ""))
+        if transcripts and s.get("transcript"):
+            lines.append("   Transcript: " + s["transcript"].replace("\n", "\n   "))
+    return "\n".join(lines)
 
 
 def find_requester(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict | None:
@@ -514,7 +580,7 @@ def callback_note(task: dict, owner: str) -> str:
 
 def message_was_left(task: dict) -> bool:
     """Whether an earlier attempt of this task left a message on the mailbox."""
-    return any(a.get("outcome") == "message left" for a in task["attempts"])
+    return any(a.get("outcome") == "message left" for a in task["attempts"] + (task.get("steps") or []))
 
 
 def report_text(task: dict) -> str:
@@ -536,8 +602,8 @@ def report_text(task: dict) -> str:
 def clean_result(data: dict) -> dict:
     """The task_result input in a fixed shape (the model's output is not trusted to have it)."""
     data = data if isinstance(data, dict) else {}
-    status = data.get("status") if data.get("status") in ("done", "partial", "failed", "not_reached",
-                                                           LEFT) else "partial"
+    status = data.get("status") if data.get("status") in ("done", "partial", "failed", "not_reached", LEFT, WAIT,
+                                                           WAITING, NO_REPLY, "cancelled") else "partial"
     answers = data.get("answers") if isinstance(data.get("answers"), dict) else {}
     steps = [{"step": str(s.get("step") or "")[:MAX_TEXT], "done": bool(s.get("done")),
               "result": str(s.get("result") or "")[:MAX_TEXT]}
@@ -653,7 +719,7 @@ class TaskStore:
             t = self._find(task_id)
             if t is None:
                 return "not found"
-            if t["status"] != PLANNED:
+            if t["status"] not in (PLANNED, WAITING):
                 return f"task is {t['status']}"
             self._finish(t, {"status": "cancelled", "summary": "Cancelled."}, "cancelled")
             return ""
@@ -664,17 +730,37 @@ class TaskStore:
             return sum(a["time"].startswith(day) for t in self.tasks for a in t["attempts"])
 
     def expire(self, now: datetime) -> list[dict]:
-        """Planned tasks whose time window is over end as not_reached. Returns them (to be reported)."""
+        """Tasks whose time is over: planned ones end as not_reached (partial if an earlier call reached someone),
+        waiting ones as no_reply. Returns them (to be reported)."""
         out = []
         with self.lock:
             for t in self.tasks:
-                if t["status"] == PLANNED and now > datetime.fromisoformat(t["not_after"]):
-                    tried = len(t["attempts"])
-                    self._finish(t, {"status": "not_reached", "summary":
-                                     f"Nobody was reached in the time window ({tried} attempt(s))." if tried else
-                                     "The time window passed before a call was possible."}, "not_reached")
+                if t["status"] == PLANNED and now > deadline(t):
+                    self._give_up(t, "The next call could not be made in its time window.")
+                    out.append(dict(t))
+                elif t["status"] == WAITING and now > datetime.fromisoformat(t["not_after"]):
+                    last = (t.get("result") or {}).get("summary") or ""
+                    self._finish(t, {"status": NO_REPLY, "summary": f"No call back until {t['not_after'][:16]}."
+                                     + (f" Before: {last}" if last else ""),
+                                     "open_points": [s for s in (t.get("result") or {}).get("open_points") or []]
+                                     or [t["goal"]]}, NO_REPLY)
                     out.append(dict(t))
         return out
+
+    def _give_up(self, t: dict, why: str):
+        """Nobody reached for the call planned now: not_reached, or partial if an earlier call reached someone
+        (then what came of it so far is the result)."""
+        tried = sum(a["kind"] == "call" for a in t["attempts"])
+        talked = [s for s in t["steps"] if s.get("outcome") == "talked"]
+        if talked:
+            before = (t.get("result") or {})
+            self._finish(t, {"status": "partial", "summary": f"{why} So far: {talked[-1].get('result') or ''}".strip(),
+                             "answers": before.get("answers") or {}, "steps": before.get("steps") or [],
+                             "open_points": before.get("open_points") or [t["goal"]]}, "partial")
+        else:
+            self._finish(t, {"status": "not_reached", "summary":
+                             f"Nobody was reached in the time window ({tried} attempt(s))." if tried else
+                             "The time window passed before a call was possible."}, "not_reached")
 
     def claim(self, now: datetime) -> dict | None:
         """The next task due now (earliest first), marked as running; None if nothing is due or allowed now.
@@ -684,7 +770,7 @@ class TaskStore:
         limit = int(self.cfg.outbound_max_calls_per_day or 0)
         with self.lock:
             due = [t for t in self.tasks if t["status"] == PLANNED
-                   and datetime.fromisoformat(t["next_try"]) <= now <= datetime.fromisoformat(t["not_after"])
+                   and datetime.fromisoformat(t["next_try"]) <= now <= deadline(t)
                    and not self.blocked(t["number"])]
             if not due or (limit and self.calls_today(now) >= limit):
                 return None
@@ -692,12 +778,11 @@ class TaskStore:
             return self._start(t, now, "call", t["number"])
 
     def _awaits_callback(self, t: dict, key: str, now: datetime) -> bool:
-        """A task this number may continue by calling in: tried before and still planned, or ended with a message
-        on the mailbox (which asks for a call back) while its time window lasts. Any number of the task's contact
-        counts (#92), not only the one dialed."""
+        """A task this number may continue by calling in: tried before and still planned, or waiting for a call
+        back while its time window lasts. Any number of the task's contact counts (#92), not only the one dialed."""
         if not t["attempts"] or key not in {self._key(n) for n in numbers_of(self.cfg, t)}:
             return False
-        return t["status"] == PLANNED or (t["status"] == LEFT and now <= datetime.fromisoformat(t["not_after"]))
+        return t["status"] == PLANNED or (t["status"] == WAITING and now <= datetime.fromisoformat(t["not_after"]))
 
     def claim_callback(self, number: str, now: datetime) -> dict | None:
         """The open task for a number that was tried before and now calls in; marked as running."""
@@ -716,6 +801,7 @@ class TaskStore:
             return any(self._awaits_callback(t, key, now) for t in self.tasks)
 
     def _start(self, t: dict, now: datetime, kind: str, number: str = "") -> dict:
+        t["before"] = t["status"]  # a call back that comes to nothing goes back to this (not_reached)
         t["status"] = RUNNING
         t["attempts"].append({"time": now.astimezone(_tz(self.cfg)).isoformat(timespec="seconds"), "kind": kind,
                               "number": number or t["number"], "outcome": ""})
@@ -729,21 +815,25 @@ class TaskStore:
         """After an attempt without a conversation: planned again for a retry, or final. Returns the task."""
         with self.lock:
             t = self._find(task_id)
-            left = message_was_left(t)
             t["attempts"][-1]["outcome"] = outcome
-            if left:  # a call back after the message came to nothing: the task stays as it ended, no new attempt
-                t["status"] = LEFT
+            again = now + timedelta(minutes=max(1, int(self.cfg.task_retry_minutes or 15)))
+            if t["attempts"][-1]["kind"] == "callback":  # a call back came to nothing: the task goes on as it was
+                t["status"] = t.get("before") if t.get("before") in (PLANNED, WAITING) else WAITING
+                if t["status"] == PLANNED:
+                    t["next_try"] = max(datetime.fromisoformat(t["next_try"]),
+                                        again).astimezone(_tz(self.cfg)).isoformat(timespec="minutes")
                 self._save()
                 self._changed(t)
                 return dict(t)
             calls = t["tries"]  # dialed since the last planned call (#92); calls back are not counted
-            again = now + timedelta(minutes=max(1, int(self.cfg.task_retry_minutes or 15)))
-            if calls <= t["retries"] and again < datetime.fromisoformat(t["not_after"]):
+            if calls <= t["retries"] and again < deadline(t):
                 t["status"] = PLANNED
                 t["next_try"] = again.astimezone(_tz(self.cfg)).isoformat(timespec="minutes")
                 self._save()
                 self._changed(t)
                 log.info("Task %s: %s, next attempt at %s", t["id"], outcome, t["next_try"])
+            elif t["steps"]:
+                self._give_up(t, f"The next call reached nobody after {calls} attempt(s) ({outcome}).")
             else:
                 self._finish(t, {"status": "not_reached",
                                  "summary": f"Nobody was reached after {calls} attempt(s) ({outcome})."},
@@ -761,6 +851,39 @@ class TaskStore:
                                "number": last.get("number") or t["number"], "outcome": outcome,
                                "transcript": clip(transcript), "result": str(result or "").strip()[:MAX_TEXT]})
             self._save()
+            return dict(t)
+
+    def wait(self, task_id: str, result: dict, outcome: str = "talked") -> dict:
+        """After a call: the task waits for a call back until not_after (a message was left, or the callee will
+        call back). The result so far is kept for the report."""
+        with self.lock:
+            t = self._find(task_id)
+            if t["attempts"] and not t["attempts"][-1]["outcome"]:
+                t["attempts"][-1]["outcome"] = outcome
+            t["status"] = WAITING
+            t["result"] = clean_result(result) | {"status": WAITING}
+            self._save()
+            self._changed(t)
+            log.info("Task %s: waiting for a call back until %s", t["id"], t["not_after"])
+            return dict(t)
+
+    def plan_next(self, task_id: str, number: str, not_before: datetime, until: datetime | None,
+                  result: dict) -> dict:
+        """After a call: the next call of the task (#92), to this number from not_before (until its own latest
+        time, within the task's window). The retries start again; the result so far is kept."""
+        with self.lock:
+            t = self._find(task_id)
+            if t["attempts"] and not t["attempts"][-1]["outcome"]:
+                t["attempts"][-1]["outcome"] = "talked"
+            t["status"] = PLANNED
+            t["number"] = number
+            t["next_try"] = not_before.astimezone(_tz(self.cfg)).isoformat(timespec="minutes")
+            t["call_until"] = until.astimezone(_tz(self.cfg)).isoformat(timespec="minutes") if until else ""
+            t["tries"] = 0
+            t["result"] = clean_result(result) | {"status": PLANNED}
+            self._save()
+            self._changed(t)
+            log.info("Task %s: next call to %s from %s", t["id"], number, t["next_try"])
             return dict(t)
 
     def set_contact(self, task_id: str, contact_id: str):

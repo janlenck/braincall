@@ -119,12 +119,10 @@ def contact_in_use(contact: dict) -> str:
     "" if nothing (contacts.Contacts.in_use)."""
     if task_store is None:
         return ""
-    now = datetime.now(timezone.utc)
     for t in task_store.all():
-        waiting = t["status"] == tasks.LEFT and now <= datetime.fromisoformat(t["not_after"])
         mine = (t["contact_id"] == contact.get("id") if t.get("contact_id")
                 else config.has_number(contact, t["number"], cfg.country_code))  # a task from before #92
-        if (t["status"] not in tasks.FINAL or waiting) and mine:
+        if t["status"] not in tasks.FINAL and mine:
             return t.get("goal") or t.get("name") or t["id"]
     return ""
 
@@ -190,7 +188,10 @@ TASK_TITLE = {"de": "Auftrag Anruf bei {who}: {status}", "en": "Task call to {wh
               "uk": "Завдання, дзвінок до {who}: {status}"}
 STATUS_WORDS = {"de": {"done": "erledigt", "partial": "teilweise erledigt", "failed": "nicht geklappt",
                        "not_reached": "nicht erreicht", "message_left": "Nachricht hinterlassen",
-                       "cancelled": "abgebrochen"}}
+                       "cancelled": "abgebrochen", "waiting": "wartet auf Rückruf",
+                       "no_reply": "kein Rückruf"},
+                "en": {"waiting": "waiting for a call back", "no_reply": "no call back"},
+                "uk": {"waiting": "очікує зворотного дзвінка", "no_reply": "без зворотного дзвінка"}}
 
 
 def find_caller(number: str, wildcard: bool = True) -> dict | None:
@@ -504,14 +505,25 @@ def call_back(task: dict, text: str):
                      f"about it. Result ({task['status']}): {text}")
 
 
+def report_waiting(task: dict):
+    """A task waits for a call back (#92): a short notification with what came of it so far, no call back. The
+    final report comes when it ends."""
+    try:
+        lang = cfg.language if cfg.language in TASK_TITLE else "de"
+        status = STATUS_WORDS.get(lang, {}).get(task["status"], task["status"])
+        title = TASK_TITLE[lang].format(who=task["name"] or task["number"], status=status)
+        for service in cfg.notify_services or []:
+            ha.notify(str(service), title, tasks.report_text(task))
+    except Exception:  # noqa: BLE001
+        log.exception("Reporting task %s failed", task.get("id"))
+
+
 def settle_task(task: dict, session):
-    """After the call of a task (line already free): retry if nobody was reached (also when nothing we said was
-    answered), otherwise follow-up and result. A message left on a mailbox ends the task as message_left: it is
-    reported and not dialed again."""
+    """After a call of a task (line already free): retry if nobody was reached (also when nothing we said was
+    answered). Otherwise the call is a step of the task's history and the evaluation decides (#92): the next call,
+    waiting for a call back (also after a message on the mailbox), or the end with its report."""
     try:
         now = datetime.now(timezone.utc)
-        # a call back after a message was left: the task was reported as message_left already (TaskStore.not_reached)
-        reported = (task.get("result") or {}).get("status") == tasks.LEFT
         if session is None or not session.caller_turns:
             done = task_store.not_reached(task["id"], "no answer" if session is None else "nothing said", now)
         elif session.mailbox and not session.message_left:
@@ -536,15 +548,22 @@ def settle_task(task: dict, session):
             if status != "not_reached":  # someone was reached, or a message was left: a step of the history (#92)
                 task_store.record_step(task["id"], session.transcript,
                                        "message left" if status == tasks.LEFT else "talked", result.get("summary"))
+            if result.get("do_not_call"):
+                task_store.block(task["number"], task["id"])
+                if status in (tasks.WAIT, tasks.NEXT):  # nobody is called again: the task ends with what it has
+                    status = "partial"
             if status == "not_reached":
                 done = task_store.not_reached(task["id"], "mailbox", now)
-            elif status == tasks.LEFT:
-                done = task_store.finish(task["id"], {**result, "status": status}, "message left")
+            elif status in (tasks.LEFT, tasks.WAIT):
+                done = task_store.wait(task["id"], result, "message left" if status == tasks.LEFT else "talked")
+                report_waiting(done)
+            elif status == tasks.NEXT:
+                nxt = result["next_call"]
+                done = task_store.plan_next(task["id"], nxt["number"], nxt["not_before"], nxt["until"],
+                                            {**result, "status": "partial"})
             else:
-                if result.get("do_not_call"):
-                    task_store.block(task["number"], task["id"])
-                done = task_store.finish(task["id"], result)
-        if done["status"] in tasks.FINAL and not (reported and done["status"] == tasks.LEFT):
+                done = task_store.finish(task["id"], {**result, "status": status})
+        if done["status"] in tasks.FINAL:
             report_task(done)
     except Exception:  # noqa: BLE001
         log.exception("Task %s failed", task.get("id"))

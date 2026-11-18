@@ -99,6 +99,7 @@ options:
   tasks: true
   task_max_retries: 3
   task_retry_minutes: 15
+  task_max_steps: 6
   outbound_hours: "09:00-20:00"
   outbound_max_calls_per_day: 20
   outbound_blocked:
@@ -186,6 +187,7 @@ schema:
   tasks: bool
   task_max_retries: int(0,10)
   task_retry_minutes: int(1,1440)
+  task_max_steps: int(1,20)
   outbound_hours: match(^([0-2]?[0-9]:[0-5][0-9]-[0-2]?[0-9]:[0-5][0-9])?$)
   outbound_max_calls_per_day: int(0,1000)
   outbound_blocked:

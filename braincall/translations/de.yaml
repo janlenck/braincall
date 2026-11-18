@@ -183,6 +183,9 @@ configuration:
     description: So viele weitere Versuche darf ein Auftrag höchstens verlangen, wenn niemand erreicht wird.
   task_retry_minutes:
     name: Pause zwischen Versuchen (Minuten)
+  task_max_steps:
+    name: Höchstens Schritte pro Auftrag
+    description: Gespräche, in denen jemand erreicht wurde, plus Schritte, die der Auftraggeber hinzufügt. Danach endet der Auftrag mit dem, was er hat. Versuche ohne Antwort zählen nicht.
   outbound_hours:
     name: Zeiten für geplante Anrufe
     description: z. B. 09:00-20:00; geplante Anrufe gehen nur in dieser Tageszeit raus. Leer = jederzeit.
