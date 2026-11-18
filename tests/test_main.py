@@ -1643,9 +1643,38 @@ def watchdog_rounds(main, monkeypatch, statuses):
 
 def test_a_lost_registration_is_announced_from_the_second_round(main, events, monkeypatch):
     """pyVoIP re-registers every 2 min (registering for a moment): one round is no change, two are."""
-    monkeypatch.setattr(main, "sip_seen", "REGISTERED")
+    monkeypatch.setattr(main, "sip_confirmed", "REGISTERED")
     R, G, F = PhoneStatus.REGISTERED, PhoneStatus.REGISTERING, PhoneStatus.FAILED
     watchdog_rounds(main, monkeypatch, [R, G, R, F, F, F, R])
     main.state_events.join()
     assert [d["sip"] for d in events["state"]] == ["FAILED", "REGISTERED"]
     assert {d["line"] for d in events["state"]} == {"idle"}
+
+
+def test_a_call_during_a_re_registration_announces_the_confirmed_sip_status(main, events, monkeypatch):
+    """A line change in pyVoIP's moment of REGISTERING (every 2 min) must not announce it: no flapping."""
+    monkeypatch.setattr(main, "sip_confirmed", "REGISTERED")
+    monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.REGISTERING)
+    main.set_line(main.RINGING, "0151111", main.find_caller("0151111"), "in")
+    main.set_line(main.IDLE)
+    main.state_events.join()
+    assert [d["sip"] for d in events["state"]] == ["REGISTERED", "REGISTERED"]
+    assert main.line_status()["sip"] == "REGISTERING"  # /api/status is the moment, like /health
+
+
+def test_state_events_are_queued_in_the_order_of_their_snapshots(main, events, monkeypatch):
+    """A watchdog announcement racing a call: whatever comes first, the last event has the current line."""
+    monkeypatch.setattr(main, "sip_confirmed", "REGISTERED")
+    statuses = iter([PhoneStatus.FAILED] * 200 + [PhoneStatus.REGISTERED] * 200)
+    monkeypatch.setattr(main, "sip_status", lambda: next(statuses, PhoneStatus.REGISTERED))
+    watchdog = threading.Thread(target=lambda: [main.note_sip() for _ in range(200)])
+    watchdog.start()
+    for _ in range(50):
+        main.set_line(main.IN_CALL, "0151111", None, "in")
+        main.set_line(main.IDLE)
+    main.set_line(main.IN_CALL, "0151111", None, "in")
+    watchdog.join()
+    main.state_events.join()
+    assert events["state"][-1]["line"] == "in_call"
+    main.set_line(main.IDLE)
+    main.state_events.join()

@@ -198,7 +198,8 @@ After each call the event `braincall_call` is fired (`number`, `answered`, `reas
 Every change of the line fires the event `braincall_state`: `line` (`idle`, `ringing` for an incoming call until it
 is answered, `dialing` for an outbound call until it is answered, `in_call`), `sip` (the FRITZ!Box registration, e.g.
 `REGISTERED`, `FAILED`) and `call` (`number`, `caller_name`, `direction` `in`/`out`, `since`: when the line got into
-this state; `null` while idle). A lost registration is reported once it lasts longer than one watchdog round (30 s).
+this state; `null` while idle). `sip` is the registration as the watchdog confirmed it: a lost one is reported
+once it lasts longer than one watchdog round (30 s), the moment of re-registering every 2 minutes never.
 A call rejected on a busy line or from an unknown number does not change the line. `GET /api/status` (with the
 token) answers the same, `GET /health` has `line` without the call. Brain Assist shows this as entities.
 

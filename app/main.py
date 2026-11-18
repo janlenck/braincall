@@ -179,7 +179,7 @@ phone_lock = threading.Lock()  # swapping the phone (connect) vs. picking the on
 IDLE, RINGING, IN_CALL, DIALING = "idle", "ringing", "in_call", "dialing"
 line_lock = threading.Lock()
 line = {"line": IDLE, "call": None}
-sip_seen = ""  # the SIP status the last braincall_state event had
+sip_confirmed = ""  # the SIP status as the watchdog confirmed it (not pyVoIP's moment of re-registering)
 state_events: queue.Queue = queue.Queue()  # sent one after the other by one thread: in order, never during a call
 state_sender: threading.Thread | None = None
 state_sender_lock = threading.Lock()
@@ -454,13 +454,18 @@ def line_status() -> dict:
         return {"line": line["line"], "sip": sip_value(), "call": dict(line["call"]) if line["call"] else None}
 
 
-def announce_state():
-    """Fires braincall_state with the line, the SIP status and the current call; in the background."""
-    global sip_seen, state_sender
+def announce_state(sip: str | None = None):
+    """Fires braincall_state with the line, the SIP status and the current call; in the background.
+    sip: a newly confirmed SIP status (note_sip). Otherwise the event has the last confirmed one, so a change of the
+    line during pyVoIP's re-registration does not announce a moment of REGISTERING. Queued while line_lock is held:
+    the events go out in the order of their snapshots."""
+    global sip_confirmed, state_sender
     with line_lock:
-        data = {"line": line["line"], "sip": sip_value(), "call": dict(line["call"]) if line["call"] else None}
-        sip_seen = data["sip"]
-    state_events.put(data)
+        if sip is not None:
+            sip_confirmed = sip
+        data = {"line": line["line"], "sip": sip_confirmed or sip_value(),
+                "call": dict(line["call"]) if line["call"] else None}
+        state_events.put(data)
     with state_sender_lock:
         if state_sender is None or not state_sender.is_alive():
             state_sender = threading.Thread(target=send_states, name="state events", daemon=True)
@@ -468,9 +473,10 @@ def announce_state():
 
 
 def note_sip():
-    """The SIP status changed since the last braincall_state event: announce it (watchdog, after connecting)."""
-    if sip_value() != sip_seen:
-        announce_state()
+    """Confirms the SIP status (watchdog, after connecting); a change fires braincall_state."""
+    current = sip_value()
+    if current != sip_confirmed:
+        announce_state(current)
 
 
 def send_states():
