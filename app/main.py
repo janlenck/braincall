@@ -1,5 +1,6 @@
 """BrainCall: SIP phone on the FRITZ!Box plus an HTTP API: call trigger, planned calls and Brain Assist."""
 import hmac
+import http.client
 import json
 import logging
 import logging.handlers
@@ -162,6 +163,15 @@ CALLBACK_WAIT = 600  # seconds to wait for a free line before the call back with
 WATCHDOG_INTERVAL = 30  # seconds between checks of the SIP registration
 RECONNECT_AFTER = 300  # seconds without SIP registration before the phone is set up again
 stopping = threading.Event()  # set on shutdown: no new phone is set up from then on
+# /health (#37): the SIP watchdog loop counts as stuck after this long without a round; a reconnect blocks it for at
+# most a few minutes (pyVoIP waits up to 30 s per registration step)
+WATCHDOG_STALL = 600
+STARTUP_GRACE = 600  # seconds the Supervisor's watchdog may find the HTTP API not started yet (SIP setup first)
+HEALTH_PROBE_TIMEOUT = 5  # seconds; the Supervisor gives a watchdog request 10
+started = time.monotonic()
+api_up = threading.Event()  # set once the HTTP API listens
+sip_watchdog: threading.Thread | None = None  # the thread of watchdog(), once started
+watchdog_seen = 0.0  # time.monotonic() of the SIP watchdog loop's last round
 phone_lock = threading.Lock()  # swapping the phone (connect) vs. picking the one to stop on shutdown
 
 
@@ -314,7 +324,8 @@ def start_ingress():
         server = ThreadingHTTPServer((INGRESS_HOST, INGRESS_PORT), IngressHandler)
     except OSError as e:
         log.warning("Contacts page in Home Assistant not available: cannot listen on %s:%s (%s); it is still at "
-                    "/contacts on the API port, with the token", INGRESS_HOST, INGRESS_PORT, e)
+                    "/contacts on the API port, with the token. The Supervisor's watchdog cannot ask /health either "
+                    "and restarts the app if it is on", INGRESS_HOST, INGRESS_PORT, e)
         return
     threading.Thread(target=server.serve_forever, name="contacts page", daemon=True).start()
     log.info("Contacts page: in Home Assistant's sidebar (ingress, %s:%s)", INGRESS_HOST, INGRESS_PORT)
@@ -778,9 +789,13 @@ def connect(old=None):
 
 
 def watchdog():
-    """Sets the phone up again while it stays unregistered for RECONNECT_AFTER seconds, never during a call."""
+    """Sets the phone up again while it stays unregistered for RECONNECT_AFTER seconds, never during a call.
+    Every round is noted in watchdog_seen: a loop that hangs (e.g. pyVoIP stuck in a reconnect) makes /health 503."""
+    global watchdog_seen
     lost = None
+    watchdog_seen = time.monotonic()
     while not stopping.wait(WATCHDOG_INTERVAL):
+        watchdog_seen = time.monotonic()
         if sip_status() == PhoneStatus.REGISTERED:
             lost = None
             continue
@@ -799,6 +814,52 @@ def watchdog():
         finally:
             lost = time.monotonic()  # next try RECONNECT_AFTER from now
             busy.release()
+
+
+def problems() -> list:
+    """Why the process is not healthy (GET /health answers 503 then, #37): the SIP watchdog loop stopped or hangs.
+    SIP not registered is none: the watchdog reconnects, a restart would not help while the FRITZ!Box is down."""
+    found = []
+    if sip_watchdog is not None and not stopping.is_set():
+        idle = time.monotonic() - watchdog_seen
+        if not sip_watchdog.is_alive():
+            found.append("SIP watchdog stopped")
+        elif idle > WATCHDOG_STALL:
+            found.append(f"SIP watchdog stuck for {int(idle)} s")
+    return found
+
+
+def health() -> tuple[int, dict]:
+    """GET /health: 200 while healthy, 503 with the problems; the status fields in both cases."""
+    found = problems()
+    return (503 if found else 200), {"status": "unhealthy" if found else "ok", "problems": found,
+                                     "sip": sip_status().value, "busy": busy.locked(), "phone": PHONE,
+                                     "time": datetime.now().isoformat(timespec="seconds")}
+
+
+def probe_api() -> tuple[int, dict]:
+    """GET /health on the ingress port, which the Supervisor's watchdog asks (braincall/config.yaml): it listens on
+    the Supervisor's network on a fixed port, whatever http_port is and even if the API listens on 127.0.0.1 only.
+    It asks the API's own /health, so an HTTP API that no longer answers counts as unhealthy too. While the app
+    starts (SIP is set up before the API listens) it is healthy for STARTUP_GRACE seconds."""
+    if not api_up.is_set():
+        waited = time.monotonic() - started
+        if waited < STARTUP_GRACE:
+            return 200, {"status": "starting", "problems": []}
+        return 503, {"status": "unhealthy", "problems": [f"HTTP API not started after {int(waited)} s"]}
+    conn = http.client.HTTPConnection("127.0.0.1", int(cfg.http_port), timeout=HEALTH_PROBE_TIMEOUT)
+    try:
+        conn.request("GET", "/health")
+        r = conn.getresponse()
+        body = json.loads(r.read() or b"{}")
+        if r.status in (200, 503) and isinstance(body, dict):
+            return r.status, body
+        problem = f"HTTP API answered /health with {r.status}"
+    except Exception as e:  # noqa: BLE001
+        problem = f"HTTP API not answering on port {cfg.http_port}: {e}"
+    finally:
+        conn.close()
+    return 503, {"status": "unhealthy", "problems": [problem]}
 
 
 PAGE = Path(__file__).resolve().parent / "web" / "contacts.html"
@@ -991,9 +1052,8 @@ class Handler(BaseHTTPRequestHandler):
         if self._contacts():
             return
         self._route()
-        if self.path == "/health":  # the only path without token: nothing but the status
-            return self._send(200, {"sip": sip_status().value, "busy": busy.locked(), "phone": PHONE,
-                                    "time": datetime.now().isoformat(timespec="seconds")})
+        if self.path == "/health":  # the only path without token: nothing but the status (503: unhealthy, #37)
+            return self._send(*health())
         if self.path == "/api/version":
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -1162,10 +1222,13 @@ class Handler(BaseHTTPRequestHandler):
 
 class IngressHandler(Handler):
     """The contacts page inside Home Assistant (ingress): only the page and its API, only from the Supervisor's
-    ingress proxy, which has logged the user in. Everything else of the API needs the token on the main port."""
+    ingress proxy, which has logged the user in. Everything else of the API needs the token on the main port.
+    Besides: GET /health for the Supervisor's watchdog (probe_api), from any client, it is only the status."""
     ingress = True
 
     def _only_page(self):
+        if self.command == "GET" and self.path == "/health":
+            return self._send(*probe_api())
         if self.client_address[0] != INGRESS_PROXY:
             return self._send(403, {"error": "only through Home Assistant"})
         if not self._contacts():
@@ -1203,6 +1266,7 @@ def log_start():
 
 
 def main():
+    global sip_watchdog
     console.banner(cfg)
     log_start()
     missing = incomplete()
@@ -1281,6 +1345,10 @@ def main():
             log.warning("Opening the log failed: %s", e)
 
     try:
+        # as an app: the contacts page inside Home Assistant (ingress) and the watchdog's /health; before SIP, so
+        # the watchdog sees the app starting while the FRITZ!Box takes its time
+        if cfg.supervisor_token:
+            start_ingress()
         if PHONE:
             try:
                 connect()
@@ -1302,13 +1370,12 @@ def main():
             # greetings and fillers synthesized ahead, so the caller hears them without waiting for TTS
             threading.Thread(target=phrase_cache.prewarm, args=(phrases.wanted(cfg),), name="phrase cache",
                              daemon=True).start()
-            threading.Thread(target=watchdog, name="SIP watchdog", daemon=True).start()
+            sip_watchdog = threading.Thread(target=watchdog, name="SIP watchdog", daemon=True)
+            sip_watchdog.start()
         if task_store is not None:
             threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
         threading.Thread(target=assist_loop, name="assist conversations", daemon=True).start()
         threading.Thread(target=contacts_loop, name="contacts", daemon=True).start()
-        if cfg.supervisor_token:  # as an app: the contacts page inside Home Assistant (ingress)
-            start_ingress()
         if shopping_list is not None:
             log.info("Shopping list: %s", shopping_list.describe())
             threading.Thread(target=shopping_loop, name="shopping list", daemon=True).start()
@@ -1326,6 +1393,7 @@ def main():
         # as an app: tell Home Assistant where the API is, so Brain Assist needs no address or token typed
         threading.Thread(target=discovery.announce, args=(cfg, API_TOKEN), name="discovery", daemon=True).start()
         console.start_keys(quit_, test_call, open_log)
+        api_up.set()  # listening since the server was made: requests wait in the queue until serve_forever
         server.serve_forever()
     except KeyboardInterrupt:
         pass

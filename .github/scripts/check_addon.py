@@ -23,6 +23,12 @@ for path in sorted((ADDON / "translations").glob("*.yaml")):
     names = set(yaml.safe_load(path.read_text(encoding="utf-8"))["configuration"])
     if diff := names ^ set(schema):
         errors.append(f"{path.name} does not match the schema: {sorted(diff)}")
+# the watchdog asks /health on the ingress port, the only port of the app on the Supervisor's network (#37)
+if config.get("watchdog") != f"http://[HOST]:[PORT:{config['ingress_port']}]/health":
+    errors.append(f"watchdog {config.get('watchdog')!r} must be http://[HOST]:[PORT:<ingress_port>]/health")
+main_py = (ADDON.parent / "app" / "main.py").read_text(encoding="utf-8")
+if f"INGRESS_PORT = {config['ingress_port']} " not in main_py:
+    errors.append(f"ingress_port {config['ingress_port']} differs from INGRESS_PORT in app/main.py")
 build = yaml.safe_load((ADDON / "build.yaml").read_text(encoding="utf-8"))
 for arch, image in build["build_from"].items():
     if not RE_IMAGE.match(image):
