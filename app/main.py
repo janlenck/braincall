@@ -35,6 +35,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 
 import assist  # noqa: E402
 import config  # noqa: E402
+import contacts  # noqa: E402
 import discovery  # noqa: E402
 import fritz_sip  # noqa: E402
 import logfilter  # noqa: E402
@@ -110,6 +111,23 @@ def announce_task(task: dict):
 
 if task_store is not None:
     task_store.on_change = announce_task
+
+
+def contact_in_use(contact: dict) -> str:
+    """What an open planned call needs this contact for (its goal), so it is not deleted or merged away meanwhile;
+    "" if nothing (contacts.Contacts.in_use)."""
+    if task_store is None:
+        return ""
+    now = datetime.now(timezone.utc)
+    for t in task_store.all():
+        waiting = t["status"] == tasks.LEFT and now <= datetime.fromisoformat(t["not_after"])
+        if (t["status"] not in tasks.FINAL or waiting) and config.has_number(contact, t["number"], cfg.country_code):
+            return t.get("goal") or t.get("name") or t["id"]
+    return ""
+
+
+contact_store = contacts.Contacts(cfg, in_use=contact_in_use)
+CONTACTS_INTERVAL = 2  # seconds between looks at contacts.json for a change made by hand
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
                  if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
 if shopping_list is not None and cfg.shopping_rhythm_list:
@@ -166,7 +184,7 @@ def find_caller(number: str, wildcard: bool = True) -> dict | None:
     for c in cfg.callers:
         if c["number"] == "*":
             fallback = fallback or c
-        elif same_number(c["number"], number):
+        elif config.has_number(c, number, cfg.country_code):
             return c
     return fallback if wildcard else None
 
@@ -176,6 +194,14 @@ def caller_name(caller: dict | None) -> str:
     if not caller or caller["number"] == "*":
         return ""
     return caller["name"] or OWNER or caller["number"]
+
+
+def caller_label(caller: dict | None, number: str) -> str:
+    """For the log and notifications: the person and which of their phones, "Jan (laut)"; only the person if the
+    number has no label. "" for unknown callers. Everything said to others names only the person (caller_name)."""
+    name = caller_name(caller)
+    phone = config.phone_of(caller, number, cfg.country_code) if name else ""
+    return f"{name} ({phone})" if phone else name
 
 
 def web_for(caller: dict | None):
@@ -209,10 +235,12 @@ def same_person(whom: dict) -> list:
     out = [whom]
     for c in cfg.callers:
         entry_user = c["ha_user"].strip().casefold()
-        named = (user and entry_user == user) or (whom.get("number") and same_number(c["number"], whom["number"]))
+        named = (user and entry_user == user) or (whom.get("number") and config.has_number(c, whom["number"],
+                                                                                           cfg.country_code))
         if not named or c["number"] == "*" or entry_user == "*":
             continue
-        out.append({"number": c["number"], "ha_user": c["ha_user"]})
+        out.append({"ha_user": c["ha_user"], "contact": c.get("id") or ""})
+        out += [{"number": n["number"]} for n in c.get("numbers") or []]
     return out
 
 
@@ -246,6 +274,31 @@ def assist_closed(conv):
     threading.Thread(target=after_assist, args=(conv,), name="after assist", daemon=True).start()
 
 
+def contacts_loop():
+    """Reads contacts.json again when it was changed by hand: no restart needed."""
+    while not stopping.wait(CONTACTS_INTERVAL):
+        try:
+            contact_store.refresh()
+        except Exception:  # noqa: BLE001
+            log.exception("Contacts: reading the file again failed")
+
+
+INGRESS_PORT = 8098  # ingress_port in braincall/config.yaml
+
+
+def start_ingress():
+    """The contacts page for Home Assistant's ingress: listens only on the Supervisor's network, so it is not
+    reachable from the LAN without the token (the app runs with the host network)."""
+    try:
+        server = ThreadingHTTPServer((INGRESS_HOST, INGRESS_PORT), IngressHandler)
+    except OSError as e:
+        log.warning("Contacts page in Home Assistant not available: cannot listen on %s:%s (%s); it is still at "
+                    "/contacts on the API port, with the token", INGRESS_HOST, INGRESS_PORT, e)
+        return
+    threading.Thread(target=server.serve_forever, name="contacts page", daemon=True).start()
+    log.info("Contacts page: in Home Assistant's sidebar (ingress, %s:%s)", INGRESS_HOST, INGRESS_PORT)
+
+
 def assist_loop():
     while not stopping.wait(ASSIST_SWEEP):
         try:
@@ -263,6 +316,7 @@ def report(answered: bool, number: str, started: float, session=None, message=""
         "duration_s": round((ended or time.time()) - started),
         "transcript": "\n".join(session.transcript) if session else "",
         "caller_name": caller_name(caller),
+        "phone": config.phone_of(caller, number, cfg.country_code) if caller else "",
         "access": ",".join(sorted(caller["access"])) if caller else "",
         "summary": summary,
     })
@@ -285,7 +339,8 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
                 log.warning("Summary failed: %s", e)
             notify = caller.get("notify") if caller else None
             if inbound and (notify if notify is not None else "admin" not in access):
-                title = SUMMARY_TITLE[lang].format(who=f"{name} ({number})" if name else number)
+                label = caller_label(caller, number)
+                title = SUMMARY_TITLE[lang].format(who=f"{label} ({number})" if label else number)
                 text = summary or "\n".join(session.transcript)[-1500:]
                 for service in cfg.notify_services or []:
                     ha.notify(str(service), title, text)
@@ -558,7 +613,7 @@ def on_incoming(call):
         instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST)).strip()
     access = ",".join(sorted(rights))
     try:
-        log.info("Answering call from %s (%s, access %s%s)", number, name or "unknown", access,
+        log.info("Answering call from %s (%s, access %s%s)", number, caller_label(caller, number) or "unknown", access,
                  f", calling back for task {task['id']}" if task else "")
         call.answer()
         session = CallSession(call, brain, speech, cfg, phrase_cache)
@@ -670,7 +725,42 @@ def watchdog():
             busy.release()
 
 
+PAGE = Path(__file__).resolve().parent / "web" / "contacts.html"
+INGRESS_PROXY = "172.30.32.2"   # the Supervisor's ingress proxy: the only client of the contacts page in Home Assistant
+INGRESS_HOST = "172.30.32.1"    # the host on the Supervisor's network: the ingress port listens only there
+_admins: dict = {}              # Home Assistant user id -> (time, is admin)
+_choices = [0.0, {}]            # time, persons and devices for the contacts page (Home Assistant, cached)
+
+
+def ingress_admin(user_id: str) -> bool:
+    """Whether a Home Assistant user may use the contacts page through ingress: administrators only. Home
+    Assistant shows the page to administrators only (panel_admin); this keeps out others who open the address
+    directly. Unknown (the token cannot list users): allowed, Home Assistant has logged them in."""
+    now = time.monotonic()
+    known = _admins.get(user_id)
+    if known and now - known[0] < 300:
+        return known[1]
+    result = ha.user_admin(user_id) if user_id and ha.enabled else None
+    if result is None:
+        if "warned" not in _admins:
+            _admins["warned"] = (now, True)
+            log.warning("Contacts page: cannot check whether a Home Assistant user is an administrator (the token "
+                        "cannot list users); every logged-in user who opens its address can use it")
+        result = True
+    _admins[user_id] = (now, result)
+    return result
+
+
+def contact_choices() -> dict:
+    """Persons and devices of Home Assistant for the contacts page, read at most once a minute."""
+    if ha.enabled and time.monotonic() - _choices[0] > 60:
+        _choices[:] = [time.monotonic(), ha.people_and_devices()]
+    return _choices[1] or {"users": [], "devices": []}
+
+
 class Handler(BaseHTTPRequestHandler):
+    ingress = False  # IngressHandler: the contacts page inside Home Assistant (no token, Home Assistant logged in)
+
     def _send(self, code: int, body: dict):
         data = json.dumps(body, ensure_ascii=False).encode()
         self.send_response(code)
@@ -683,6 +773,92 @@ class Handler(BaseHTTPRequestHandler):
         """Every request needs the token, also from 127.0.0.1 (other apps on the host reach that too)."""
         return hmac.compare_digest(self.headers.get("Authorization", "").encode(),
                                    f"Bearer {API_TOKEN}".encode())
+
+    def _body(self) -> dict | None:
+        """The JSON object of a request; None after an error was sent."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0:
+                raise ValueError("negative Content-Length")
+            if length > MAX_BODY:
+                self._send(413, {"error": "body too large"})
+                return None
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("not an object")
+            return body
+        except Exception:  # noqa: BLE001
+            self._send(400, {"error": "invalid json"})
+            return None
+
+    def _contacts(self) -> bool:
+        """The contacts page and its API (#93). True if the request was one of them (and is answered).
+        GET /contacts (in Home Assistant: /) the page; GET /api/contacts the contacts with the choices for the form;
+        POST /api/contacts a new one; PUT /api/contacts/<id> a change; DELETE /api/contacts/<id>;
+        POST /api/contacts/<id>/merge {"other": id} merges another contact into this one."""
+        path = urlsplit(self.path).path
+        if self.command == "GET" and (path == "/contacts" or (self.ingress and path in ("/", "/index.html"))):
+            try:
+                data = PAGE.read_bytes()
+            except OSError:
+                self._send(404, {"error": "page not found"})
+                return True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+        if not (path == "/api/contacts" or path.startswith("/api/contacts/")):
+            return False
+        allowed = ingress_admin(self.headers.get("X-Remote-User-Id", "")) if self.ingress else self._authorized()
+        if not allowed:
+            self._send(403 if self.ingress else 401, {"error": "unauthorized"})
+            return True
+        parts = path[len("/api/contacts"):].strip("/").split("/")
+        cid = parts[0] if parts[0] else ""
+        if self.command == "GET" and not cid:
+            contact_store.refresh()
+            items = contact_store.all()
+            for c in items:
+                c["in_use"] = contact_in_use({"numbers": config.entry_numbers(c)})
+            self._send(200, {"contacts": items, "system_language": cfg.language or "de",
+                             "web_access": bool(cfg.web_access), "phrase_languages": sorted(phrases.TEXTS),
+                             **contact_choices()})
+            return True
+        if self.command == "DELETE" and cid and len(parts) == 1:
+            why = contact_store.delete(cid)
+            if why == "not_found":
+                self._send(404, {"error": "not_found"})
+            elif why:
+                self._send(409, {"error": "in_use", "task": why})
+            else:
+                self._send(200, {"deleted": cid})
+            return True
+        if self.command not in ("POST", "PUT"):
+            self._send(405, {"error": "method not allowed"})
+            return True
+        body = self._body()
+        if body is None:
+            return True
+        if self.command == "POST" and cid and parts[1:] == ["merge"]:
+            merged, why = contact_store.merge(cid, str(body.get("other") or ""))
+            if merged is None:
+                self._send(404 if why == "not_found" else 409,
+                           {"error": "not_found"} if why == "not_found" else {"error": "in_use", "task": why})
+            else:
+                self._send(200, merged)
+            return True
+        if (self.command == "POST" and cid) or (self.command == "PUT" and (not cid or len(parts) > 1)):
+            self._send(404, {"error": "not found"})
+            return True
+        stored, errors = contact_store.save(body, cid, origin="page")
+        if errors:
+            self._send(404 if errors[0]["code"] == "not_found" else 400, {"errors": errors})
+        else:
+            self._send(201 if self.command == "POST" else 200, stored)
+        return True
 
     def _route(self):
         """/api/tasks and /api/shopping/… are the paths since 1.11; the ones without /api still work."""
@@ -735,6 +911,8 @@ class Handler(BaseHTTPRequestHandler):
                          "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
 
     def do_GET(self):  # noqa: N802
+        if self._contacts():
+            return
         self._route()
         if self.path == "/health":  # the only path without token: nothing but the status
             return self._send(200, {"sip": sip_status().value, "busy": busy.locked(), "phone": PHONE,
@@ -777,7 +955,13 @@ class Handler(BaseHTTPRequestHandler):
                  ", ".join(f"{k} {v}" for k, v in whom.items() if v))
         self._send(200, {"forgotten": forgotten})
 
+    def do_PUT(self):  # noqa: N802
+        if not self._contacts():
+            self._send(404, {"error": "not found"})
+
     def do_DELETE(self):  # noqa: N802
+        if self._contacts():
+            return
         self._route()
         if urlsplit(self.path).path == "/api/memory":
             if not self._authorized():
@@ -833,6 +1017,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802
+        if self._contacts():
+            return
         self._route()
         if self.path not in ("/call", "/api/converse") and not (self.path == "/tasks" and task_store is not None):
             return self._send(404, {"error": "not found"})
@@ -879,6 +1065,20 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("HTTP " + fmt, *args)
 
 
+class IngressHandler(Handler):
+    """The contacts page inside Home Assistant (ingress): only the page and its API, only from the Supervisor's
+    ingress proxy, which has logged the user in. Everything else of the API needs the token on the main port."""
+    ingress = True
+
+    def _only_page(self):
+        if self.client_address[0] != INGRESS_PROXY:
+            return self._send(403, {"error": "only through Home Assistant"})
+        if not self._contacts():
+            self._send(404, {"error": "not found"})
+
+    do_GET = do_POST = do_PUT = do_DELETE = _only_page
+
+
 def check_ha_admin():
     """Warns once at startup if the token cannot read automation definitions (needs an administrator)."""
     if ha.is_admin() is False:
@@ -918,14 +1118,19 @@ def main():
         log.warning("owner_name is not set (config.json) - the assistant will speak of \"the owner\"")
 
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
+    try:
+        log.info("Contacts: %s", contact_store.setup())
+    except OSError as e:
+        log.error("Contacts: %s could not be written (%s); the callers from the settings are used",
+                  contact_store.path, e)
     for w in config.WARNINGS:
         log.warning(w)
     log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
     log.info("Callers: %s", ", ".join(
-        f"{c['name'] or c['number'] or c['ha_user'] or c['ha_device']} ({','.join(sorted(c['access']))})"
+        f"{c['name'] or c['number'] or c['ha_user'] or c['ha_device'] or c['email']} ({','.join(sorted(c['access']))})"
         for c in cfg.callers) or "none, incoming calls and Brain Assist requests are rejected")
     with_assist = [c["name"] or c["ha_user"] or c["ha_device"] for c in cfg.callers if c["ha_user"] or c["ha_device"]]
-    log.info("Brain Assist: %s", ", ".join(with_assist) or "nobody (no entry in callers with ha_user or ha_device)")
+    log.info("Brain Assist: %s", ", ".join(with_assist) or "nobody (no contact with ha_user or ha_device)")
     if task_store is not None:
         span = tasks.hours(cfg)
         log.info("Planned calls: on, %s, at most %s per day, %d open (%s)",
@@ -1004,6 +1209,9 @@ def main():
         if task_store is not None:
             threading.Thread(target=task_loop, name="planned calls", daemon=True).start()
         threading.Thread(target=assist_loop, name="assist conversations", daemon=True).start()
+        threading.Thread(target=contacts_loop, name="contacts", daemon=True).start()
+        if cfg.supervisor_token:  # as an app: the contacts page inside Home Assistant (ingress)
+            start_ingress()
         if shopping_list is not None:
             log.info("Shopping list: %s", shopping_list.describe())
             threading.Thread(target=shopping_loop, name="shopping list", daemon=True).start()

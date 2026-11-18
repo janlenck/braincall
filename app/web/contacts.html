@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Brain Call – Contacts</title>
+<!-- The contacts page of Brain Call (#93): app/web/contacts.html, served at /contacts (with the API token) and in
+     Home Assistant's sidebar (ingress). Plain HTML and JavaScript, no build step. Texts per language in T below. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&family=Roboto+Mono&display=swap">
+<style>
+/* Layout: Home-Assistant-Panel, Kopfleiste, darunter Liste links und Formular rechts; schmal untereinander. */
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --field: #ffffff; --code: #f1f3f6;
+  --text: #1f1f1f; --text2: #5a5f64; --line: #d9dde2;
+  --primary: #0b6aa2; --on-primary: #ffffff; --primary-soft: #e3f1fa;
+  --danger: #b3261e; --on-danger: #ffffff; --ok: #1e7b3c; --warn-soft: #fff3d1; --track-off: #858b91;
+  --font: "Roboto", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Roboto Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111315; --card: #1c1e21; --field: #23262a; --code: #16181b;
+    --text: #e6e6e6; --text2: #a9aeb3; --line: #363a3f;
+    --primary: #6cb8f0; --on-primary: #0b1a26; --primary-soft: #1b2d3b;
+    --danger: #f2867c; --on-danger: #2a0d0a; --ok: #7fd39b; --warn-soft: #3a3220; --track-off: #6b7177;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111315; --card: #1c1e21; --field: #23262a; --code: #16181b;
+  --text: #e6e6e6; --text2: #a9aeb3; --line: #363a3f;
+  --primary: #6cb8f0; --on-primary: #0b1a26; --primary-soft: #1b2d3b;
+  --danger: #f2867c; --on-danger: #2a0d0a; --ok: #7fd39b; --warn-soft: #3a3220; --track-off: #6b7177;
+  color-scheme: dark;
+}
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); }
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+.appbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; height: 56px; display: flex; align-items: center; gap: 8px;
+  padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--card); border-bottom: 1px solid var(--line); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--card); }
+.appbar h1 { margin: 0; font-size: 20px; font-weight: 400; }
+.appbar .sub { font-size: 12px; color: var(--text2); }
+.iconbtn { width: 44px; height: 44px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.iconbtn:hover { background: var(--code); }
+.iconbtn[disabled] { opacity: .35; cursor: default; background: transparent; }
+.iconbtn.danger { color: var(--danger); }
+
+main { max-width: 1240px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.listpanel { flex: 1 1 300px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.formpanel { flex: 999 1 560px; padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+
+.search { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--field); color: var(--text2); }
+.search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.chip { min-height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line); background: transparent;
+  cursor: pointer; font-size: 13px; font-weight: 500; }
+.chip[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.count { margin-left: auto; font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
+.newbtn { height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px dashed var(--primary);
+  color: var(--primary); background: transparent; border-radius: 8px; cursor: pointer; font-weight: 500; }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.item { width: 100%; text-align: left; display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent; cursor: pointer; }
+.item:hover { background: var(--code); }
+.item[aria-current="true"] { background: var(--primary-soft); border-color: var(--primary); }
+.avatar { flex: none; width: 36px; height: 36px; border-radius: 50%; background: var(--primary-soft); color: var(--primary);
+  display: flex; align-items: center; justify-content: center; font-weight: 500; }
+.avatar.big { width: 48px; height: 48px; font-size: 20px; }
+.itemtext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.itemtext .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.itemtext .s { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.badge { font-size: 11px; line-height: 18px; padding: 0 6px; border-radius: 9px; background: var(--code); color: var(--text2); }
+.badge.admin { background: var(--primary); color: var(--on-primary); }
+.badge.task { background: var(--warn-soft); color: var(--text); }
+.empty { margin: 8px 4px; color: var(--text2); }
+
+.head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.head h2 { margin: 0; font-size: 22px; font-weight: 400; text-wrap: balance; }
+.head .meta { font-size: 12px; color: var(--text2); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.lbl, legend { font-size: 12px; font-weight: 500; color: var(--text2); letter-spacing: .02em; }
+fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+legend { padding: 0; margin-bottom: 6px; }
+.input, select.input, textarea.input { height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); width: 100%; }
+textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
+.input[aria-invalid="true"] { border-color: var(--danger); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.err { font-size: 12px; color: var(--danger); }
+.hint { font-size: 12px; color: var(--text2); }
+.numrow { display: flex; flex-direction: column; gap: 4px; }
+.numline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.numline .pos { flex: none; width: 22px; font-size: 12px; color: var(--text2); text-align: right; }
+.numline .num { flex: 2 1 170px; min-width: 0; }
+.numline .lab { flex: 1 1 110px; min-width: 0; }
+.numline .tools { display: flex; gap: 2px; }
+.numrow .err { margin-left: 30px; }
+.addrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-left: 30px; }
+.linkbtn { height: 36px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent;
+  color: var(--primary); cursor: pointer; font-weight: 500; border-radius: 8px; }
+.linkbtn:hover { background: var(--primary-soft); }
+.rights { display: flex; flex-wrap: wrap; gap: 8px; }
+.right { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.right:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.right input { width: 18px; height: 18px; margin: 0; accent-color: var(--primary); }
+.two { display: flex; flex-wrap: wrap; gap: 16px; }
+.two > .field { flex: 1 1 220px; min-width: 0; }
+.switchrow { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid var(--line); }
+.switchrow span:first-child { flex: 1; }
+.switch { width: 52px; height: 44px; border: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.switch .track { width: 40px; height: 22px; border-radius: 11px; background: var(--track-off); position: relative; display: block; transition: background .15s; }
+.switch .knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: left .15s; }
+.switch[aria-checked="true"] .track { background: var(--primary); }
+.switch[aria-checked="true"] .knob { left: 20px; }
+.jsonbox { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.jsonbox > button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 0;
+  background: var(--code); cursor: pointer; text-align: left; }
+.jsonbox > button span:nth-child(2) { flex: 1; font-size: 13px; font-weight: 500; }
+.jsonbox pre { margin: 0; padding: 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+  border-top: 1px solid var(--line); overflow-x: auto; }
+.note { margin: 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+.note.warn { background: var(--warn-soft); }
+.note.info { background: var(--primary-soft); }
+.confirm { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px; border: 1px solid var(--danger); border-radius: 8px; }
+.confirm span { flex: 1 1 200px; }
+.actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+.actions .spacer { flex: 1; }
+.btn { height: 44px; padding: 0 18px; border-radius: 8px; cursor: pointer; font-weight: 500; border: 1px solid var(--line); background: transparent; }
+.btn.primary { border: 0; background: var(--primary); color: var(--on-primary); }
+.btn.text { border: 0; color: var(--primary); }
+.btn.danger { border-color: var(--danger); color: var(--danger); }
+.btn.dangerfill { border: 0; background: var(--danger); color: var(--on-danger); }
+.btn[disabled] { opacity: .45; cursor: default; }
+.saved { font-size: 13px; color: var(--ok); }
+</style>
+</head>
+<body>
+<header class="appbar">
+  <h1 id="apptitle" style="padding-left:8px">Contacts</h1>
+  <span class="sub">Brain Call</span>
+</header>
+<main>
+  <section class="panel listpanel" id="listpanel"></section>
+  <section class="panel formpanel" id="formpanel"></section>
+</main>
+<script>
+const T = {
+  de: { title:"Kontakte", search:"Suchen", all:"Alle", fromTasks:"Aus Aufgaben", newContact:"Neuer Kontakt", count:"{n} Kontakte",
+    name:"Name", numbers:"Telefonnummern", numbersHint:"Die erste Nummer wird zuerst gewählt.", number:"Nummer", label:"Bezeichnung",
+    addNumber:"Nummer hinzufügen", up:"Nach oben", down:"Nach unten", remove:"Entfernen", email:"E-Mail", rights:"Rechte",
+    guestHint:"Ohne Häkchen ist der Kontakt Gast.", adminHint:"Admin umfasst alle anderen Rechte.",
+    r_admin:"Admin", r_read:"Lesen", r_calendar:"Kalender", r_shopping:"Einkauf", guest:"Gast",
+    haUser:"Home-Assistant-Benutzer", haDevice:"Gerät oder Bereich", none:"– keiner –", language:"Sprache",
+    languageHint:"Mit dieser Sprache beginnt das Gespräch; wechselt die Person, wechselt Claudine mit. • = mit festen Sätzen.",
+    systemLang:"Systemsprache", notify:"Benachrichtigung nach einem Anruf", web:"Websuche", on:"an", off:"aus",
+    instructions:"Anweisungen", instructionsPh:"z. B. duzen, kurz halten",
+    o_settings:"aus den Einstellungen", o_task:"aus einer Aufgabe", o_page:"auf dieser Seite angelegt", o_request:"auf Zuruf angelegt",
+    since:"seit {d}", save:"Speichern", cancel:"Verwerfen", del:"Löschen", merge:"Zusammenführen",
+    confirmDelete:"{name} wirklich löschen?", yes:"Ja, löschen", no:"Abbrechen",
+    blocked:"Offene Aufgabe: {task}. Löschen geht erst, wenn sie abgeschlossen ist.",
+    savedLive:"Gespeichert. Gilt ab dem nächsten Anruf, ohne Neustart.", mergeHint:"Links den Kontakt wählen, der mit {name} zusammengeführt wird.",
+    merged:"{other} wurde mit {name} zusammengeführt.",
+    invalidNumber:"Keine gültige Nummer", dupNumber:"Gehört schon zu {name}", invalidEmail:"Keine gültige Adresse",
+    dupName:"Den Namen gibt es schon. Bitte unterscheidbar machen, z. B. „{name} Müller“.", nameRequired:"Bitte einen Namen eingeben",
+    json:"So steht es in contacts.json", hide:"ausblenden", show:"anzeigen", labels:["Handy","Festnetz","Büro"],
+    empty:"Kein Kontakt gefunden.", newName:"Neuer Kontakt", task:"Aufgabe", uiLang:"Sprache der Oberfläche",
+    mockNote:"Mockup: Im echten Panel kommt die Sprache aus dem Home-Assistant-Profil. Beispieldaten." },
+  en: { title:"Contacts", search:"Search", all:"All", fromTasks:"From tasks", newContact:"New contact", count:"{n} contacts",
+    name:"Name", numbers:"Phone numbers", numbersHint:"The first number is dialed first.", number:"Number", label:"Label",
+    addNumber:"Add number", up:"Move up", down:"Move down", remove:"Remove", email:"Email", rights:"Permissions",
+    guestHint:"No box ticked: the contact is a guest.", adminHint:"Admin includes all other permissions.",
+    r_admin:"Admin", r_read:"Read", r_calendar:"Calendar", r_shopping:"Shopping", guest:"Guest",
+    haUser:"Home Assistant user", haDevice:"Device or area", none:"– none –", language:"Language",
+    languageHint:"Calls start in this language; if the person switches, Claudine follows. • = with fixed phrases.",
+    systemLang:"System language", notify:"Notification after a call", web:"Web search", on:"on", off:"off",
+    instructions:"Instructions", instructionsPh:"e.g. informal, keep it short",
+    o_settings:"from the settings", o_task:"from a task", o_page:"added on this page", o_request:"added by voice",
+    since:"since {d}", save:"Save", cancel:"Discard", del:"Delete", merge:"Merge",
+    confirmDelete:"Delete {name}?", yes:"Yes, delete", no:"Cancel",
+    blocked:"Open task: {task}. It can be deleted once the task is finished.",
+    savedLive:"Saved. Applies from the next call, no restart needed.", mergeHint:"Pick the contact on the left to merge into {name}.",
+    merged:"{other} was merged into {name}.",
+    invalidNumber:"Not a valid number", dupNumber:"Already belongs to {name}", invalidEmail:"Not a valid address",
+    dupName:"This name is already taken. Make it distinct, e.g. “{name} Miller”.", nameRequired:"Please enter a name",
+    json:"As stored in contacts.json", hide:"hide", show:"show", labels:["Mobile","Landline","Office"],
+    empty:"No contact found.", newName:"New contact", task:"Task", uiLang:"Interface language",
+    mockNote:"Mockup: in the real panel the language comes from the Home Assistant profile. Sample data." },
+  uk: { title:"Контакти", search:"Пошук", all:"Усі", fromTasks:"Із завдань", newContact:"Новий контакт", count:"Контактів: {n}",
+    name:"Ім’я", numbers:"Номери телефонів", numbersHint:"Перший номер набирається першим.", number:"Номер", label:"Позначка",
+    addNumber:"Додати номер", up:"Вгору", down:"Вниз", remove:"Видалити", email:"Ел. пошта", rights:"Права",
+    guestHint:"Без позначок контакт — гість.", adminHint:"Адмін має всі інші права.",
+    r_admin:"Адмін", r_read:"Читання", r_calendar:"Календар", r_shopping:"Покупки", guest:"Гість",
+    haUser:"Користувач Home Assistant", haDevice:"Пристрій або зона", none:"– немає –", language:"Мова",
+    languageHint:"Розмова починається цією мовою; якщо людина переходить на іншу, Claudine теж переходить. • = з готовими фразами.",
+    systemLang:"Мова системи", notify:"Сповіщення після дзвінка", web:"Пошук в інтернеті", on:"увімк.", off:"вимк.",
+    instructions:"Інструкції", instructionsPh:"напр. на «ти», коротко",
+    o_settings:"з налаштувань", o_task:"із завдання", o_page:"додано на цій сторінці", o_request:"додано голосом",
+    since:"з {d}", save:"Зберегти", cancel:"Скасувати зміни", del:"Видалити", merge:"Об’єднати",
+    confirmDelete:"Видалити {name}?", yes:"Так, видалити", no:"Скасувати",
+    blocked:"Відкрите завдання: {task}. Видалити можна після його завершення.",
+    savedLive:"Збережено. Діє з наступного дзвінка, без перезапуску.", mergeHint:"Виберіть ліворуч контакт, який буде об’єднано з {name}.",
+    merged:"{other} об’єднано з {name}.",
+    invalidNumber:"Недійсний номер", dupNumber:"Уже належить {name}", invalidEmail:"Недійсна адреса",
+    dupName:"Таке ім’я вже є. Зробіть його відмінним, напр. «{name} Шевченко».", nameRequired:"Введіть ім’я",
+    json:"Так це записано в contacts.json", hide:"сховати", show:"показати", labels:["Мобільний","Домашній","Робочий"],
+    empty:"Контакт не знайдено.", newName:"Новий контакт", task:"Завдання", uiLang:"Мова інтерфейсу",
+    mockNote:"Макет: у справжній панелі мова береться з профілю Home Assistant. Приклади даних." },
+  it: { title:"Contatti", search:"Cerca", all:"Tutti", fromTasks:"Dalle attività", newContact:"Nuovo contatto", count:"{n} contatti",
+    name:"Nome", numbers:"Numeri di telefono", numbersHint:"Il primo numero viene chiamato per primo.", number:"Numero", label:"Etichetta",
+    addNumber:"Aggiungi numero", up:"Sposta su", down:"Sposta giù", remove:"Rimuovi", email:"E-mail", rights:"Permessi",
+    guestHint:"Nessuna casella: il contatto è ospite.", adminHint:"Admin include tutti gli altri permessi.",
+    r_admin:"Admin", r_read:"Lettura", r_calendar:"Calendario", r_shopping:"Spesa", guest:"Ospite",
+    haUser:"Utente di Home Assistant", haDevice:"Dispositivo o area", none:"– nessuno –", language:"Lingua",
+    languageHint:"La chiamata inizia in questa lingua; se la persona cambia, Claudine la segue. • = con frasi predefinite.",
+    systemLang:"Lingua di sistema", notify:"Notifica dopo una chiamata", web:"Ricerca web", on:"sì", off:"no",
+    instructions:"Istruzioni", instructionsPh:"es. dare del tu, essere brevi",
+    o_settings:"dalle impostazioni", o_task:"da un’attività", o_page:"aggiunto in questa pagina", o_request:"aggiunto a voce",
+    since:"dal {d}", save:"Salva", cancel:"Annulla modifiche", del:"Elimina", merge:"Unisci",
+    confirmDelete:"Eliminare {name}?", yes:"Sì, elimina", no:"Annulla",
+    blocked:"Attività aperta: {task}. Si potrà eliminare quando sarà conclusa.",
+    savedLive:"Salvato. Vale dalla prossima chiamata, senza riavvio.", mergeHint:"Scegli a sinistra il contatto da unire a {name}.",
+    merged:"{other} è stato unito a {name}.",
+    invalidNumber:"Numero non valido", dupNumber:"Appartiene già a {name}", invalidEmail:"Indirizzo non valido",
+    dupName:"Questo nome esiste già. Rendilo distinguibile, ad es. «{name} Rossi».", nameRequired:"Inserisci un nome",
+    json:"Così è salvato in contacts.json", hide:"nascondi", show:"mostra", labels:["Cellulare","Fisso","Ufficio"],
+    empty:"Nessun contatto trovato.", newName:"Nuovo contatto", task:"Attività", uiLang:"Lingua dell’interfaccia",
+    mockNote:"Mockup: nel pannello reale la lingua viene dal profilo di Home Assistant. Dati di esempio." },
+  es: { title:"Contactos", search:"Buscar", all:"Todos", fromTasks:"De tareas", newContact:"Nuevo contacto", count:"{n} contactos",
+    name:"Nombre", numbers:"Números de teléfono", numbersHint:"El primer número se marca primero.", number:"Número", label:"Etiqueta",
+    addNumber:"Añadir número", up:"Subir", down:"Bajar", remove:"Quitar", email:"Correo", rights:"Permisos",
+    guestHint:"Sin casillas marcadas: el contacto es invitado.", adminHint:"Admin incluye todos los demás permisos.",
+    r_admin:"Admin", r_read:"Lectura", r_calendar:"Calendario", r_shopping:"Compras", guest:"Invitado",
+    haUser:"Usuario de Home Assistant", haDevice:"Dispositivo o área", none:"– ninguno –", language:"Idioma",
+    languageHint:"La llamada empieza en este idioma; si la persona cambia, Claudine también. • = con frases fijas.",
+    systemLang:"Idioma del sistema", notify:"Notificación tras una llamada", web:"Búsqueda web", on:"sí", off:"no",
+    instructions:"Instrucciones", instructionsPh:"p. ej. tutear, ser breve",
+    o_settings:"de los ajustes", o_task:"de una tarea", o_page:"añadido en esta página", o_request:"añadido por voz",
+    since:"desde {d}", save:"Guardar", cancel:"Descartar", del:"Eliminar", merge:"Combinar",
+    confirmDelete:"¿Eliminar {name}?", yes:"Sí, eliminar", no:"Cancelar",
+    blocked:"Tarea abierta: {task}. Se podrá eliminar cuando termine.",
+    savedLive:"Guardado. Se aplica desde la próxima llamada, sin reiniciar.", mergeHint:"Elige a la izquierda el contacto que se combinará con {name}.",
+    merged:"{other} se combinó con {name}.",
+    invalidNumber:"Número no válido", dupNumber:"Ya pertenece a {name}", invalidEmail:"Dirección no válida",
+    dupName:"Ese nombre ya existe. Hazlo distinguible, p. ej. «{name} García».", nameRequired:"Introduce un nombre",
+    json:"Así se guarda en contacts.json", hide:"ocultar", show:"mostrar", labels:["Móvil","Fijo","Oficina"],
+    empty:"No se encontró ningún contacto.", newName:"Nuevo contacto", task:"Tarea", uiLang:"Idioma de la interfaz",
+    mockNote:"Maqueta: en el panel real el idioma viene del perfil de Home Assistant. Datos de ejemplo." },
+  fr: { title:"Contacts", search:"Rechercher", all:"Tous", fromTasks:"Issus de tâches", newContact:"Nouveau contact", count:"{n} contacts",
+    name:"Nom", numbers:"Numéros de téléphone", numbersHint:"Le premier numéro est appelé en premier.", number:"Numéro", label:"Libellé",
+    addNumber:"Ajouter un numéro", up:"Monter", down:"Descendre", remove:"Supprimer", email:"E-mail", rights:"Droits",
+    guestHint:"Aucune case cochée : le contact est invité.", adminHint:"Admin comprend tous les autres droits.",
+    r_admin:"Admin", r_read:"Lecture", r_calendar:"Agenda", r_shopping:"Courses", guest:"Invité",
+    haUser:"Utilisateur Home Assistant", haDevice:"Appareil ou pièce", none:"– aucun –", language:"Langue",
+    languageHint:"L’appel commence dans cette langue ; si la personne change, Claudine suit. • = avec phrases fixes.",
+    systemLang:"Langue du système", notify:"Notification après un appel", web:"Recherche web", on:"oui", off:"non",
+    instructions:"Instructions", instructionsPh:"p. ex. tutoyer, rester bref",
+    o_settings:"issu des paramètres", o_task:"issu d’une tâche", o_page:"ajouté sur cette page", o_request:"ajouté à la voix",
+    since:"depuis le {d}", save:"Enregistrer", cancel:"Annuler", del:"Supprimer", merge:"Fusionner",
+    confirmDelete:"Supprimer {name} ?", yes:"Oui, supprimer", no:"Annuler",
+    blocked:"Tâche ouverte : {task}. Suppression possible une fois la tâche terminée.",
+    savedLive:"Enregistré. S’applique dès le prochain appel, sans redémarrage.", mergeHint:"Choisissez à gauche le contact à fusionner avec {name}.",
+    merged:"{other} a été fusionné avec {name}.",
+    invalidNumber:"Numéro non valide", dupNumber:"Appartient déjà à {name}", invalidEmail:"Adresse non valide",
+    dupName:"Ce nom existe déjà. Rendez-le distinct, p. ex. « {name} Martin ».", nameRequired:"Saisissez un nom",
+    json:"Tel qu’enregistré dans contacts.json", hide:"masquer", show:"afficher", labels:["Mobile","Fixe","Bureau"],
+    empty:"Aucun contact trouvé.", newName:"Nouveau contact", task:"Tâche", uiLang:"Langue de l’interface",
+    mockNote:"Maquette : dans le vrai panneau, la langue vient du profil Home Assistant. Données d’exemple." }
+};
+
+
+const ICON = {
+  search:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  plus:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  up:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+  down:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg>',
+  x:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  code:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>'
+};
+
+
+const MORE = {
+  de: { tokenText:"Diese Seite braucht den API-Token von Brain Call (api_token in den Einstellungen oder api-token.txt im Log-Ordner).",
+    tokenLabel:"API-Token", tokenSave:"Anmelden", loadFailed:"Die Kontakte konnten nicht geladen werden.", retry:"Erneut versuchen",
+    saveFailed:"Speichern fehlgeschlagen: {e}", deleted:"{name} wurde gelöscht.", name_long:"Name zu lang", label_long:"Bezeichnung zu lang",
+    too_many_numbers:"Zu viele Nummern", email_taken:"Adresse gehört schon zu {name}", access_invalid:"Unbekanntes Recht",
+    language_invalid:"Unbekannte Sprache", text_long:"Text zu lang", emptyContact:"Mindestens eine Nummer, eine Mail-Adresse oder ein Home-Assistant-Benutzer",
+    not_found:"Kontakt nicht gefunden – wurde er inzwischen gelöscht?", notInHa:"(nicht in Home Assistant gefunden)",
+    auto:"auto (folgt dem Anrufer)", saved:"Gespeichert. Gilt ab dem nächsten Anruf, ohne Neustart." },
+  en: { tokenText:"This page needs Brain Call's API token (api_token in the settings or api-token.txt in the log folder).",
+    tokenLabel:"API token", tokenSave:"Sign in", loadFailed:"The contacts could not be loaded.", retry:"Try again",
+    saveFailed:"Saving failed: {e}", deleted:"{name} was deleted.", name_long:"Name too long", label_long:"Label too long",
+    too_many_numbers:"Too many numbers", email_taken:"Address already belongs to {name}", access_invalid:"Unknown permission",
+    language_invalid:"Unknown language", text_long:"Text too long", emptyContact:"At least one number, a mail address or a Home Assistant user",
+    not_found:"Contact not found – was it deleted meanwhile?", notInHa:"(not found in Home Assistant)",
+    auto:"auto (follows the caller)", saved:"Saved. Applies from the next call, no restart needed." },
+  uk: { tokenText:"Ця сторінка потребує API-токена Brain Call (api_token у налаштуваннях або api-token.txt у папці журналів).",
+    tokenLabel:"API-токен", tokenSave:"Увійти", loadFailed:"Не вдалося завантажити контакти.", retry:"Спробувати ще раз",
+    saveFailed:"Не вдалося зберегти: {e}", deleted:"{name} видалено.", name_long:"Ім’я задовге", label_long:"Позначка задовга",
+    too_many_numbers:"Забагато номерів", email_taken:"Адреса вже належить {name}", access_invalid:"Невідоме право",
+    language_invalid:"Невідома мова", text_long:"Текст задовгий", emptyContact:"Потрібен хоча б номер, адреса ел. пошти або користувач Home Assistant",
+    not_found:"Контакт не знайдено — можливо, його вже видалено?", notInHa:"(не знайдено в Home Assistant)",
+    auto:"auto (за мовою абонента)", saved:"Збережено. Діє з наступного дзвінка, без перезапуску." },
+  it: { tokenText:"Questa pagina richiede il token API di Brain Call (api_token nelle impostazioni o api-token.txt nella cartella dei log).",
+    tokenLabel:"Token API", tokenSave:"Accedi", loadFailed:"Non è stato possibile caricare i contatti.", retry:"Riprova",
+    saveFailed:"Salvataggio non riuscito: {e}", deleted:"{name} è stato eliminato.", name_long:"Nome troppo lungo", label_long:"Etichetta troppo lunga",
+    too_many_numbers:"Troppi numeri", email_taken:"L’indirizzo appartiene già a {name}", access_invalid:"Permesso sconosciuto",
+    language_invalid:"Lingua sconosciuta", text_long:"Testo troppo lungo", emptyContact:"Almeno un numero, un indirizzo e-mail o un utente di Home Assistant",
+    not_found:"Contatto non trovato – è stato eliminato nel frattempo?", notInHa:"(non trovato in Home Assistant)",
+    auto:"auto (segue chi chiama)", saved:"Salvato. Vale dalla prossima chiamata, senza riavvio." },
+  es: { tokenText:"Esta página necesita el token de API de Brain Call (api_token en los ajustes o api-token.txt en la carpeta de registros).",
+    tokenLabel:"Token de API", tokenSave:"Entrar", loadFailed:"No se pudieron cargar los contactos.", retry:"Reintentar",
+    saveFailed:"No se pudo guardar: {e}", deleted:"{name} se eliminó.", name_long:"Nombre demasiado largo", label_long:"Etiqueta demasiado larga",
+    too_many_numbers:"Demasiados números", email_taken:"La dirección ya pertenece a {name}", access_invalid:"Permiso desconocido",
+    language_invalid:"Idioma desconocido", text_long:"Texto demasiado largo", emptyContact:"Al menos un número, un correo o un usuario de Home Assistant",
+    not_found:"Contacto no encontrado: ¿se eliminó mientras tanto?", notInHa:"(no encontrado en Home Assistant)",
+    auto:"auto (sigue a quien llama)", saved:"Guardado. Se aplica desde la próxima llamada, sin reiniciar." },
+  fr: { tokenText:"Cette page a besoin du jeton API de Brain Call (api_token dans les paramètres ou api-token.txt dans le dossier des journaux).",
+    tokenLabel:"Jeton API", tokenSave:"Se connecter", loadFailed:"Les contacts n’ont pas pu être chargés.", retry:"Réessayer",
+    saveFailed:"Échec de l’enregistrement : {e}", deleted:"{name} a été supprimé.", name_long:"Nom trop long", label_long:"Libellé trop long",
+    too_many_numbers:"Trop de numéros", email_taken:"L’adresse appartient déjà à {name}", access_invalid:"Droit inconnu",
+    language_invalid:"Langue inconnue", text_long:"Texte trop long", emptyContact:"Au moins un numéro, une adresse e-mail ou un utilisateur Home Assistant",
+    not_found:"Contact introuvable – a-t-il été supprimé entre-temps ?", notInHa:"(introuvable dans Home Assistant)",
+    auto:"auto (suit l’appelant)", saved:"Enregistré. S’applique dès le prochain appel, sans redémarrage." }
+};
+for (const k of Object.keys(T)) Object.assign(T[k], MORE[k]);
+
+/* Languages a contact can start a call in: ISO 639-1 code and the language's own name. */
+const LANGS = [["de","Deutsch"],["en","English"],["uk","Українська"],["it","Italiano"],["es","Español"],["fr","Français"],
+  ["pl","Polski"],["nl","Nederlands"],["pt","Português"],["tr","Türkçe"],["hr","Hrvatski"],["sr","Српски"],["ro","Română"],
+  ["ru","Русский"],["cs","Čeština"],["sk","Slovenčina"],["sl","Slovenščina"],["hu","Magyar"],["bg","Български"],["el","Ελληνικά"],
+  ["da","Dansk"],["sv","Svenska"],["nb","Norsk"],["fi","Suomi"],["ar","العربية"],["he","עברית"],["fa","فارسی"],["hi","हिन्दी"],
+  ["zh","中文"],["ja","日本語"],["ko","한국어"],["vi","Tiếng Việt"],["th","ไทย"],["id","Bahasa Indonesia"]];
+const RIGHTS = ["admin","read","calendar","shopping"];
+
+let ui = "en";
+let contacts = [];
+let meta = { system_language: "de", web_access: false, phrase_languages: ["de","en","uk"], users: [], devices: [] };
+let state = { selectedId: null, draft: null, search: "", filter: "all", showJson: false, confirm: false, merge: false, flash: "", serverErrors: [] };
+
+function pickUiLanguage() {
+  let lang = "";
+  try { const v = localStorage.getItem("selectedLanguage"); if (v) lang = JSON.parse(v); } catch (e) { /* not in Home Assistant */ }
+  lang = String(lang || navigator.language || "en").toLowerCase().split(/[-_]/)[0];
+  return T[lang] ? lang : "en";
+}
+
+const t = () => T[ui];
+const clone = x => (x == null ? x : JSON.parse(JSON.stringify(x)));
+const digits = s => String(s || "").replace(/[^\d*#]/g, "");
+const fill = (s, m) => String(s).replace(/\{(\w+)\}/g, (a, k) => (m[k] != null ? m[k] : a));
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fold = s => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+const has = (c, r) => (c.access || []).includes(r);
+const notifyDefault = c => !has(c, "admin");
+const webDefault = c => meta.web_access && (has(c, "admin") || has(c, "read"));
+const fmtDate = iso => { try { return new Date(iso + "T12:00:00").toLocaleDateString(ui); } catch (e) { return iso; } };
+const byId = id => contacts.find(c => c.id === id);
+const rightName = r => t()["r_" + r];
+const langName = code => (LANGS.find(l => l[0] === code) || [code, code])[1];
+
+/* ---------- API ---------- */
+function token() { try { return localStorage.getItem("braincall_token") || ""; } catch (e) { return ""; } }
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token()) headers.Authorization = "Bearer " + token();
+  const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* empty answer */ }
+  return { status: r.status, data };
+}
+
+async function load(keepId) {
+  const r = await api("GET", "api/contacts").catch(() => ({ status: 0, data: {} }));
+  if (r.status === 401) return showToken();
+  if (r.status !== 200) return showError();
+  contacts = r.data.contacts || [];
+  meta = Object.assign(meta, r.data);
+  const id = keepId && byId(keepId) ? keepId : (contacts[0] && contacts[0].id);
+  state = Object.assign(state, { selectedId: id || null, draft: clone(byId(id)) || null, confirm: false, merge: false, serverErrors: [] });
+  renderAll();
+}
+
+function showToken() {
+  const L = t();
+  document.getElementById("listpanel").innerHTML = "";
+  document.getElementById("formpanel").innerHTML = `
+    <form id="tokenform" class="field" style="max-width:480px">
+      <p class="hint" style="font-size:14px">${esc(L.tokenText)}</p>
+      <label class="lbl" for="tokeninput">${esc(L.tokenLabel)}</label>
+      <input class="input mono" id="tokeninput" type="password" autocomplete="off" required>
+      <div><button class="btn primary" type="submit">${esc(L.tokenSave)}</button></div>
+    </form>`;
+  document.getElementById("tokenform").addEventListener("submit", e => {
+    e.preventDefault();
+    try { localStorage.setItem("braincall_token", document.getElementById("tokeninput").value.trim()); } catch (err) { /* private window */ }
+    load();
+  });
+}
+
+function showError() {
+  const L = t();
+  document.getElementById("listpanel").innerHTML = "";
+  document.getElementById("formpanel").innerHTML = `<p>${esc(L.loadFailed)}</p><div><button class="btn" type="button" id="retry">${esc(L.retry)}</button></div>`;
+  document.getElementById("retry").addEventListener("click", () => load());
+}
+
+/* ---------- checks (the server checks the same again) ---------- */
+function slim(c) {
+  const o = { id: c.id || "(neu)", name: (c.name || "").trim().replace(/\s+/g, " ") };
+  const nums = (c.numbers || []).filter(n => String(n.number || "").trim()).map(n => {
+    const e = { number: n.number.trim() };
+    if (String(n.label || "").trim()) e.label = n.label.trim();
+    return e;
+  });
+  if (nums.length) o.numbers = nums;
+  for (const k of ["email", "ha_user", "ha_device"]) if (String(c[k] || "").trim()) o[k] = c[k].trim();
+  const acc = (c.access || []).filter(r => r !== "guest");
+  if (acc.length) o.access = acc.includes("admin") ? ["admin"] : acc.slice().sort();
+  if (String(c.instructions || "").trim()) o.instructions = c.instructions.trim();
+  if (c.language && c.language !== meta.system_language) o.language = c.language;
+  for (const k of ["notify", "web"]) if (typeof c[k] === "boolean") o[k] = c[k];
+  o.origin = c.origin || "page";
+  o.added = c.added || new Date().toISOString().slice(0, 10);
+  return o;
+}
+
+function validate() {
+  const L = t(), d = state.draft, out = { name: "", rows: [], email: "", other: "", any: false };
+  const nm = fold(d.name);
+  if (!nm) out.name = L.nameRequired;
+  else {
+    const twin = contacts.find(c => c.id !== d.id && fold(c.name) === nm);
+    if (twin) out.name = fill(L.dupName, { name: (d.name || "").trim() });
+  }
+  (d.numbers || []).forEach((n, i) => {
+    const raw = String(n.number || "").trim(); let err = "";
+    if (raw) {
+      if (!/^\+?[0-9 *#()\/.\-]+$/.test(raw) || digits(raw).length < 3) err = L.invalidNumber;
+      else if ((d.numbers || []).some((m, j) => j < i && digits(m.number) === digits(raw))) err = fill(L.dupNumber, { name: (d.name || "").trim() || L.newName });
+    }
+    out.rows[i] = err;
+  });
+  if (String(d.email || "").trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email.trim())) out.email = L.invalidEmail;
+  for (const e of state.serverErrors) {
+    const msg = serverMessage(e);
+    if (e.field === "name" && !out.name) out.name = msg;
+    else if (e.field === "numbers" && e.index != null && !out.rows[e.index]) out.rows[e.index] = msg;
+    else if (e.field === "email" && !out.email) out.email = msg;
+    else if (!["name", "numbers", "email"].includes(e.field) || e.index == null && e.field === "numbers") out.other = msg;
+  }
+  out.any = !!(out.name || out.email || out.other || out.rows.some(Boolean));
+  return out;
+}
+
+function serverMessage(e) {
+  const L = t();
+  const map = { name_missing: L.nameRequired, name_taken: fill(L.dupName, { name: (state.draft.name || "").trim() }),
+    number_invalid: L.invalidNumber, number_twice: fill(L.dupNumber, { name: (state.draft.name || "").trim() }),
+    number_taken: fill(L.dupNumber, { name: e.name }), email_invalid: L.invalidEmail, email_taken: fill(L.email_taken, { name: e.name }),
+    empty: L.emptyContact };
+  return map[e.code] || L[e.code] || e.code;
+}
+
+/* ---------- list ---------- */
+function renderList() {
+  const L = t(), q = fold(state.search), qd = digits(q);
+  const shown = contacts.filter(c => {
+    if (state.filter === "task" && c.origin !== "task") return false;
+    if (!q) return true;
+    const hay = fold([c.name, c.email || ""].concat((c.numbers || []).map(n => n.number + " " + (n.label || ""))).join(" "));
+    return hay.includes(q) || (qd && digits(hay).includes(qd));
+  });
+  const items = shown.map(c => {
+    const first = (c.numbers || [])[0];
+    const sub = first ? first.number + (first.label ? " · " + first.label : "") : (c.email || c.ha_user || "");
+    const acc = c.access || [];
+    let b = `<span class="badge${has(c, "admin") ? " admin" : ""}">${esc(acc.length ? acc.map(rightName).join(", ") : L.guest)}</span>`;
+    if (c.language) b += `<span class="badge">${esc(c.language.toUpperCase())}</span>`;
+    if (c.origin === "task") b += `<span class="badge task">${esc(L.task)}</span>`;
+    return `<li><button type="button" class="item" data-id="${esc(c.id)}" aria-current="${state.draft && c.id === state.draft.id}">
+      <span class="avatar" aria-hidden="true">${esc((c.name || "?").charAt(0).toUpperCase())}</span>
+      <span class="itemtext"><span class="n">${esc(c.name)}</span><span class="s">${esc(sub)}</span><span class="badges">${b}</span></span>
+    </button></li>`;
+  }).join("");
+  const searchHadFocus = document.activeElement && document.activeElement.id === "search";
+  document.getElementById("listpanel").innerHTML = `
+    <label class="search" for="search">${ICON.search}<input id="search" type="search" placeholder="${esc(L.search)}" aria-label="${esc(L.search)}" value="${esc(state.search)}"></label>
+    <div class="filters">
+      <button type="button" class="chip" data-filter="all" aria-pressed="${state.filter === "all"}">${esc(L.all)}</button>
+      <button type="button" class="chip" data-filter="task" aria-pressed="${state.filter === "task"}">${esc(L.fromTasks)}</button>
+      <span class="count">${esc(fill(L.count, { n: shown.length }))}</span>
+    </div>
+    <button type="button" class="newbtn" id="newbtn">${ICON.plus}${esc(L.newContact)}</button>
+    <ul class="list" aria-label="${esc(L.title)}">${items}</ul>
+    ${shown.length ? "" : `<p class="empty">${esc(L.empty)}</p>`}`;
+  if (searchHadFocus) { const s = document.getElementById("search"); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+
+/* ---------- form ---------- */
+function options(list, current, noneLabel) {
+  const L = t();
+  const rows = [["", noneLabel]].concat(list.map(o => [o.value, o.label]));
+  if (current && !rows.some(r => r[0] === current)) rows.push([current, current + " " + L.notInHa]);
+  return rows.map(([v, l]) => `<option value="${esc(v)}" ${v === (current || "") ? "selected" : ""}>${esc(l)}</option>`).join("");
+}
+
+function renderForm(focusId) {
+  const L = t(), d = state.draft;
+  const panel = document.getElementById("formpanel");
+  if (!d) { panel.innerHTML = `<p class="empty">${esc(L.empty)}</p>`; return; }
+  const saved = byId(d.id), blocked = !!(saved && saved.in_use);
+  const isAdmin = has(d, "admin");
+  const phrases = meta.phrase_languages || [];
+  const rows = (d.numbers || []).map((n, i, a) => `
+    <div class="numrow">
+      <div class="numline">
+        <span class="pos" aria-hidden="true">${i + 1}</span>
+        <input class="input mono num" id="num-${i}" data-row="${i}" data-key="number" type="tel" aria-label="${esc(L.number + " " + (i + 1))}" placeholder="${esc(L.number)}" value="${esc(n.number)}">
+        <input class="input lab" id="lab-${i}" data-row="${i}" data-key="label" type="text" list="label-suggestions" aria-label="${esc(L.label + " " + (i + 1))}" placeholder="${esc(L.label)}" value="${esc(n.label || "")}">
+        <span class="tools">
+          <button type="button" class="iconbtn" id="up-${i}" data-act="up" data-row="${i}" aria-label="${esc(L.up)}" ${i === 0 ? "disabled" : ""}>${ICON.up}</button>
+          <button type="button" class="iconbtn" id="down-${i}" data-act="down" data-row="${i}" aria-label="${esc(L.down)}" ${i === a.length - 1 ? "disabled" : ""}>${ICON.down}</button>
+          <button type="button" class="iconbtn danger" id="rm-${i}" data-act="remove" data-row="${i}" aria-label="${esc(L.remove)}">${ICON.x}</button>
+        </span>
+      </div>
+      <span class="err" id="num-err-${i}" role="alert"></span>
+    </div>`).join("");
+  const rights = RIGHTS.map(r => {
+    const checked = r === "admin" ? isAdmin : (isAdmin || has(d, r));
+    return `<label class="right" for="right-${r}"><input type="checkbox" id="right-${r}" data-right="${r}" ${checked ? "checked" : ""} ${r !== "admin" && isAdmin ? "disabled" : ""}><span>${esc(rightName(r))}</span></label>`;
+  }).join("");
+  const mark = code => (phrases.includes(code) ? " •" : "");
+  let langOpts = `<option value="" ${!d.language ? "selected" : ""}>${esc(L.systemLang)} – ${esc(langName(meta.system_language))}${mark(meta.system_language)}</option>`;
+  langOpts += LANGS.filter(([v]) => v !== meta.system_language)
+    .map(([v, l]) => `<option value="${v}" ${v === d.language ? "selected" : ""}>${esc(l + mark(v))}</option>`).join("");
+  if (d.language === "auto") langOpts += `<option value="auto" selected>${esc(L.auto)}</option>`;
+  else if (d.language && d.language !== meta.system_language && !LANGS.some(l => l[0] === d.language)) langOpts += `<option value="${esc(d.language)}" selected>${esc(d.language)}</option>`;
+  const effNotify = typeof d.notify === "boolean" ? d.notify : notifyDefault(d);
+  const effWeb = typeof d.web === "boolean" ? d.web : webDefault(d);
+  const sw = (key, label, on) => `<div class="switchrow"><span id="sw-${key}-label">${esc(label)}</span><span class="hint">${esc(on ? L.on : L.off)}</span>
+      <button type="button" class="switch" id="sw-${key}" role="switch" aria-checked="${on}" aria-labelledby="sw-${key}-label" data-switch="${key}"><span class="track" aria-hidden="true"><span class="knob"></span></span></button></div>`;
+
+  panel.innerHTML = `
+    <div class="head">
+      <span class="avatar big" aria-hidden="true" id="head-initial"></span>
+      <div><h2 id="head-name"></h2><div class="meta">${d.id ? esc(L["o_" + (d.origin || "page")]) + " · " + esc(fill(L.since, { d: fmtDate(d.added) })) : esc(L.newContact)}</div></div>
+    </div>
+    <div class="field">
+      <label class="lbl" for="f-name">${esc(L.name)}</label>
+      <input class="input" id="f-name" type="text" autocomplete="off" maxlength="80" value="${esc(d.name)}" aria-describedby="name-err">
+      <span class="err" id="name-err" role="alert"></span>
+    </div>
+    <fieldset>
+      <legend>${esc(L.numbers)}</legend>
+      <datalist id="label-suggestions">${L.labels.map(s => `<option value="${esc(s)}"></option>`).join("")}</datalist>
+      ${rows}
+      <div class="addrow"><button type="button" class="linkbtn" id="addnum">${ICON.plus}${esc(L.addNumber)}</button><span class="hint">${esc(L.numbersHint)}</span></div>
+    </fieldset>
+    <div class="field">
+      <label class="lbl" for="f-email">${esc(L.email)}</label>
+      <input class="input" id="f-email" type="email" placeholder="name@example.com" value="${esc(d.email || "")}" aria-describedby="email-err">
+      <span class="err" id="email-err" role="alert"></span>
+    </div>
+    <fieldset>
+      <legend>${esc(L.rights)}</legend>
+      <div class="rights">${rights}</div>
+      <span class="hint">${esc(isAdmin ? L.adminHint : ((d.access || []).filter(r => r !== "guest").length ? "" : L.guestHint))}</span>
+    </fieldset>
+    <div class="two">
+      <div class="field"><label class="lbl" for="f-user">${esc(L.haUser)}</label>
+        <select class="input" id="f-user">${options(meta.users || [], d.ha_user, L.none)}</select></div>
+      <div class="field"><label class="lbl" for="f-device">${esc(L.haDevice)}</label>
+        <select class="input" id="f-device">${options(meta.devices || [], d.ha_device, L.none)}</select></div>
+    </div>
+    <div class="field">
+      <label class="lbl" for="f-lang">${esc(L.language)}</label>
+      <select class="input" id="f-lang" style="max-width:360px">${langOpts}</select>
+      <span class="hint">${esc(L.languageHint)}</span>
+    </div>
+    <div>${sw("notify", L.notify, effNotify)}${sw("web", L.web, effWeb)}</div>
+    <div class="field">
+      <label class="lbl" for="f-instr">${esc(L.instructions)}</label>
+      <textarea class="input" id="f-instr" rows="3" maxlength="2000" placeholder="${esc(L.instructionsPh)}">${esc(d.instructions || "")}</textarea>
+    </div>
+    <div class="jsonbox">
+      <button type="button" id="jsontoggle" aria-expanded="${state.showJson}" aria-controls="jsonpre">${ICON.code}<span>${esc(L.json)}</span><span class="hint">${esc(state.showJson ? L.hide : L.show)}</span></button>
+      <pre id="jsonpre" ${state.showJson ? "" : "hidden"}></pre>
+    </div>
+    <p class="err" id="other-err" role="alert"></p>
+    ${blocked ? `<p class="note warn" role="note">${esc(fill(L.blocked, { task: saved.in_use }))}</p>` : ""}
+    ${state.merge ? `<p class="note info" role="note">${esc(fill(L.mergeHint, { name: d.name || L.newName }))}</p>` : ""}
+    ${state.confirm ? `<div class="confirm" role="alertdialog" aria-labelledby="confirm-text"><span id="confirm-text">${esc(fill(L.confirmDelete, { name: d.name || L.newName }))}</span>
+      <button type="button" class="btn" id="confirm-no">${esc(L.no)}</button><button type="button" class="btn dangerfill" id="confirm-yes">${esc(L.yes)}</button></div>` : ""}
+    <div class="actions">
+      <button type="button" class="btn primary" id="save">${esc(L.save)}</button>
+      <button type="button" class="btn text" id="discard">${esc(L.cancel)}</button>
+      <span class="saved" id="flash" role="status">${esc(state.flash)}</span>
+      <span class="spacer"></span>
+      ${d.id ? `<button type="button" class="btn" id="merge" aria-pressed="${state.merge}">${esc(L.merge)}</button>
+      <button type="button" class="btn danger" id="delete" ${blocked ? "disabled" : ""}>${esc(L.del)}</button>` : ""}
+    </div>`;
+  updateDerived();
+  if (focusId) { const el = document.getElementById(focusId); if (el && !el.disabled) el.focus(); }
+}
+
+/* Only what depends on typed text: errors, heading, JSON, save state (keeps the focus while typing). */
+function updateDerived() {
+  const L = t(), d = state.draft, v = validate();
+  const name = (d.name || "").trim();
+  document.getElementById("head-name").textContent = name || L.newName;
+  document.getElementById("head-initial").textContent = (name || "?").charAt(0).toUpperCase();
+  document.getElementById("name-err").textContent = v.name;
+  document.getElementById("f-name").setAttribute("aria-invalid", v.name ? "true" : "false");
+  (d.numbers || []).forEach((n, i) => {
+    const e = document.getElementById("num-err-" + i), inp = document.getElementById("num-" + i);
+    if (e) e.textContent = v.rows[i] || "";
+    if (inp) inp.setAttribute("aria-invalid", v.rows[i] ? "true" : "false");
+  });
+  document.getElementById("email-err").textContent = v.email;
+  document.getElementById("f-email").setAttribute("aria-invalid", v.email ? "true" : "false");
+  document.getElementById("other-err").textContent = v.other;
+  document.getElementById("jsonpre").textContent = JSON.stringify(slim(d), null, 2);
+  document.getElementById("save").disabled = v.any;
+}
+
+function renderAll(focusId) {
+  const L = t();
+  document.documentElement.lang = ui;
+  document.title = "Brain Call – " + L.title;
+  document.getElementById("apptitle").textContent = L.title;
+  renderList();
+  renderForm(focusId);
+}
+
+function select(id) {
+  const c = byId(id); if (!c) return;
+  if (state.merge && state.draft && state.draft.id && id !== state.draft.id) return merge(state.draft.id, id);
+  state = Object.assign(state, { selectedId: id, draft: clone(c), confirm: false, merge: false, flash: "", serverErrors: [] });
+  renderAll();
+}
+
+async function merge(into, other) {
+  const L = t(), name = (byId(other) || {}).name;
+  const r = await api("POST", `api/contacts/${encodeURIComponent(into)}/merge`, { other });
+  if (r.status !== 200) {
+    state.merge = false;
+    state.flash = r.data && r.data.error === "in_use" ? fill(L.blocked, { task: r.data.task }) : fill(L.saveFailed, { e: r.status });
+    return load(into);
+  }
+  await load(into);
+  setFlash(fill(L.merged, { other: name, name: r.data.name }));
+}
+
+function setFlash(msg) { state.flash = msg; const f = document.getElementById("flash"); if (f) f.textContent = msg; }
+
+async function save() {
+  const L = t(), d = state.draft;
+  state.serverErrors = [];
+  if (validate().any) return updateDerived();
+  const body = { name: d.name, numbers: (d.numbers || []).filter(n => String(n.number || "").trim()), email: d.email || "",
+    ha_user: d.ha_user || "", ha_device: d.ha_device || "", access: (d.access || []).filter(r => r !== "guest"),
+    instructions: d.instructions || "", language: d.language || "", notify: d.notify, web: d.web };
+  const r = d.id ? await api("PUT", `api/contacts/${encodeURIComponent(d.id)}`, body) : await api("POST", "api/contacts", body);
+  if (r.status === 401) return showToken();
+  if (r.status === 200 || r.status === 201) {
+    await load(r.data.id);
+    return setFlash(L.saved);
+  }
+  if (r.data && Array.isArray(r.data.errors)) {
+    state.serverErrors = r.data.errors;
+    return updateDerived();
+  }
+  setFlash(fill(L.saveFailed, { e: (r.data && r.data.error) || r.status }));
+}
+
+async function remove() {
+  const L = t(), d = state.draft;
+  const r = await api("DELETE", `api/contacts/${encodeURIComponent(d.id)}`);
+  if (r.status === 200) { await load(); return setFlash(fill(L.deleted, { name: d.name })); }
+  state.confirm = false;
+  if (r.data && r.data.error === "in_use") { await load(d.id); return setFlash(fill(L.blocked, { task: r.data.task })); }
+  setFlash(fill(L.saveFailed, { e: (r.data && r.data.error) || r.status }));
+}
+
+/* ---------- events ---------- */
+document.getElementById("listpanel").addEventListener("input", e => {
+  if (e.target.id === "search") { state.search = e.target.value; renderList(); }
+});
+document.getElementById("listpanel").addEventListener("click", e => {
+  const item = e.target.closest(".item"); if (item) return select(item.dataset.id);
+  const chip = e.target.closest(".chip"); if (chip) { state.filter = chip.dataset.filter; return renderList(); }
+  if (e.target.closest("#newbtn")) {
+    state = Object.assign(state, { selectedId: null, draft: { id: "", name: "", numbers: [{ number: "", label: "" }], access: [], origin: "page" },
+      filter: "all", search: "", confirm: false, merge: false, flash: "", serverErrors: [] });
+    renderAll("f-name");
+  }
+});
+
+const form = document.getElementById("formpanel");
+form.addEventListener("input", e => {
+  const el = e.target, d = state.draft;
+  if (!d) return;
+  if (el.id === "f-name") d.name = el.value;
+  else if (el.id === "f-email") d.email = el.value;
+  else if (el.id === "f-instr") d.instructions = el.value;
+  else if (el.dataset.row != null && el.dataset.key) d.numbers[+el.dataset.row][el.dataset.key] = el.value;
+  else return;
+  state.serverErrors = [];
+  setFlash(""); updateDerived();
+});
+form.addEventListener("change", e => {
+  const el = e.target, d = state.draft;
+  if (!d) return;
+  if (el.id === "f-user") d.ha_user = el.value;
+  else if (el.id === "f-device") d.ha_device = el.value;
+  else if (el.id === "f-lang") d.language = el.value;
+  else if (el.dataset.right) {
+    const r = el.dataset.right; let acc = (d.access || []).filter(x => x !== "guest");
+    if (acc.includes(r)) acc = acc.filter(x => x !== r); else acc = r === "admin" ? ["admin"] : acc.concat(r);
+    d.access = acc; setFlash(""); return renderForm(el.id);
+  } else return;
+  setFlash(""); updateDerived();
+});
+form.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b || !state.draft) return;
+  const d = state.draft;
+  if (b.dataset.act) {
+    const i = +b.dataset.row, a = d.numbers; let focus = b.id;
+    if (b.dataset.act === "up" && i > 0) { [a[i - 1], a[i]] = [a[i], a[i - 1]]; focus = "up-" + (i - 1); }
+    if (b.dataset.act === "down" && i < a.length - 1) { [a[i + 1], a[i]] = [a[i], a[i + 1]]; focus = "down-" + (i + 1); }
+    if (b.dataset.act === "remove") { a.splice(i, 1); focus = "addnum"; }
+    state.serverErrors = []; setFlash(""); return renderForm(focus);
+  }
+  if (b.dataset.switch) {
+    const k = b.dataset.switch, def = k === "notify" ? notifyDefault(d) : webDefault(d);
+    const eff = typeof d[k] === "boolean" ? d[k] : def, nv = !eff;
+    if (nv === def) delete d[k]; else d[k] = nv;
+    setFlash(""); return renderForm(b.id);
+  }
+  switch (b.id) {
+    case "addnum": d.numbers = (d.numbers || []).concat([{ number: "", label: "" }]); setFlash(""); return renderForm("num-" + (d.numbers.length - 1));
+    case "jsontoggle": state.showJson = !state.showJson; return renderForm("jsontoggle");
+    case "save": return save();
+    case "discard": {
+      state = Object.assign(state, { draft: clone(byId(d.id)) || clone(contacts[0]) || null, confirm: false, merge: false, flash: "", serverErrors: [] });
+      return renderAll("discard");
+    }
+    case "merge": state.merge = !state.merge; state.confirm = false; return renderForm("merge");
+    case "delete": state.confirm = true; state.merge = false; return renderForm("confirm-no");
+    case "confirm-no": state.confirm = false; return renderForm("delete");
+    case "confirm-yes": return remove();
+  }
+});
+
+ui = pickUiLanguage();
+renderAll();
+load();
+
+</script>
+</body>
+</html>

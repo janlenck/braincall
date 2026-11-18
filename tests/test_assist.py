@@ -455,7 +455,7 @@ def test_a_person_without_a_number_cannot_be_called(brain, tmp_path):
                      message(plan_tool(name="Maryna", task="Frag nach dem Termin"), stop="tool_use"),
                      message("Ich brauche die Nummer."))
     answer = tool_result(fake, "p1")
-    assert "Maryna is not a person with a number" in answer and brain.tasks.all() == []
+    assert "Maryna is not a contact with a phone number" in answer and brain.tasks.all() == []
 
 
 def test_tools_show_up_in_the_stream(brain, ha):

@@ -105,6 +105,10 @@ def identify(callers: list, req: dict) -> dict | None:
     asking = req.get("user_id") or req.get("user_name")
     if user is not None and _fold(user["ha_user"]) != "*":
         whom = {"ha_user": user["ha_user"], "number": user["number"] if user["number"] != "*" else ""}
+        if user.get("id"):
+            whom["contact"] = user["id"]
+        if len(user.get("numbers") or []) > 1:  # notes from all their phones
+            whom["numbers"] = [n["number"] for n in user["numbers"]]
     elif asking:
         whom = {"ha_user": asking, "number": ""}
     elif device is not None:  # nobody is logged in there (a voice device), whatever entry gave the access

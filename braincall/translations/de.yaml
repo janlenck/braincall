@@ -29,18 +29,13 @@ configuration:
     name: Nummer für Testanruf
     description: Ziel eines Anrufs ohne Nummer; gibt keine Rechte.
   callers:
-    name: Anrufer
+    name: Anrufer (Regeln für alle anderen)
     description: >-
-      Wer anrufen darf und was er darf. number: Rufnummer oder * (alle anderen; ohne * werden unbekannte Nummern
-      abgewiesen, unterdrückte immer). Für Brain Assist statt oder neben der Nummer: ha_user (Name oder ID des
-      Home-Assistant-Benutzers) und ha_device (Name oder ID eines Geräts oder seines Bereichs); * = alle anderen,
-      bei einem Eintrag für Benutzer und einem für das Gerät gilt das strengere Recht. name: das erste Wort dient
-      als Anrede.
-      access, mehrere mit Komma getrennt: admin (alles), read (alles lesen, nichts ändern),
-      calendar (nur frei/belegt, Termine ohne Rückfrage bei dir eintragen), shopping (nur Einkaufsliste),
-      guest (nur Nachricht aufnehmen). instructions: zusätzliche Anweisung an den Assistenten für diesen Anrufer.
-      language: feste Sprache. notify: Zusammenfassung schicken (Standard: alle außer admin).
-      web: darf im Internet suchen (Standard: admin und read, wenn Websuche an ist; nie für *).
+      Personen stehen seit 1.15 in den Kontakten (Seite „Brain Call“ in der Seitenleiste, contacts.json); beim
+      ersten Start ziehen sie von hier dorthin um. Hier bleiben nur die Regeln für alle anderen: number: * (alle
+      anderen Rufnummern; ohne * werden unbekannte Nummern abgewiesen, unterdrückte immer), ha_user: * und
+      ha_device: * (alle anderen Benutzer und Geräte in Brain Assist). Dazu access (admin, read, calendar,
+      shopping, guest), instructions, language, notify, web.
   notify_services:
     name: Benachrichtigung nach Anrufen
     description: 'Notify-Entitäten oder -Dienste, die nach jedem eingehenden Anruf eine Zusammenfassung bekommen, z. B. notify.handy, notify.mobile_app_handy oder ein E-Mail-Notifier.'

@@ -39,10 +39,12 @@ TOOL_PLAN_CALL = {
         "type": "object",
         "properties": {
             "number": {"type": "string", "description": "phone number to call, complete with area code; leave it "
-                                                        "out for a person from the callers list, their number is "
-                                                        "taken from there"},
-            "name": {"type": "string", "description": "person or business to call; for a person from the callers "
-                                                      "list their name as listed"},
+                                                        "out for a contact, their number is taken from there"},
+            "name": {"type": "string", "description": "person or business to call; for a contact their name as "
+                                                      "listed"},
+            "phone": {"type": "string", "description": "for a contact with several numbers: the label of the one to "
+                                                       "call, e.g. 'Büro' or 'Handy'; leave it out for the first "
+                                                       "(their usual) number"},
             "task": {"type": "string", "description": "the whole task in the requester's words, with everything "
                                                       "to pass on or ask: the call is made from it"},
             "goal": {"type": "string", "description": "what the call should achieve, one sentence (the purpose, "
@@ -195,17 +197,36 @@ def _texts(value) -> list:
 
 
 def person(cfg, name) -> dict | None:
-    """The callers entry with this name and a number to dial ("Ruf Mark an"); None if there is none, or if the
-    name is not unique among the entries with a number."""
-    key = str(name or "").strip().casefold()
+    """The contact with this name and a number to dial ("Ruf Mark an"); None if there is none, or if the name is not
+    unique among the entries with a number."""
+    key = " ".join(str(name or "").split()).casefold()
     if not key:
         return None
-    found = [c for c in cfg.callers or [] if c["number"] and c["number"] != "*" and c["name"].casefold() == key]
+    found = [c for c in cfg.callers or [] if c.get("numbers") and c["number"] != "*"
+             and " ".join(c["name"].split()).casefold() == key]
     return found[0] if len(found) == 1 else None
 
 
+def pick_number(entry: dict, phone: str = "") -> tuple[str, str, str]:
+    """Which of a contact's numbers to call: (number, label, why not). Without phone the first one; with phone the
+    one whose label fits ("Büro", "im Büro", "office"). Several or none that fit: why not, naming the labels."""
+    numbers = entry.get("numbers") or []
+    if not numbers:
+        return "", "", f"Not planned: {entry['name']} has no phone number. Ask for the number."
+    want = " ".join(str(phone or "").split()).casefold()
+    if not want:
+        return numbers[0]["number"], numbers[0]["label"], ""
+    fits = [n for n in numbers if n["label"] and (n["label"].casefold() == want or n["label"].casefold() in want)]
+    if len(fits) == 1:
+        return fits[0]["number"], fits[0]["label"], ""
+    labels = ", ".join(n["label"] or n["number"] for n in numbers)
+    return "", "", (f"Not planned: {entry['name']} has no phone called {phone!r} ({labels}). Ask which one to "
+                    "call, then give phone as one of these labels.")
+
+
 def callee(cfg, data: dict) -> tuple[str, str, str]:
-    """Whom to call: (number, name, why not). Without a number the name must be a person from callers."""
+    """Whom to call: (number, name, why not). Without a number the name must be a contact with a number; "phone"
+    picks one of their numbers by its label (pick_number)."""
     number = str(data.get("number") or "").strip()
     name = str(data.get("name") or "").strip()
     if number:
@@ -214,19 +235,23 @@ def callee(cfg, data: dict) -> tuple[str, str, str]:
         return "", "", "Not planned: the number is missing."
     entry = person(cfg, name)
     if entry is None:
-        return "", name, (f"Not planned: {name} is not a person with a number in the callers list. Ask for the "
-                          "number.")
-    return entry["number"], entry["name"], ""
+        return "", name, (f"Not planned: {name} is not a contact with a phone number. Ask for the number.")
+    number, _label, refusal = pick_number(entry, data.get("phone"))
+    if refusal:
+        return "", entry["name"], refusal
+    return number, entry["name"], ""
 
 
 def find_requester(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict | None:
-    """The callers entry of whoever plans a call, found by phone number or Home Assistant user (id before name), as
-    {"number", "name", "ha_user"}; None if nothing matches ("*" never does)."""
+    """The contact of whoever plans a call, found by any of their phone numbers or by Home Assistant user (id before
+    name), as {"number", "name", "ha_user"}; None if nothing matches ("*" never does). number is the one they called
+    from, else the first of the contact (to call them back)."""
     number = str(number or "").strip()
     for c in cfg.callers or []:
-        if number and c["number"] and c["number"] != "*" and config.norm_number(c["number"], cfg.country_code) \
-                == config.norm_number(number, cfg.country_code):
-            return {"number": c["number"], "name": c["name"], "ha_user": c["ha_user"] if c["ha_user"] != "*" else ""}
+        if number and c["number"] != "*" and config.has_number(c, number, cfg.country_code):
+            key = config.norm_number(number, cfg.country_code)
+            own = next(n["number"] for n in c["numbers"] if config.norm_number(n["number"], cfg.country_code) == key)
+            return {"number": own, "name": c["name"], "ha_user": c["ha_user"] if c["ha_user"] != "*" else ""}
     for value in (str(v or "").strip().casefold() for v in (user_id, user_name)):
         for c in cfg.callers or []:
             if value and c["ha_user"] and c["ha_user"] != "*" and c["ha_user"].casefold() == value:
@@ -340,9 +365,13 @@ def _more(task: dict) -> bool:
 
 def read_back(task: dict, cfg, known: bool) -> str:
     """What Claude is told after the first plan_call: the checked plan, to be read back before a yes."""
-    parts = [f"Plan checked, NOT stored yet. Read it back briefly: you will call {task['name'] or 'the number'} "
-             f"at {task['number']}" + ("" if known else " (say the number digit by digit, it is not in the callers "
-                                                        "list)")
+    entry = next((c for c in cfg.callers or [] if c["number"] != "*"
+                  and config.has_number(c, task["number"], cfg.country_code)), None)
+    phone = config.phone_of(entry, task["number"], cfg.country_code) if entry and len(entry["numbers"]) > 1 else ""
+    whom = (task['name'] or 'the number') + (f" ({phone})" if phone else "")
+    parts = [f"Plan checked, NOT stored yet. Read it back briefly: you will call {whom} "
+             f"at {task['number']}" + ("" if known else " (say the number digit by digit, it is not one of the "
+                                                        "contacts)")
              + f", {when(task, cfg)}, goal: {task['goal']}."]
     if _more(task):
         parts.append(f"The task as the call gets it: {task['task']}")

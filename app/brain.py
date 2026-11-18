@@ -475,12 +475,6 @@ _URL = re.compile(r"\(?\b(?:https?://|www\.)[^\s)]*\)?")  # URLs are never read 
 _FAKE_HANGUP = re.compile(r"\[[^\]]*(tool call|hang_up|auflegen)|(hang_up|auflegen)\]")
 
 
-def config_same(cfg, a: str, b: str) -> bool:
-    """Whether two numbers are the same line (see config.norm_number)."""
-    na = config.norm_number(a, cfg.country_code)
-    return bool(na) and na == config.norm_number(b, cfg.country_code)
-
-
 class SentenceSplitter:
     def __init__(self, emit):
         self.emit = emit
@@ -792,7 +786,7 @@ class Brain:
         if self.tasks.blocked(task["number"]) and not data.get("override_do_not_call"):
             return ("Not planned: this number asked not to be called again. Tell the caller; only if they explicitly "
                     "want to call anyway, call plan_call again with override_do_not_call=true.")
-        known = any(c["number"] != "*" and config_same(self.cfg, c["number"], task["number"])
+        known = any(c["number"] != "*" and config.has_number(c, task["number"], self.cfg.country_code)
                     for c in self.cfg.callers or [])
         pending = counters.setdefault("plan_confirm", {})
         key = tasks_mod.confirm_key(task, self.cfg, data) + str(bool(data.get("override_do_not_call")))

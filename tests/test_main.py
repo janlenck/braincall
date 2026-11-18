@@ -915,7 +915,7 @@ def test_tasks_api_calls_a_person_by_name_for_a_home_assistant_user(server, plan
     assert status == 201 and task["requester"] == {"number": "", "name": "Flur", "ha_user": "Flur"}
 
     assert server("POST", "/api/tasks", {"name": "Küche", "task": "x", "goal": "x"}) == (
-        400, {"error": "Küche is not a person with a number in the callers list. Ask for the number."})
+        400, {"error": "Küche is not a contact with a phone number. Ask for the number."})
     assert server("POST", "/api/tasks", {"task": "x", "goal": "x"}) == (400, {"error": "the number is missing."})
 
 
@@ -1083,3 +1083,90 @@ def test_shopping_lookup_without_automatic_shopping_list_waits_for_home_assistan
     monkeypatch.setattr(main.stopping, "wait", lambda s: False)
     main.shopping_lookup_loop()
     assert len(tries) == 3 and answers == []
+
+
+# ---------------------------------------------------------------- contacts (#93)
+@pytest.fixture
+def contact_book(main, monkeypatch, tmp_path):
+    """A contacts store in a temporary folder; the live list is a copy, so other tests keep theirs."""
+    import contacts
+    monkeypatch.setitem(main.cfg, "callers", list(main.cfg.callers))
+    monkeypatch.setitem(main.cfg, "callers_raw", [
+        {"number": "0151111", "name": "Jan", "access": "admin"},
+        {"number": "*", "name": "Unknown", "access": "guest"}])
+    store = contacts.Contacts(main.cfg, tmp_path / "contacts.json", in_use=main.contact_in_use)
+    monkeypatch.setitem(main.cfg, "callers", [c for c in main.cfg.callers if config.is_rule(c)])
+    store.rules = list(main.cfg.callers)
+    store.setup()
+    monkeypatch.setattr(main, "contact_store", store)
+    monkeypatch.setattr(main, "contact_choices", lambda: {"users": [{"value": "u1", "label": "Jan"}], "devices": []})
+    return store
+
+
+def test_contacts_api(server, contact_book, main):
+    status, body = server("GET", "/api/contacts")
+    assert status == 200 and [c["name"] for c in body["contacts"]] == ["Jan"]
+    assert body["users"] == [{"value": "u1", "label": "Jan"}] and body["phrase_languages"] == ["de", "en", "uk"]
+    assert server("GET", "/api/contacts", token=None)[0] == 401
+    willi = {"name": "Willi", "numbers": [{"number": "0170 777", "label": "Handy"}]}
+    status, new = server("POST", "/api/contacts", willi)
+    assert status == 201 and new["origin"] == "page"
+    # now known on the phone, without restart
+    assert main.find_caller("0170777", wildcard=False)["name"] == "Willi"
+    assert main.caller_label(main.find_caller("0170777"), "0170777") == "Willi (Handy)"
+    status, body = server("POST", "/api/contacts", {"name": "willi", "numbers": [{"number": "0151111"}]})
+    assert status == 400 and sorted(e["code"] for e in body["errors"]) == ["name_taken", "number_taken"]
+    status, changed = server("PUT", f"/api/contacts/{new['id']}", {**new, "email": "willi@example.com"})
+    assert status == 200 and changed["email"] == "willi@example.com"
+    jan = contact_book.by_name("Jan")
+    status, merged = server("POST", f"/api/contacts/{jan['id']}/merge", {"other": new["id"]})
+    assert status == 200 and [n["number"] for n in merged["numbers"]] == ["0151111", "0170 777"]
+    assert server("DELETE", f"/api/contacts/{new['id']}")[0] == 404
+    assert server("DELETE", f"/api/contacts/{jan['id']}") == (200, {"deleted": jan["id"]})
+    assert server("PUT", "/api/contacts", {"name": "x"})[0] == 404
+
+
+def test_contacts_page_is_served(server, main):
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    conn.request("GET", "/contacts")
+    r = conn.getresponse()
+    page = r.read().decode()
+    conn.close()
+    assert r.status == 200 and r.getheader("Content-Type").startswith("text/html")
+    assert "api/contacts" in page and '"/api/contacts' not in page  # relative: also works behind ingress
+
+
+def test_ingress_serves_only_the_contacts_page(main, contact_book, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "ingress_admin", lambda user: calls.append(user) or user == "admin-id")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), main.IngressHandler)
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+
+    def get(path, user="admin-id", proxy=True):
+        monkeypatch.setattr(main, "INGRESS_PROXY", "127.0.0.1" if proxy else "172.30.32.2")
+        conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        conn.request("GET", path, headers={"X-Remote-User-Id": user})
+        r = conn.getresponse()
+        r.read()
+        conn.close()
+        return r.status
+    try:
+        assert get("/") == 200 and get("/api/contacts") == 200
+        assert get("/api/contacts", user="someone") == 403
+        assert get("/api/tasks") == 404 and get("/health") == 404       # nothing else of the API
+        assert get("/api/contacts", proxy=False) == 403                 # only through Home Assistant
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_a_contact_with_several_numbers_is_one_person(main, monkeypatch):
+    monkeypatch.setitem(main.cfg, "callers", config._callers([
+        {"id": "j1", "name": "Jan", "access": "admin", "ha_user": "jan",
+         "numbers": [{"number": "0151111", "label": "Handy"}, {"number": "04542 81234", "label": "laut"}]}]))
+    caller = main.find_caller("+49454281234")
+    assert caller["name"] == "Jan" and main.caller_name(caller) == "Jan"
+    assert main.caller_label(caller, "+49454281234") == "Jan (laut)"
+    import memory
+    assert memory.who(caller, "+49454281234") == {"number": "+49454281234", "ha_user": "jan", "contact": "j1",
+                                                  "numbers": ["0151111", "04542 81234"]}

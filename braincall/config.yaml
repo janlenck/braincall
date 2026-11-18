@@ -15,6 +15,13 @@ host_network: true
 homeassistant_api: true
 # writes a to-do list found under another entity id into its setting (POST /addons/self/options, app/config.py, #74)
 hassio_api: true
+# the contacts page (#93) in Home Assistant's sidebar, for administrators only; app/main.py listens for it only on
+# the Supervisor's network (172.30.32.1), the API port keeps needing the token
+ingress: true
+ingress_port: 8098
+panel_title: Brain Call
+panel_icon: mdi:account-box-multiple
+panel_admin: true
 # tells Home Assistant where the HTTP API is and its token, for the integration Brain Assist (app/discovery.py)
 discovery:
   - brainassist

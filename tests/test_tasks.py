@@ -189,8 +189,8 @@ def test_callee_is_a_number_or_a_person_with_a_number():
     c = people_cfg()
     assert tasks.callee(c, {"number": "04542 1234", "name": "Seeblick"}) == ("04542 1234", "Seeblick", "")
     assert tasks.callee(c, {"name": " maryna "}) == ("0160444", "Maryna", "")
-    assert tasks.callee(c, {"name": "Mark"})[2].startswith("Not planned: Mark is not a person")  # two entries
-    assert tasks.callee(c, {"name": "Flur"})[2].startswith("Not planned: Flur is not a person")  # no number
+    assert tasks.callee(c, {"name": "Mark"})[2].startswith("Not planned: Mark is not a contact")  # two entries
+    assert tasks.callee(c, {"name": "Flur"})[2].startswith("Not planned: Flur is not a contact")  # no number
     assert tasks.callee(c, {"name": "Unknown"})[2].startswith("Not planned: Unknown")            # "*"
     assert tasks.callee(c, {}) == ("", "", "Not planned: the number is missing.")
 
@@ -837,3 +837,17 @@ def test_normal_outbound_call_is_unchanged():
     assert seen["call"]["grants"] == {} and "IMMEDIATELY leave a short message" in seen["intro"]
     assert "use no tools" in seen["intro"] and "only what the reason above covers" in seen["intro"]
     assert "You have no access to the house in this call. Give no information" in seen["intro"]
+
+
+def test_a_contact_with_several_numbers_is_called_on_the_one_asked_for():
+    """#93: "Ruf Jan im Büro an" picks the number by its label; without one the first number."""
+    c = make_cfg(outbound_allowed_regex="", callers=[
+        {"name": "Jan", "access": "admin", "numbers": [{"number": "0151111", "label": "Handy"},
+                                                       {"number": "040 1234", "label": "Büro"}]}])
+    assert tasks.callee(c, {"name": "Jan"}) == ("0151111", "Jan", "")
+    assert tasks.callee(c, {"name": "Jan", "phone": "im Büro"}) == ("040 1234", "Jan", "")
+    number, name, why = tasks.callee(c, {"name": "Jan", "phone": "Festnetz"})
+    assert number == "" and "Handy, Büro" in why
+    task, _ = tasks.build(c, {"name": "Jan", "phone": "Büro", "task": "x"}, JAN, NOON)
+    assert "you will call Jan (Büro) at 0401234" in tasks.read_back(task, c, True)
+    assert tasks.find_requester(c, "+4940 1234")["number"] == "040 1234"

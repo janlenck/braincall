@@ -240,3 +240,16 @@ def test_note_names_the_channel_and_the_subject():
     assert "conversations with this person" in text
     assert "none for the people who used this device" in memory.note(
         [], "Jan", subject="the people who used this device")
+
+
+def test_a_contact_remembers_across_its_numbers(tmp_path):
+    """#93: one memory per person, whichever of their numbers called; old lines have only the number."""
+    m = memory.CallMemory(tmp_path / "calls.jsonl", 30, "49")
+    jan = {"id": "j1", "number": "0151111", "ha_user": "", "numbers": [{"number": "0151111", "label": "Handy"},
+                                                                      {"number": "04542 81234", "label": "laut"}]}
+    m.add({"number": "0151111"}, "old line from the mobile", {"admin"})
+    m.add(memory.who(jan, "045428 1234"), "from the other phone", {"admin"})
+    saved = [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+    assert saved[1]["contact"] == "j1" and "numbers" not in saved[1]
+    found = [e["summary"] for e in m.recent(memory.who(jan, "0151111"), {"admin"})]
+    assert found == ["old line from the mobile", "from the other phone"]

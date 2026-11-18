@@ -29,17 +29,13 @@ configuration:
     name: Test call number
     description: Target of a call without number; grants no rights.
   callers:
-    name: Callers
+    name: Callers (rules for everyone else)
     description: >-
-      Who may call and what they may do. number: phone number or * (everyone else; without * unknown numbers are
-      rejected, withheld numbers always). For Brain Assist instead of or next to the number: ha_user (name or id
-      of the Home Assistant user) and ha_device (name or id of a device or of its area); * = everyone else, with a
-      user and a device entry the stricter access wins. name: the first word is used to address the person.
-      access, several separated by commas: admin (everything), read (read everything, change nothing),
-      calendar (free/busy only, book appointments without asking you), shopping (shopping list only),
-      guest (take a message only). instructions: extra instructions for the assistant for this caller.
-      language: fixed language. notify: send the summary (default: everyone except admin).
-      web: may search the web (default: admin and read, if Web search is on; never for *).
+      Since 1.15 people are in the contacts (page "Brain Call" in the sidebar, contacts.json); on the first start
+      they move there from here. Only the rules for everyone else stay here: number: * (every other phone number;
+      without * unknown numbers are rejected, withheld numbers always), ha_user: * and ha_device: * (every other
+      user and device in Brain Assist). With access (admin, read, calendar, shopping, guest), instructions,
+      language, notify, web.
   notify_services:
     name: Notify after calls
     description: 'Notify entities or services that get a summary after each incoming call, e.g. notify.phone, notify.mobile_app_phone or an e-mail notifier.'
