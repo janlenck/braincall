@@ -315,17 +315,23 @@ class Contacts:
         c["added"] = old["added"] if old else date.today().isoformat()
         return c
 
-    def save(self, data: dict, cid: str = "", origin: str = "page") -> tuple[dict | None, list]:
-        """Creates (no cid) or changes a contact. Returns (the stored contact, []) or (None, errors)."""
+    def preview(self, data: dict, cid: str = "", origin: str = "page") -> tuple[dict | None, list]:
+        """The contact as save() would store it, without storing: (contact, []) or (None, errors)."""
         with self.lock:
             old = next((c for c in self.items if c["id"] == cid), None) if cid else None
             if cid and old is None:
                 return None, [{"field": "id", "code": "not_found"}]
             c = self._clean(data, old, origin)
             errors = self.check(c)
+            return (None, errors) if errors else (lean(c), [])
+
+    def save(self, data: dict, cid: str = "", origin: str = "page") -> tuple[dict | None, list]:
+        """Creates (no cid) or changes a contact. Returns (the stored contact, []) or (None, errors)."""
+        with self.lock:
+            stored, errors = self.preview(data, cid, origin)
             if errors:
                 return None, errors
-            stored = lean(c)
+            old = cid and next((c for c in self.items if c["id"] == cid), None)
             self.items = [stored if o["id"] == stored["id"] else o for o in self.items] if old \
                 else self.items + [stored]
             self._write()
@@ -361,9 +367,15 @@ class Contacts:
                 return None, busy
             merged = json.loads(json.dumps(a))
             known = [config.norm_number(n["number"], self.cfg.country_code) for n in config.entry_numbers(a)]
+            # "Jan laut" merged into "Jan" (or "Jan Lenck"): its numbers without a label get "laut"
+            wa, wb = a["name"].split(), b["name"].split()
+            same = 0
+            while same < min(len(wa), len(wb)) and wa[same].casefold() == wb[same].casefold():
+                same += 1
+            rest = " ".join(wb[same:]).strip(" ()-,") if same else ""
             merged["numbers"] = config.entry_numbers(a) + [
-                n for n in config.entry_numbers(b) if config.norm_number(n["number"], self.cfg.country_code)
-                not in known]
+                {"number": n["number"], "label": n["label"] or rest[:MAX_LABEL]} for n in config.entry_numbers(b)
+                if config.norm_number(n["number"], self.cfg.country_code) not in known]
             for key in ("email", "ha_user", "ha_device", "instructions", "language"):
                 if not merged.get(key) and b.get(key):
                     merged[key] = b[key]
@@ -396,3 +408,47 @@ class Contacts:
             self._apply()
             log.info("Contact %s: language %s → %s", c["name"], before, language or self.cfg.language)
             return True
+
+
+def describe(c: dict, system_language: str = "") -> str:
+    """A contact in words for Claude (contact_edit, the read-back)."""
+    numbers = ", ".join(n["number"] + (f" ({n['label']})" if n["label"] else "") for n in config.entry_numbers(c))
+    access = [a for a in _access_list(c.get("access")) if a != "guest"]
+    parts = [f"{c.get('name')}: numbers {numbers or 'none'}"]
+    if c.get("email"):
+        parts.append(f"mail {c['email']}")
+    default = f"{system_language} (system language)" if system_language else "the system language"
+    parts.append(f"language {c.get('language') or default}")
+    parts.append(f"rights {', '.join(access) or 'guest'}")
+    if c.get("ha_user"):
+        parts.append(f"Home Assistant user {c['ha_user']}")
+    if c.get("instructions"):
+        parts.append(f"instructions: {c['instructions']}")
+    return "; ".join(parts)
+
+
+def problems(errors: list, numbers: list | None = None) -> str:
+    """The errors of check() in words for Claude."""
+    out = []
+    for e in errors:
+        n = (numbers or [])[e["index"]]["number"] if e.get("index") is not None and numbers and \
+            e["index"] < len(numbers) else ""
+        out.append({
+            "name_missing": "the name is missing",
+            "name_taken": f"another contact is already called {e.get('name')}: ask for a name that tells them "
+                          "apart, e.g. with the last name",
+            "name_long": "the name is too long",
+            "number_invalid": f"{n or 'a number'} is not a valid phone number",
+            "number_twice": f"{n or 'a number'} is given twice",
+            "number_taken": f"{n or 'a number'} already belongs to {e.get('name')}",
+            "label_long": "a label is too long",
+            "too_many_numbers": "too many numbers",
+            "email_invalid": "the mail address is not valid",
+            "email_taken": f"the mail address already belongs to {e.get('name')}",
+            "access_invalid": "unknown rights",
+            "language_invalid": "the language must be a two-letter code such as en or it",
+            "text_long": "the instructions are too long",
+            "empty": "a contact needs a phone number, a mail address or a Home Assistant user",
+            "not_found": "the contact does not exist (any more)",
+        }.get(e["code"], e["code"]))
+    return "; ".join(out)

@@ -157,7 +157,7 @@ def test_merge_joins_numbers_and_keeps_the_target(tmp_path):
     jan, laut = s.by_name("Jan"), s.by_name("Jan laut")
     merged, why = s.merge(jan["id"], laut["id"])
     assert why == "" and merged["name"] == "Jan"
-    assert merged["numbers"] == [{"number": "0151111"}, {"number": "04542 81234"}]
+    assert merged["numbers"] == [{"number": "0151111"}, {"number": "04542 81234", "label": "laut"}]
     assert s.get(laut["id"]) is None
     entry = next(c for c in cfg.callers if c["name"] == "Jan")
     assert config.has_number(entry, "045428 1234", "49")

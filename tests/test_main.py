@@ -1170,3 +1170,26 @@ def test_a_contact_with_several_numbers_is_one_person(main, monkeypatch):
     import memory
     assert memory.who(caller, "+49454281234") == {"number": "+49454281234", "ha_user": "jan", "contact": "j1",
                                                   "numbers": ["0151111", "04542 81234"]}
+
+
+def test_a_contacts_language_follows_the_last_call(main, events, monkeypatch):
+    """#93: after a call with at least two utterances of a contact, the language they spoke is stored."""
+    stored = []
+    monkeypatch.setattr(main.contact_store, "set_language", lambda cid, lang: stored.append((cid, lang)))
+
+    def summarize(transcript, caller, actions, lang, spoken=None, **kw):
+        if spoken is not None:
+            spoken["language"] = "en"
+        return "Summary"
+    monkeypatch.setattr(main.brain, "summarize", summarize)
+    jan = {**main.find_caller("0151111"), "id": "j1"}
+    two = session("caller: Hello", "Claudine: Hallo!", "caller: How are you?")
+    two.caller_turns = 2
+    ended = time.time()
+    main.after_call(True, "0151111", ended - 30, ended, two, "test", jan, True)
+    assert stored == [("j1", "en")]
+    one = session("caller: Hello", "Claudine: Hallo!")
+    one.caller_turns = 1
+    main.after_call(True, "0151111", ended - 30, ended, one, "test", jan, True)    # too short
+    main.after_call(True, "0999", ended - 30, ended, two, "test", main.find_caller("0999"), True)  # not a contact
+    assert stored == [("j1", "en")]

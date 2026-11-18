@@ -22,9 +22,20 @@ Without a phone: leave user name and password of the IP phone empty. BrainCall t
 
 ## Callers
 
-One entry per number: number (or `*` for everyone else), name, access, optional instructions, language,
-notify and web. Without a `*` entry unknown numbers are rejected; withheld numbers always. After a fresh
-installation the list is empty: add `*` with access `guest` so unknown callers can leave a message.
+Since 1.15 the people are **contacts**, edited on the page *Brain Call* in Home Assistant's sidebar (administrators
+only), or by voice as an `admin` ("Speicher Willi mit Handynummer 0170 …", read back and stored after a yes). A
+contact has a name (unique), several numbers each with a label ("Handy", "Büro", "laut"), a mail address, the Home
+Assistant user and device, access, the language calls start in, instructions, notify and web. Changes apply from
+the next call, without restart. They are stored in `contacts.json` in the add-on's config folder (part of the
+backups). On the first start the people of *Callers* move there.
+
+*Callers* keeps only the rules for everyone else: `*` as number (unknown numbers; without it they are rejected,
+withheld numbers always), `*` as `ha_user` or `ha_device` (Brain Assist). After a fresh installation add `*` with
+access `guest` so unknown callers can leave a message.
+
+A call from any number of a contact is that person, with one memory; the log names the phone ("Jan (laut)").
+Planning a call to a number that is no contact yet saves it as a contact (`guest`) with the yes to the plan.
+After a call, the language the person spoke for most of it becomes the language the next call starts in.
 
 | access | may |
 |---|---|
@@ -190,14 +201,14 @@ Since 1.13.0 the add-on tells Home Assistant where its API is and which token it
 installed, Settings → Devices & services shows *Brain Assist* as discovered: confirm, no address or token to type.
 A new *API token* reaches the integration the same way at the next start of the add-on.
 
-Who may do what is decided in *Callers*, like on the phone. An entry for Assist has, instead of or next to the
-number:
+Who may do what is decided by the contacts, like on the phone. A contact for Assist has, instead of or next to the
+numbers:
 
 - `ha_user`: the name or id of the Home Assistant user (app, dashboard). An entry with number and `ha_user` is
   the same person on the phone and in Assist.
 - `ha_device`: the name or id of a device, or of its area. Voice devices have no user: the access of the entry
   applies to whoever speaks there.
-- `*` stands for every other user or device. Without it, users and devices that are not listed get a fixed
+- `*` (in *Callers*) stands for every other user or device. Without it, users and devices that are not listed get a fixed
   sentence ("not set up") and cause no API costs. The log names the user and device that asked.
 - With an entry for the user and one for the device the stricter access wins: a hallway tablet with `shopping`
   stays at the shopping list even while an administrator is logged in on it.

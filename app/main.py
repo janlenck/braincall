@@ -127,6 +127,7 @@ def contact_in_use(contact: dict) -> str:
 
 
 contact_store = contacts.Contacts(cfg, in_use=contact_in_use)
+brain.contacts = contact_store
 CONTACTS_INTERVAL = 2  # seconds between looks at contacts.json for a change made by hand
 shopping_list = (shopping.Shopping(cfg, ha, _LOGDIR / "shopping-history.jsonl")
                  if cfg.shopping_auto and ha.enabled and cfg.shopping_list else None)
@@ -331,12 +332,21 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
         if session and session.caller_turns:
             lang = cfg.language if cfg.language in SUMMARY_TITLE else "de"
             name = caller_name(caller)
+            # a contact's language follows what they spoke last (#93); not for a mailbox or a very short call
+            spoken = {} if caller and caller.get("id") and session.caller_turns >= 2 and not (
+                session.mailbox or session.unanswered) else None
             try:
                 summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
                                           session.actions, lang, outbound=not inbound, mailbox=session.mailbox,
-                                          unanswered=session.unanswered)
+                                          unanswered=session.unanswered,
+                                          **({"spoken": spoken} if spoken is not None else {}))
             except Exception as e:  # noqa: BLE001
                 log.warning("Summary failed: %s", e)
+            if spoken and spoken.get("language"):
+                try:
+                    contact_store.set_language(caller["id"], spoken["language"])
+                except OSError as e:
+                    log.warning("Contacts: storing the language failed: %s", e)
             notify = caller.get("notify") if caller else None
             if inbound and (notify if notify is not None else "admin" not in access):
                 label = caller_label(caller, number)
@@ -1014,6 +1024,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": error})
         if body.get("override_do_not_call"):
             task_store.unblock(number)
+        new_contact, _ = brain.contact_for_task(task, caller is not None)  # a taken name: the task goes on without
+        if new_contact:
+            contact_store.save(new_contact, origin="task")
         self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802

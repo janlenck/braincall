@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.15.0
+
+Contacts: one entry per person with several named numbers and a mail address, edited on a page in Home Assistant
+and by voice, without restart (#93).
+
+- The people move from the setting *Callers* into `contacts.json` (add-on: its config folder) on the first start;
+  *Callers* keeps only the `*` rules for everyone else. A person's `number` becomes their first number
+- A contact has several numbers, each with a label ("Handy", "Büro", "laut"): a call from any of them is the same
+  person with one memory. The log and the notification say "Jan (laut)", everything said to others only "Jan".
+  The event `braincall_call` gets `phone`
+- Contacts page: the entry *Brain Call* in Home Assistant's sidebar (ingress, administrators only), or
+  `/contacts` on the API port with the token. Numbers with label and order, rights as checkboxes, Home Assistant
+  user and device as choices, language as a choice, mail, instructions, merge and delete. In the user's language
+  (de, en, uk, it, es, fr), light and dark
+- Names are unique; a number and a mail address belong to one contact only. Checked on the page and by voice
+- No restart: a change on the page, by voice or by hand in `contacts.json` applies from the next call
+- By voice (`contact_edit`, admins only): show, add, change, delete and merge contacts, read back and stored after a
+  yes. `admin` is never given or taken by voice
+- `plan_call` / `POST /api/tasks`: `phone` picks a contact's number by its label ("Ruf Jan im Büro an"). A call to a
+  number that is no contact yet saves it as a contact (`guest`, `origin: task`) with the yes to the plan
+- A contact's `language` is the language a call starts in and follows what the person spoke in the last call
+- HTTP API: `GET`/`POST /api/contacts`, `PUT`/`DELETE /api/contacts/<id>`, `POST /api/contacts/<id>/merge`
+
 ## 1.14.6
 
 Fix: a planned call did not get the task itself, only its goal (#89).
