@@ -584,9 +584,10 @@ def run_tasks():
             busy.release()
     if task is None:
         return
-    log.info("Task %s: calling %s (%s), attempt %d", task["id"], task["name"] or "?", task["number"],
-             len(task["attempts"]))
-    settle_task(task, outbound(task["number"], tasks.brief(task, OWNER_FIRST), task))
+    phone = config.phone_of(tasks.contact_of(cfg, task), task["number"], cfg.country_code)
+    log.info("Task %s: calling %s (%s%s), attempt %d, step %d", task["id"], task["name"] or "?", task["number"],
+             f", {phone}" if phone else "", task["tries"], len(task["steps"]) + 1)
+    settle_task(task, outbound(task["number"], tasks.brief(task, OWNER_FIRST, phone), task))
 
 
 def task_loop():
@@ -656,7 +657,8 @@ def on_incoming(call):
     name = caller_name(caller)
     instructions = caller["instructions"] if caller else ""
     if task:
-        instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST)).strip()
+        phone = config.phone_of(tasks.contact_of(cfg, task), number, cfg.country_code)
+        instructions = (instructions + " " + tasks.callback_note(task, OWNER_FIRST, phone)).strip()
     access = ",".join(sorted(rights))
     try:
         log.info("Answering call from %s (%s, access %s%s)", number, caller_label(caller, number) or "unknown", access,

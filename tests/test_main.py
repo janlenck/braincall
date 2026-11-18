@@ -739,6 +739,8 @@ def test_the_evaluation_plans_the_next_call_of_the_task(main, planned):
     planned.sessions.append(talked("Seeblick: Ja, 19 Uhr geht."))
     planned.result = {"status": "done", "summary": "Tisch um 19 Uhr reserviert."}
     main.run_tasks()
+    second = planned.dialed[1][1]  # the second call knows the first
+    assert "already had these steps" in second and "Schaut nach, ob für 4 frei ist." in second
     done = planned.store.get(task["id"])
     assert done["status"] == "done" and len(done["steps"]) == 2
     assert [d[0] for d in planned.dialed] == ["045421234", "045421234", "0151111"]
@@ -1073,6 +1075,42 @@ def test_call_back_from_the_callee_continues_the_task(main, planned, monkeypatch
     call, denied = incoming("0888777")  # no open task any more: rejected like any unlisted number
     main.on_incoming(call)
     assert denied == [True]
+
+
+def test_call_back_from_another_phone_of_the_contact_continues_the_task(main, planned, monkeypatch):
+    """#92: any number of the counterpart's contact is matched; the call is a step of the task (call_in)."""
+    saved, _ = main.contact_store.save({"name": "Mark", "numbers": [{"number": "0888777", "label": "Handy"},
+                                                                    {"number": "0888666", "label": "Büro"}]})
+    task = planned.add(number="0888777", name="Mark")
+    assert task["contact_id"] == saved["id"]
+    main.run_tasks()  # not answered
+    ran = {}
+
+    class Session:
+        transcript, caller_turns, actions = ["Mark: Sie hatten angerufen?"], 1, []
+        mailbox = message_left = unanswered = False
+
+        def __init__(self, *a):
+            pass
+
+        def run(self, **kw):
+            ran.update(kw)
+
+    monkeypatch.setattr(main, "CallSession", Session)
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    call, denied = incoming("0888666")
+    call.answer = lambda: None
+    main.on_incoming(call)
+    assert denied == [] and "probably calling back" in ran["instructions"] and "Mark (Büro)" in ran["instructions"]
+    assert wait_for(lambda: planned.store.get(task["id"])["status"] == "done")
+    (step,) = planned.store.get(task["id"])["steps"]
+    assert (step["kind"], step["number"], step["transcript"]) == ("call_in", "0888666", "Mark: Sie hatten angerufen?")
+    ran.clear()
+    call, denied = incoming("0888666")  # the task is over: a normal call of the contact, no continuation
+    call.answer = lambda: None
+    main.on_incoming(call)
+    assert denied == [] and ran["access"] == main.GUEST and "calling back" not in ran["instructions"]
+    assert len(planned.store.get(task["id"])["attempts"]) == 2
 
 
 def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch):
