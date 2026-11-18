@@ -77,7 +77,8 @@ last three Assist conversations are given to the assistant the next time, so nob
 - Assist conversations are never announced, also not with *notify* `true`: notifications are for calls.
 
 Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), the
-shopping history (`shopping-history.jsonl`) and the web usage of the day (`web-usage.json`) are in the add-on's own folder
+skills (`skills.json`), the shopping history (`shopping-history.jsonl`) and the web usage of the day
+(`web-usage.json`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
 
 ## Web search
@@ -119,6 +120,23 @@ Nothing is changed. The add-on has the administrator rights this needs without a
 
 Write the description of an automation for the assistant, it is what she explains first: what the automation is
 for, its inputs (sensors, forecasts), thresholds, times and the decision rule.
+
+## Skills
+
+*Skills* (`skills`, on by default) are what the assistant knows about how things are done in this house, for
+everyone and on every channel: "Auto laden" = which wallbox entity and mode, what to check first; what the
+household calls a room or device. They are kept in `skills.json` in the add-on's folder (part of its backup).
+
+- Only callers with access `admin` teach them, on the phone or in Brain Assist: "Merk dir: Auto laden heißt Wallbox
+  auf PV, aber nur wenn das Auto angesteckt ist." The assistant looks up the entities, reads the skill back and
+  stores it after a yes. Changing and deleting ("Vergiss den Skill Auto laden") work the same way.
+- A skill never gives anyone more rights: its steps run with the tools of the person asking, so only `admin`
+  switches. `read` may look skills up (and is told that switching is not allowed); everyone else gets none.
+- Every entity must exist when a skill is stored, and is checked again at each use: a skill with a renamed or
+  removed entity is marked outdated and not run until an admin corrects it.
+- A skill marked to ask first runs only after a yes, every time.
+- `skills.json` may be edited by hand (File editor); it is read again when it changes. See the
+  [README](https://github.com/janlenck/braincall#skills) for the format.
 
 ## Conversation flow
 

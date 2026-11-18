@@ -88,6 +88,8 @@ DEFAULTS = {
     "confirm_domains": ["cover", "lock", "alarm_control_panel"],  # ask explicitly before acting
     # planned calls with a task (plan_call for admins, POST /tasks): tasks.json in the log folder
     "tasks": True,
+    # skill memory (#50): how things are done in this house, skills.json in the log folder; admins teach them
+    "skills": True,
     "task_max_retries": 3,           # most further attempts a task may ask for if nobody is reached
     "task_retry_minutes": 15,        # pause between attempts
     "task_max_steps": 6,             # calls that reached someone plus steps of the requester, per task (#92)

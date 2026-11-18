@@ -10,6 +10,7 @@ import anthropic
 
 import config
 import contacts as contacts_mod
+import skills as skills_mod
 import tasks as tasks_mod
 import web as web_mod
 
@@ -442,8 +443,9 @@ TOOL_CONTACT_EDIT = {
 }
 # recorded for the summary after the call, and only run for words the caller really finished saying
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit",
-            "task_edit")
-ASKING = ("plan_call", "contact_edit", "task_edit")  # read back and stored only after a yes, checked in code
+            "task_edit", "skill_edit")
+# read back and stored only after a yes, checked in code
+ASKING = ("plan_call", "contact_edit", "task_edit", "skill_edit")
 ADMIN = frozenset({"admin"})
 MAX_FOLLOW_REQUESTS = 12   # requests of one follow-up after a planned call
 MAX_FOLLOW_CHANGES = 40    # changing tool calls of one follow-up (e.g. ingredients added to the shopping list)
@@ -641,6 +643,7 @@ class Brain:
         self.tasks = None  # tasks.TaskStore while planned calls are on (set by main)
         self.contacts = None  # contacts.Contacts (set by main): contact_edit for admins
         self.shopping = None  # shopping.Shopping while the automatic shopping list is on (set by main)
+        self.skills = None  # skills.SkillStore while the skill memory is on (set by main)
 
     def tools_for(self, access, web=None, messages=None, limits=None, grants=None) -> list:
         """The tools a caller gets: the code decides what is allowed, not the prompt.
@@ -662,6 +665,12 @@ class Brain:
             tools += [tasks_mod.TOOL_PLAN_CALL, tasks_mod.TOOL_TASK_EDIT]
         if self.contacts is not None and "admin" in access:
             tools.append(TOOL_CONTACT_EDIT)
+        if self.skills is not None and self.ha.enabled:
+            # read: the how and the names help to find the right sensor; switching stays with ha_control (admin)
+            if access & {"admin", "read"} and ("admin" in access or self.skills.all()):
+                tools.append(skills_mod.TOOL_LOOKUP)
+            if "admin" in access:
+                tools.append(skills_mod.TOOL_EDIT)
         if web_mod.allowed(self.cfg, access, web):
             search, fetch, _ = limits or web_mod.turn_limits(self.cfg, self.web_budget, messages or [])
             tools = tools + web_mod.tools(self.cfg, search, fetch)
@@ -688,16 +697,17 @@ class Brain:
         return self.tasks is not None and "admin" in access
 
     def system(self, language: str = "de", web: bool = False, exhausted=(), planning: bool = False,
-               channel: str = "phone") -> str:
+               channel: str = "phone", skills: list | None = None, teach: bool = False) -> str:
         """web: the web tools are in this call; exhausted: web tools whose daily limit is used up;
-        planning: the caller may plan calls (plan_call); channel: "phone", or "voice" / "text" for Brain Assist."""
+        planning: the caller may plan calls (plan_call); channel: "phone", or "voice" / "text" for Brain Assist;
+        skills: the names of the skills (skill_lookup is in this call), teach: the caller may store skills."""
         now = datetime.now(ZoneInfo(self.cfg.timezone)).strftime("%A, %Y-%m-%d %H:%M")
         fillers = ("- While you use tools the phone system already plays a short waiting phrase such as \"one moment, "
                    "let me check\"; do not announce lookups yourself.\n" if self.cfg.fillers else "")
         base = ASSIST_HEAD[channel] + HA_RULES + ASSIST_TAIL if channel in ASSIST_HEAD else BASE_PROMPT
         prompt = (base.replace("{now}", now).replace("{fillers}", fillers)
-                  .replace("{tasks}", (TASKS_PROMPT_ASSIST if channel in ASSIST_HEAD else TASKS_PROMPT)
-                           if planning else "")
+                  .replace("{tasks}", ((TASKS_PROMPT_ASSIST if channel in ASSIST_HEAD else TASKS_PROMPT)
+                                       if planning else "") + self._skills_prompt(skills, teach))
                   .replace("{name}", self.cfg.assistant_name or "Claude")
                   .replace("{owner}", (self.cfg.owner_name or "").strip() or "the owner"))
         if web:
@@ -710,6 +720,19 @@ class Brain:
         if self.cfg.extra_prompt:
             prompt += "\n" + self.cfg.extra_prompt
         return prompt
+
+    @staticmethod
+    def _skills_prompt(skills: list | None, teach: bool) -> str:
+        """The rules for skills and their names (names only: the details come from skill_lookup)."""
+        out = ""
+        if skills:
+            names = [skills_mod._clean(n, skills_mod.MAX_NAME + 12) for n in skills[:skills_mod.IN_PROMPT]]
+            more = len(skills) - len(names)
+            out = skills_mod.PROMPT + "  Skills: " + "; ".join(names) + (
+                f"; and {more} more (skill_lookup without name lists them)" if more > 0 else "") + ".\n"
+        if teach:
+            out += skills_mod.PROMPT_ADMIN
+        return out
 
     def _run_tool(self, block, tools: list, access, counters: dict | None = None, call: dict | None = None) -> str:
         """counters: per-call state, e.g. {"bookings": 1} = restricted bookings already made in this call.
@@ -1094,6 +1117,141 @@ class Brain:
         return (f"Checked, NOT stored yet. Read it back briefly: you will {what}. Only after a yes, call "
                 "contact_edit again with the same values and confirmed=true. Read numbers digit by digit.")
 
+    def _owner_first(self) -> str:
+        return (self.cfg.owner_name or "").strip().split(" ")[0] or "the owner"
+
+    def _skill_lookup(self, block, tools: list, access, counters: dict) -> str:
+        """skill_lookup: the skill that fits, its entities checked against Home Assistant now (gone ones mark it
+        outdated). Remembers the entities it switches for this conversation: a skill with confirm asks first
+        (_skill_gate), and a use is counted (_skill_used)."""
+        log.debug("Tool %s %s", block.name, block.input)
+        have = {t["name"] for t in tools}
+        if block.name not in have or self.skills is None:
+            return "Not allowed in this call."
+        term = str((block.input or {}).get("name") or "").strip()
+        items = self.skills.all()
+        if not items:
+            return "No skills stored yet."
+        if not term:
+            return "Skills: " + "; ".join(
+                s["name"] + (f" (for {', '.join(s['triggers'])})" if s["triggers"] else "")
+                + (" – outdated" if s.get("stale") else "") for s in items) + "."
+        found = self.skills.find(term)
+        if not found:
+            return f"No skill fits {term!r}. Skills: " + "; ".join(s["name"] for s in items) + "."
+        skill = found[0]
+        wanted = skills_mod.entities(skill)
+        try:
+            states = self.ha.entity_states(wanted) if wanted else {}
+        except Exception as e:  # noqa: BLE001  checked again with the next lookup; Claude is told to check each
+            log.warning("Skills: entities of %s not checked: %s", skill["name"], e)
+            states = None
+        missing = [] if states is None else [e for e in wanted if states.get(e) is None]
+        if states is not None:
+            self.skills.mark(skill["id"], stale=missing)
+        if not missing and "ha_control" in have:
+            steps = counters.setdefault("skill_steps", {})
+            for entity in skills_mod.controlled(skill):
+                steps[entity] = {"id": skill["id"], "name": skill["name"], "confirm": skill["confirm"]}
+        text = skills_mod.lookup_text(skill, states, have, "admin" in access, self._owner_first())
+        if len(found) > 1:
+            text += "\nOther skills that may fit: " + "; ".join(s["name"] for s in found[1:]) + "."
+        return text
+
+    def _skill_gate(self, block, messages: list, counters: dict) -> str:
+        """ha_control on an entity of a skill with confirm, looked up in this conversation: runs only with
+        confirmed=true after the person said something since it was held back (like the web check). "" = go."""
+        if block.name != "ha_control":
+            return ""
+        entity = str((block.input or {}).get("entity_id") or "").strip().lower()
+        skill = (counters.get("skill_steps") or {}).get(entity)
+        if not (skill and skill["confirm"]):
+            return ""
+        pending = counters.setdefault("skill_confirm", {})
+        key = self._confirm_key(block)
+        if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,
+                                                                                                    pending[key]):
+            del pending[key]
+            return ""
+        pending[key] = len(messages)
+        return (f"Safety check: the skill “{skill['name']}” asks for a yes first. Tell the person what you are about "
+                "to do and ask; only after a yes, call the tool again with confirmed=true.")
+
+    def _skill_used(self, block, out: str, counters: dict):
+        """Counts a skill as used once per conversation, when a step of it switched something."""
+        if block.name != "ha_control" or not str(out).startswith("Done") or self.skills is None:
+            return
+        entity = str((block.input or {}).get("entity_id") or "").strip().lower()
+        skill = (counters.get("skill_steps") or {}).get(entity)
+        used = counters.setdefault("skills_used", set())
+        if skill and skill["id"] not in used:
+            used.add(skill["id"])
+            try:
+                self.skills.mark(skill["id"], used=True)
+            except OSError as e:  # the count is bookkeeping, never a reason to fail a turn
+                log.warning("Skills: use of %s not counted: %s", skill["name"], e)
+
+    def _skill_edit(self, block, tools: list, messages: list, counters: dict, call: dict | None) -> str:
+        """skill_edit (admins): checks a new, changed or deleted skill and stores it only once the person said
+        something after it was read back (like contact_edit). The entities must exist in Home Assistant and their
+        domain be in control_domains for a switching step."""
+        log.debug("Tool %s %s", block.name, block.input)
+        store = self.skills
+        if block.name not in {t["name"] for t in tools} or store is None:
+            return "Not allowed in this call."
+        data = block.input or {}
+        action = str(data.get("action") or "").strip()
+        name = " ".join(str(data.get("name") or "").split())
+        target = store.by_name(name) if name else None
+        names = "; ".join(s["name"] for s in store.all()[:skills_mod.IN_PROMPT]) or "none"
+        if action not in ("add", "change", "delete"):
+            return "Unknown action: add, change or delete."
+        if action in ("change", "delete") and target is None:
+            return f"No skill named {name!r}: ask which one is meant. Skills: {names}."
+        if action == "add" and target is not None:
+            return (f"There is already a skill named {target['name']}: change that one, or give the new one another "
+                    "name.")
+        wanted = None
+        if action in ("add", "change"):
+            base = dict(target) if target else {}
+            for key in ("triggers", "steps", "checks", "notes", "confirm"):
+                if data.get(key) is not None:
+                    base[key] = data[key]
+            base["name"] = " ".join(str(data.get("new_name") or "").split()) or (target or {}).get("name") or name
+            wanted = skills_mod.normalize(base)
+            if target and wanted["name"].casefold() != target["name"].casefold() and store.by_name(wanted["name"]):
+                return f"Not stored: there is already a skill named {wanted['name']}."
+            ids = skills_mod.entities(wanted)
+            try:
+                states = self.ha.entity_states(ids) if ids else {}
+            except Exception as e:  # noqa: BLE001
+                log.warning("Skills: entities not checked: %s", e)
+                states = None
+            errors = skills_mod.problems(wanted, self.cfg, states)
+            if errors:
+                return "Not stored: " + "; ".join(errors) + "."
+        pending = counters.setdefault("skill_edit_confirm", {})
+        key = json.dumps([action, (target or {}).get("id", ""), wanted], sort_keys=True, ensure_ascii=False)
+        if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
+            wanted = pending.pop(key)[1]  # the skill as it was read back
+            if action == "delete":
+                done = store.delete(target["id"])
+                return (f"Deleted the skill {target['name']}. Tell the person briefly." if done
+                        else "Not deleted: the skill is gone already.")
+            channel = skills_mod.CHANNELS.get((call or {}).get("channel"), "phone")
+            try:
+                stored = store.save(wanted, target["id"] if target else "", by=(call or {}).get("name") or "",
+                                    channel=channel)
+            except (ValueError, OSError) as e:
+                return f"Not stored: {e}."
+            return (f"Stored the skill {stored['name']}. Tell the person briefly; it applies at once, on the phone "
+                    "and in Home Assistant, for everyone who may do its steps.")
+        pending[key] = (len(messages), wanted)
+        what = (f"delete the skill {skills_mod.describe(target)}" if action == "delete"
+                else ("store the skill " if action == "add" else "change the skill to ") + skills_mod.describe(wanted))
+        return (f"Checked, NOT stored yet. Read it back briefly, in plain words (not the entity ids): you will {what}. "
+                "Only after a yes, call skill_edit again with the same values and confirmed=true.")
+
     @staticmethod
     def _repair(messages: list):
         """Safety net: every tool_use needs a tool_result right after it, otherwise the API rejects the request.
@@ -1216,8 +1374,11 @@ class Brain:
                                                              grants=(call or {}).get("grants"))
         if assist:
             tools = [t for t in tools if t.get("name") != "hang_up"]
+        have = {t.get("name") for t in tools}
         system = self.system(language, web=web_ok, exhausted=limits[2] if limits else (),
-                             planning=self.planning(access), channel=channel)
+                             planning=self.planning(access), channel=channel,
+                             skills=self.skills.names() if "skill_lookup" in have else None,
+                             teach="skill_edit" in have)
         used = {"searches": 0, "fetches": 0, "queries": [], "urls": [], "domains": []}
         try:
             return self._loop(messages, on_sentence, should_abort, access, tools, system, actions, counters,
@@ -1313,7 +1474,9 @@ class Brain:
             stopped = False
             results = []
             for b in uses:
-                held = "" if stopped else self._web_gate(b, messages, counters)
+                # both checks run, so that one yes after both asked releases both
+                held = "" if stopped else " ".join(
+                    g for g in (self._web_gate(b, messages, counters), self._skill_gate(b, messages, counters)) if g)
                 if held:
                     out = held
                 elif stopped or (before_tool is not None and not before_tool(b)):
@@ -1327,7 +1490,10 @@ class Brain:
                     out = (self._plan_call(b, tools, messages, counters, call) if b.name == "plan_call"
                            else self._contact_edit(b, tools, messages, counters) if b.name == "contact_edit"
                            else self._task_edit(b, tools, messages, counters, call) if b.name == "task_edit"
+                           else self._skill_lookup(b, tools, access, counters) if b.name == "skill_lookup"
+                           else self._skill_edit(b, tools, messages, counters, call) if b.name == "skill_edit"
                            else self._run_tool(b, tools, access, counters, call))
+                    self._skill_used(b, out, counters)
                     if after_tool is not None:
                         after_tool(b.name, time.monotonic() - t0)
                     if b.name in MUTATING and actions is not None:

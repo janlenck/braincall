@@ -44,6 +44,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/assist.py` | Brain Assist: who a request of Home Assistant's assistant comes from (`ha_user`, `ha_device`), the conversations, the answer stream of `POST /api/converse` |
 | `app/discovery.py` | as an add-on: tells Home Assistant where the API is and its token, so Brain Assist needs nothing typed |
 | `app/rights.py` | what a person may do, in words for Claude; the stricter of two access sets |
+| `app/skills.py` | skill memory (`skills.json`): how things are done in this house, `skill_lookup`, `skill_edit` |
 | `app/contacts.py` | contacts (`contacts.json`): move from `callers`, checks, changes without restart, `contact_edit` |
 | `app/web/contacts.html` | the contacts page (plain HTML and JavaScript, texts in de, en, uk, it, es, fr) |
 | `start.bat` / `install.bat` / `test-call.bat` | start, (re)install packages, trigger a test call |
@@ -267,6 +268,49 @@ rest_command:
 
 After each call the agent fires the HA event `braincall_call`
 (`number`, `answered`, `reason`, `duration_s`, `transcript`, `caller_name`, `access`, `summary`).
+
+## Skills
+
+Skills are what Claudine knows about **how** things are done in this house, whoever asks and on which channel:
+"Auto laden" = which wallbox entity, which mode, what to check first; "Heizung einschalten" = which heat pump
+setting; "das Büro" is the area "Arbeitszimmer". On by default (`skills: true`, needs Home Assistant); kept in
+`logs/skills.json`, as an add-on in its folder and so in its backup. They hold nothing personal; the memory per
+person is `caller_memory`.
+
+- **Only `admin` teaches.** "Merk dir: Auto laden heißt Wallbox auf PV, aber nur wenn das Auto angesteckt ist."
+  Claudine looks up the exact entity ids, reads the skill back and stores it after a yes (`skill_edit`), on the
+  phone or in Brain Assist. After she did something in several steps she may offer once to remember it. Change and
+  delete work the same way ("Vergiss den Skill Auto laden"). A skill taught is used at once, on every channel; the
+  admin is the review.
+- **A skill never grants rights.** It is a note on how, not a permission. Claudine runs its steps with the tools
+  of the person asking, so only `admin` switches anything (`ha_control`). `read` may look skills up (they help to
+  find the right sensor, "wie warm ist das Wasser") and is told that switching is not allowed for them; `guest`,
+  `calendar` and `shopping` get no skills at all.
+- **Entities are checked.** When a skill is stored, every entity must exist in Home Assistant and a switching step
+  must be in `control_domains`. Each lookup checks again: a skill whose entity was renamed or removed is marked
+  outdated (`stale` in the file, "(outdated)" in the list), its steps are not run, and Claudine says so (to an
+  admin: with the offer to correct it).
+- **Confirm.** A skill with `confirm` asks for a yes every time: once looked up, `ha_control` on one of its
+  entities only runs with `confirmed=true` after the person answered, like `confirm_domains`.
+- **In the prompt only the names** (at most 40); the details come from `skill_lookup`, so the prompt does not grow
+  with every skill. Skills are notes, not instructions, like the caller memory.
+- `uses` and `last_used` count how often a skill switched something (once per conversation).
+
+`skills.json` may be edited by hand; BrainCall reads it again when it changes, a broken file keeps the last good
+list (error in the log). One entry:
+
+```jsonc
+{"skills": [
+  {"id": "a1b2c3", "name": "Auto laden", "triggers": ["Auto laden", "Wallbox an"],
+   "steps": [{"entity_id": "binary_sensor.wallbox_plug", "note": "nur wenn an"},
+             {"entity_id": "select.wallbox_mode", "service": "select_option", "data": {"option": "PV"}}],
+   "checks": "Auto angesteckt?", "notes": "Sofort laden = Modus Schnell", "confirm": false,
+   "source": {"by": "Jan Lenck", "channel": "phone", "time": "2026-11-18T19:02:11+00:00"}, "uses": 0}
+]}
+```
+
+A step without `service` only reads the entity (a check or a value to tell). Without `id` one is given; a name used
+twice is ignored. `skills: false` turns the skills off (the file stays).
 
 ## Automatic shopping list
 
@@ -725,6 +769,7 @@ planned calls (numbers and hours, plan and confirmation, grants for the callee, 
 follow-up, `/tasks`), the automatic shopping list (the hour, mistakes, restarts, errors, history, `/shopping/history`),
 the rhythm list (learning, classes, self-repair, automatic adding, forecast, creating lists, `/shopping/forecast`),
 Brain Assist (users and devices, stricter access, conversations, the answer stream, token for every endpoint),
+skills (who may look up and teach, read-back, outdated entities, confirm),
 configuration and pointer files, the HTTP API, the speech recognition filter, audio and the
 SIP fixes, and the conversation flow (merged and stale utterances, restart while thinking, speculative start, fillers,
 mailbox announcements, timing).

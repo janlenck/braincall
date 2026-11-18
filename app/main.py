@@ -45,6 +45,7 @@ import memory  # noqa: E402
 import phrases  # noqa: E402
 import rhythm  # noqa: E402
 import shopping  # noqa: E402
+import skills  # noqa: E402
 import tasks  # noqa: E402
 from brain import Brain  # noqa: E402
 from ha import HA  # noqa: E402
@@ -94,6 +95,9 @@ phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
 task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks and PHONE else None
 brain.tasks = task_store
+# skill memory (#50): needs Home Assistant, the skills are about its entities
+skill_store = skills.SkillStore(_LOGDIR / skills.FILE) if cfg.skills and ha.enabled else None
+brain.skills = skill_store
 
 
 def task_event(task: dict) -> dict:
@@ -1379,6 +1383,12 @@ def main():
     for w in config.WARNINGS:
         log.warning(w)
     log.info("Caller memory: %s", calls.describe() + (f" ({calls.path})" if calls.enabled else ""))
+    if skill_store is not None:
+        stale = sum(1 for s in skill_store.all() if s.get("stale"))
+        log.info("Skills: %d in %s%s", len(skill_store.all()), skill_store.path,
+                 f", {stale} outdated" if stale else "")
+    else:
+        log.info("Skills: off" + ("" if cfg.skills else " (skills: false)"))
     log.info("Callers: %s", ", ".join(
         f"{c['name'] or c['number'] or c['ha_user'] or c['ha_device'] or c['email']} ({','.join(sorted(c['access']))})"
         for c in cfg.callers) or "none, incoming calls and Brain Assist requests are rejected")

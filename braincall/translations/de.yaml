@@ -181,6 +181,12 @@ configuration:
     description: >-
       Anrufer mit Zugriff admin können den Assistenten selbst mit einem Auftrag anrufen lassen („Ruf im Restaurant an
       und reservier einen Tisch“), auch per POST /tasks. Er ruft an, erledigt die Folgeschritte und meldet das Ergebnis.
+  skills:
+    name: Skills
+    description: >-
+      Merken, wie etwas in diesem Haus gemacht wird („Auto laden“ = welche Geräte, in welcher Reihenfolge, was vorher
+      zu prüfen ist), für alle Personen, am Telefon und in Brain Assist. Nur Admins bringen sie bei („merk dir: …“);
+      ein Skill gibt niemandem mehr Rechte. Gespeichert in skills.json im Add-on-Ordner.
   task_max_retries:
     name: Wiederholungen pro Auftrag (max.)
     description: So viele weitere Versuche darf ein Auftrag höchstens verlangen, wenn niemand erreicht wird.

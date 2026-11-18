@@ -179,6 +179,12 @@ configuration:
     description: >-
       Callers with access admin can have the assistant make a call on its own with a task ("call the restaurant and
       reserve a table"), also via POST /tasks. It calls, follows up and reports the result.
+  skills:
+    name: Skills
+    description: >-
+      Remember how things are done in this house ("Auto laden" = which devices, in which order, what to check first),
+      for every person, on the phone and in Brain Assist. Only admins teach them ("merk dir: …"); a skill never gives
+      anyone more rights. Kept in skills.json in the add-on folder.
   task_max_retries:
     name: Retries per task (max)
     description: Most further attempts a task may ask for if nobody is reached.

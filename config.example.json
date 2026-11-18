@@ -152,6 +152,7 @@
 
   // --- Planned calls with a task ("Ruf im Restaurant an und reservier einen Tisch"), see README ---
   "tasks": true,                      // admins may plan calls on the phone (plan_call) and via POST /tasks
+  "skills": true,                     // skill memory: admins teach how things are done here, see README
   "task_max_retries": 3,              // most further attempts a task may ask for if nobody is reached
   "task_retry_minutes": 15,           // pause between attempts
   "task_max_steps": 6,                // calls that reached someone plus steps of the requester, per task

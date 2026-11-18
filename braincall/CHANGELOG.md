@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.20.0
+
+Skill memory (#50): Claudine remembers how things are done in this house, for everyone and on every channel.
+
+- New option `skills` (default on, needs Home Assistant): skills in `skills.json` in the log folder (as add-on: its
+  folder, part of the backup). A skill has a name, the phrases it is for, steps (entity, service, data; a step
+  without service only reads), what to check first, notes, whether to ask first, who taught it where and when, and
+  how often it was used
+- Only `admin` teaches, changes or deletes skills (`skill_edit`, phone and Brain Assist): checked, read back, stored
+  after a yes. Every entity must exist in Home Assistant, a switching step must be in `control_domains`
+- `skill_lookup` for `admin` and `read`: the skill with its entities checked against Home Assistant and their current
+  state. A skill never grants rights: the steps run with the person's own tools, so only `admin` switches; `read`
+  is told it may not. `guest`, `calendar` and `shopping` get no skills
+- A skill whose entity is gone (renamed, removed) is marked outdated at its next lookup and its steps are not run;
+  it is in order again as soon as the entity is back or an admin corrected it
+- A skill with `confirm` asks every time: once looked up, `ha_control` on its entities runs only with a yes
+- Only the names are in the system prompt (at most 40); the details come with `skill_lookup`
+- `skills.json` may be edited by hand: read again when it changes, a broken file keeps the last good list
+
 ## 1.19.0
 
 Home Assistant can see what the line is doing (#100), for Brain Assist's status entities.

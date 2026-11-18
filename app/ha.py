@@ -1071,6 +1071,12 @@ class HA:
                 return False
             raise
 
+    def entity_states(self, entity_ids) -> dict:
+        """{entity_id: state dict, or None if Home Assistant has no such entity} for a skill's entities, from one
+        /states request (cached for 30 s). Raises if Home Assistant cannot be asked (an error is not "missing")."""
+        by_id = {s.get("entity_id"): s for s in self._states() if isinstance(s, dict)}
+        return {e: by_id.get(e) for e in entity_ids}
+
     def core_running(self) -> bool:
         """Whether Home Assistant has finished starting (/api/config state RUNNING); raises if it cannot be asked.
         While it starts, integrations load one by one and their entities are still missing."""
