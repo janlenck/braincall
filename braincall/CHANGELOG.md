@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.17.0
+
+Three bugs fixed: calls have a maximum length, calls rejected on a busy line are reported, and calendar and weather
+times follow the configured timezone.
+
+- New option `max_call_minutes` (default 10, 0 = no limit): about a minute before, Claude is told to sum up, say
+  goodbye and hang up; at the limit a fixed goodbye ends the call, also while hold music, a TV or a robocall keeps
+  the line busy. The summary still follows, the `braincall_call` event has `ended: call limit` in `reason` (#22)
+- An incoming call while the line is busy (another call, a reconnect) is logged as a warning, fires a
+  `braincall_call` event with `reason: rejected: line busy` and is notified like a summary (not for admin unless
+  `notify: true`) (#25)
+- Calendar (events, busy times, bookings and their limits), weather forecast, `last_changed` of states, the days of
+  a planned call's grant and tasks made through the HTTP API use the configured `timezone`, not the machine's.
+  Times without an offset are read in that timezone (#26)
+
 ## 1.16.0
 
 A task is a case with a history: it stays open over several calls, in both directions, and every call knows what

@@ -1293,3 +1293,21 @@ def test_tasks_loaded_before_the_contacts_find_them_later(tmp_path):
     c["callers"][:] = config._callers(TWO_PHONES)  # the contacts are read after the tasks (main)
     assert store.reconcile_contacts() == 1 and store.get("a1")["contact_id"] == "m1"
     assert tasks.TaskStore(tmp_path / "tasks.json", c).get("a1")["contact_id"] == "m1"  # stored
+
+
+def test_granted_days_start_today_in_the_configured_timezone(monkeypatch):
+    """#26: "today" for the days of a grant is the configured timezone's, not the machine's."""
+    import brain as brain_mod
+
+    tz = ZoneInfo("Pacific/Kiritimati")  # UTC+14: almost always a day ahead of UTC
+    b = Brain(make_cfg(anthropic_api_key="test", timezone="Pacific/Kiritimati"), StubHA())
+    today = datetime.now(tz).date()
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) if tz else datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)  # machine in UTC
+    monkeypatch.setattr(brain_mod, "datetime", Clock)
+    days, first = b._granted_days({"calendar_from": (today - timedelta(days=5)).isoformat(),
+                                   "calendar_to": (today + timedelta(days=2)).isoformat()})
+    assert (days, first) == (3, today.isoformat())

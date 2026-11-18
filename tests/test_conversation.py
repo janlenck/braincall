@@ -1112,3 +1112,82 @@ def test_phone_numbers_are_spoken_in_the_language_of_the_caller():
     s.say("045424635.")  # nothing but a number: its own text says nothing about the language
     s.sentence_q.join()
     assert s.speech.languages == ["uk"]
+
+
+# ---------------------------------------------------------------- longest call (#22)
+LIMIT_PHRASE = session_mod.PHRASES["de"]["limit"]
+
+
+def test_no_limit_with_max_call_minutes_0():
+    s = make(FakeBrain(), workers=False, max_call_minutes=0)
+    s.started_at -= 24 * 3600
+    assert s.time_left() is None and not s._over_limit()
+
+
+def test_the_call_ends_with_a_goodbye_at_the_limit(caplog):
+    brain = FakeBrain()
+    s = make(brain, max_call_minutes=1)
+    s.started_at -= 61
+    with caplog.at_level(logging.WARNING, logger="session"):
+        run_converse(s)
+    assert s.limit_reached and brain.seen == []  # no further turn of the model
+    assert s.speech.synthesized == [LIMIT_PHRASE]
+    assert s.transcript[-2:] == ["[Call ended by the phone system: maximum length (1 min) reached]",
+                                 f"Claudine: {LIMIT_PHRASE}"]
+    assert any(r.getMessage() == "Call limit (1 min) reached: hanging up" for r in caplog.records)
+
+
+def test_the_limit_ends_the_call_while_noise_goes_on():
+    """Hold music or a TV: the caller seems to speak all the time, no utterance ever ends."""
+    s = make(FakeBrain(), max_call_minutes=1, silence_timeout=30)
+    s.started_at = time.monotonic() - 60 + 0.3
+    s.user_speaking.set()
+    t0 = time.monotonic()
+    run_converse(s)
+    assert s.limit_reached and time.monotonic() - t0 < 2
+    assert s.speech.synthesized == [LIMIT_PHRASE]
+
+
+def test_a_minute_before_the_limit_the_model_is_told_to_wrap_up(caplog):
+    def answer(ctx):
+        ctx.say("Gern.")
+        return False
+
+    brain = FakeBrain(answer, hang_up)
+    s = make(brain, max_call_minutes=1)
+    s.started_at -= 30
+    utt(s, "Noch eine Frage.")
+
+    def more():
+        while len(brain.seen) < 1:
+            time.sleep(0.01)
+        s.wait_spoken()
+        time.sleep(0.05)
+        utt(s, "Danke, tschüss.")
+    threading.Thread(target=more, daemon=True).start()
+    with caplog.at_level(logging.INFO, logger="session"):
+        run_converse(s)
+    first, second = (str(seen[-1]["content"]) for seen in brain.seen)
+    assert "maximum length in about one minute" in first and first.endswith("Noch eine Frage.")
+    assert "maximum length" not in second  # only once
+    assert not s.limit_reached
+    assert sum("asking to wrap up" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_no_wrap_up_note_long_before_the_limit():
+    brain = FakeBrain(hang_up)
+    s = make(brain, max_call_minutes=10)
+    utt(s, "Hallo.")
+    run_converse(s)
+    assert brain.seen[0][-1] == {"role": "user", "content": "Hallo."}
+
+
+def test_the_limit_starts_with_the_conversation(monkeypatch):
+    s = make(FakeBrain(), workers=False, max_call_minutes=1)
+    s.started_at -= 3600  # e.g. the session was made long before
+    monkeypatch.setattr(s, "_play_greeting", lambda text: False)
+    monkeypatch.setattr(s, "_answer", lambda messages, heard: True)
+    monkeypatch.setattr(s, "listen", lambda timeout: session_mod.TIMEOUT)
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    s.run(outbound=False, caller="0999")
+    assert 0 < s.time_left() <= 60

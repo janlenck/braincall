@@ -683,6 +683,9 @@ Not part of this yet (see #50): limits per person, and skills.
   answer plays a matching phrase ("Ich schaue in den Kalender.", "Ich schalte das.", "Moment, ich schau kurz
   nach."), and after `still_working_s` (default 5) seconds without anything said "Ich bin noch dran." Fillers are
   in the log and transcript, not in the conversation Claude sees, and can be interrupted like answers.
+- **Longest call** (`max_call_minutes`, default 10, 0 = no limit): about a minute before, Claude is told to sum up,
+  say goodbye and hang up; at the limit a fixed goodbye is played and the call ends, also while noise or hold music
+  goes on. The summary still follows; the `braincall_call` event has `ended: call limit` in its `reason`.
 - **Everything said counts once:** all the caller said since the last answer is answered as one message
   ("Nein. Nein."). Speech while Claude is still preparing the answer (nothing said yet) restarts the answer with
   everything said, unless a changing tool already ran; then it is the next turn. What was said before the last

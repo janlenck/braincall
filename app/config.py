@@ -46,6 +46,7 @@ DEFAULTS = {
     "end_silence_ms": 450,     # pause after which an utterance is finished and answered
     "speculative_ms": 300,     # STT and Claude start after this pause, spoken only after end_silence_ms; 0 = off
     "silence_timeout": 12,
+    "max_call_minutes": 10,    # a call ends after this long (a minute before, Claude is told to wrap up); 0 = no limit
     "barge_in": True,
     "barge_in_min_ms": 1000,   # how long the caller must speak before the assistant lets itself be interrupted
     # fillers and status phrases (cached audio in <log_dir>/cache, like the greetings)

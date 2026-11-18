@@ -144,12 +144,19 @@ def _spelled(t: str) -> str:
     return t.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
 
 
-def _local_time(iso: str) -> str:
-    """UTC timestamp from HA -> local time plus age, so the model never reads out UTC."""
+def _in_tz(t: datetime, tz=None) -> datetime:
+    """t in tz (None = timezone of the machine); a naive t is local time in tz (#26)."""
+    if t.tzinfo is None:
+        return t.replace(tzinfo=tz) if tz else t.astimezone()
+    return t.astimezone(tz)
+
+
+def _local_time(iso: str, tz=None) -> str:
+    """UTC timestamp from HA -> local time in tz (None = machine) plus age, so the model never reads out UTC."""
     try:
         t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         mins = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
-        local = t.astimezone()
+        local = t.astimezone(tz)
         when = local.strftime("%H:%M") if mins < 1440 else local.strftime("%Y-%m-%d %H:%M")
         return f"{when} local time ({mins} minutes ago)" if mins < 180 else f"{when} local time"
     except Exception:  # noqa: BLE001
@@ -1002,14 +1009,14 @@ class HA:
         return {k: a[k] for k in keys if a.get(k) not in (None, "", [])}
 
     @classmethod
-    def _fmt(cls, s: dict, brief: bool = False) -> dict:
+    def _fmt(cls, s: dict, brief: bool = False, tz=None) -> dict:
         a = s.get("attributes", {})
         out = {
             "entity_id": s["entity_id"],
             "name": a.get("friendly_name"),
             "state": s.get("state"),
             "unit": a.get("unit_of_measurement"),
-            "changed": _local_time(s.get("last_changed", "")),
+            "changed": _local_time(s.get("last_changed", ""), tz),
         }
         attrs = cls._attrs(s, BRIEF_ATTRS if brief else ATTRS)
         if attrs:
@@ -1108,7 +1115,7 @@ class HA:
 
     def get_state(self, entity_id: str) -> str:
         try:
-            st = self._fmt(self._get(f"/states/{entity_id}"))
+            st = self._fmt(self._get(f"/states/{entity_id}"), tz=self.tz)
             if entity_id.startswith("todo."):
                 try:
                     st["items"] = self.todo_items(entity_id)
@@ -1148,7 +1155,7 @@ class HA:
             if score:
                 scored.append((score, s["entity_id"].startswith("sensor."), s))
         scored.sort(key=lambda x: (-x[0], not x[1], x[2]["entity_id"]))
-        hits = [self._fmt(s, brief=True) for _, _, s in scored[:limit]]
+        hits = [self._fmt(s, brief=True, tz=self.tz) for _, _, s in scored[:limit]]
         log.debug("Search '%s': %d hits", term, len(scored))
         if not hits:
             return f"No entity found for '{term}'. Try other or English terms, or use ha_list."
@@ -1199,7 +1206,7 @@ class HA:
         for e in entries[:FORECAST_LIMIT[kind]]:
             item = {k: e[k] for k in FORECAST_KEYS if e.get(k) is not None}
             try:
-                t = datetime.fromisoformat(str(e.get("datetime", "")).replace("Z", "+00:00")).astimezone()
+                t = _in_tz(datetime.fromisoformat(str(e.get("datetime", "")).replace("Z", "+00:00")), self.tz)
                 item = {"time": f"{_wd(t)} " + t.strftime("%Y-%m-%d" if kind == "daily" else "%Y-%m-%d %H:%M"),
                         **item}
             except ValueError:
@@ -1327,22 +1334,27 @@ class HA:
         return found, errors
 
     @staticmethod
-    def _span(ev: dict):
-        """(start, end, all_day) of an event in local time; the end of all-day events is exclusive."""
+    def _span(ev: dict, tz=None):
+        """(start, end, all_day) of an event in local time (tz, None = machine); the end of all-day events is
+        exclusive."""
         st, en = ev.get("start", {}), ev.get("end", {})
         if "dateTime" in st:
-            s = datetime.fromisoformat(st["dateTime"]).astimezone()
-            e = datetime.fromisoformat(en["dateTime"]).astimezone() if "dateTime" in en else s + timedelta(hours=1)
+            s = _in_tz(datetime.fromisoformat(st["dateTime"]), tz)
+            e = _in_tz(datetime.fromisoformat(en["dateTime"]), tz) if "dateTime" in en else s + timedelta(hours=1)
             return s, e, False
         d = datetime.fromisoformat(st.get("date", "1970-01-01"))  # naive: whole days also across DST changes
         e = datetime.fromisoformat(en["date"]) if en.get("date") else d
-        return d.astimezone(), max(e, d + timedelta(days=1)).astimezone(), True
+        return _in_tz(d, tz), _in_tz(max(e, d + timedelta(days=1)), tz), True
+
+    def _now(self) -> datetime:
+        """Now in the configured timezone (the machine's without one)."""
+        return datetime.now(self.tz).astimezone(self.tz)
 
     def _period(self, days, start: str):
-        now = datetime.now().astimezone()
+        now = self._now()
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         try:
-            begin = datetime.fromisoformat(start).astimezone() if start else midnight
+            begin = _in_tz(datetime.fromisoformat(start), self.tz) if start else midnight
         except ValueError:
             begin = midnight
         return begin, begin + timedelta(days=max(1, min(int(days or 7), 366)))
@@ -1358,7 +1370,7 @@ class HA:
         evs, errors = self._fetch_events(cals, begin, end)
         found = []
         for name, ev in evs:
-            t, e, all_day = self._span(ev)
+            t, e, all_day = self._span(ev, self.tz)
             if all_day:
                 when = f"{_wd(t)} " + t.strftime("%Y-%m-%d") + " all-day"
             else:
@@ -1380,7 +1392,7 @@ class HA:
         free = [fold(str(w).strip()) for w in self.cfg.all_day_free_words or [] if str(w).strip()]
         spans = []
         for _, ev in evs:
-            span = self._span(ev)
+            span = self._span(ev, self.tz)
             if not (span[2] and any(w in fold(str(ev.get("summary", ""))) for w in free)):
                 spans.append(span)
         spans.sort()
@@ -1421,7 +1433,7 @@ class HA:
 
     def _booking_refusal(self, begin: datetime, stop: datetime, all_day: bool, booked: int) -> str:
         """Why a booking by a caller without admin is outside the limits; empty if it is within them."""
-        now = datetime.now().astimezone()
+        now = self._now()
         max_bookings = int(self.cfg.calendar_max_bookings or 0)
         max_hours = float(self.cfg.calendar_max_hours or 0)
         max_days = int(self.cfg.calendar_max_days_ahead or 0)
@@ -1473,9 +1485,8 @@ class HA:
         try:
             if "T" in start:
                 st = datetime.fromisoformat(start)
-                st = st if st.tzinfo else st.astimezone()
-                en = datetime.fromisoformat(end) if end and "T" in end else st + timedelta(hours=1)
-                en = en if en.tzinfo else en.astimezone()
+                st = _in_tz(st, self.tz)
+                en = _in_tz(datetime.fromisoformat(end), self.tz) if end and "T" in end else st + timedelta(hours=1)
                 body["start_date_time"] = st.isoformat()
                 body["end_date_time"] = en.isoformat()
                 begin, stop, all_day = st, en, False
@@ -1484,8 +1495,8 @@ class HA:
                 e = datetime.fromisoformat(end).date() + timedelta(days=1) if end else d + timedelta(days=1)
                 body["start_date"] = d.isoformat()
                 body["end_date"] = e.isoformat()  # HA: end date is exclusive
-                begin = datetime.fromisoformat(body["start_date"]).astimezone()
-                stop = datetime.fromisoformat(body["end_date"]).astimezone()
+                begin = _in_tz(datetime.fromisoformat(body["start_date"]), self.tz)
+                stop = _in_tz(datetime.fromisoformat(body["end_date"]), self.tz)
                 all_day = True
         except ValueError as e:
             return f"Date not readable ({e}). Format: 2026-10-30T14:00, or 2026-10-30 for all-day."

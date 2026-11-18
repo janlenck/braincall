@@ -21,15 +21,20 @@ log = logging.getLogger("session")
 # Fixed phrases spoken without the model, per conversation language
 PHRASES = {
     "de": {"silence": "Ich höre nichts mehr, ich lege auf. Tschüss!",
-           "error": "Bei mir ist gerade ein Fehler aufgetreten. Ich lege auf."},
+           "error": "Bei mir ist gerade ein Fehler aufgetreten. Ich lege auf.",
+           "limit": "Die Gesprächszeit ist leider um, ich lege jetzt auf. Tschüss!"},
     "uk": {"silence": "Я вас більше не чую, тому завершую дзвінок. До побачення!",
-           "error": "У мене сталася помилка. Я завершую дзвінок."},
+           "error": "У мене сталася помилка. Я завершую дзвінок.",
+           "limit": "На жаль, час розмови вичерпано, я завершую дзвінок. До побачення!"},
     "en": {"silence": "I can't hear you anymore, I'll hang up now. Bye!",
-           "error": "Something went wrong on my side. I'll hang up now."},
+           "error": "Something went wrong on my side. I'll hang up now.",
+           "limit": "Sorry, our time for this call is up, I'll hang up now. Bye!"},
 }
 
 ENDED = object()
 TIMEOUT = object()
+LIMIT = object()        # max_call_minutes reached (#22)
+WRAP_UP_S = 60.0        # this long before max_call_minutes the model is told to wrap up
 
 # Voice activity detection on 20 ms frames
 ECHO_FACTOR = 4.0       # while we speak the threshold is raised so the echo of our own voice does not count
@@ -128,6 +133,9 @@ class CallSession:
         self.counters: dict[str, int] = {}  # per-call limits, e.g. bookings by callers without admin
         self.call_info: dict = {}  # number and name of the caller, grants of a planned call (Brain.turn call=)
         self.caller_turns = 0
+        self.started_at = time.monotonic()  # start of the conversation, for max_call_minutes (set again in run)
+        self.limit_reached = False          # max_call_minutes ended the call (#22)
+        self._wrap_up_noted = False
         self.language = cfg.language or "de"
         self.caller_label = "caller"
         self.last_text = ""
@@ -176,6 +184,38 @@ class CallSession:
     # ------------------------------------------------------------------ Status
     def alive(self) -> bool:
         return self.active and self.call.state == CallState.ANSWERED
+
+    def time_left(self) -> float | None:
+        """Seconds until max_call_minutes is reached (may be negative), None = no limit."""
+        try:
+            limit = float(self.cfg.max_call_minutes or 0) * 60
+        except (TypeError, ValueError):
+            limit = 0.0
+        return limit - (time.monotonic() - self.started_at) if limit > 0 else None
+
+    def _over_limit(self) -> bool:
+        left = self.time_left()
+        return left is not None and left <= 0
+
+    def _wrap_up(self, messages):
+        """Once, about WRAP_UP_S before max_call_minutes: the model is told to come to an end (#22)."""
+        left = self.time_left()
+        if self._wrap_up_noted or left is None or left > WRAP_UP_S:
+            return
+        self._wrap_up_noted = True
+        log.info("Call limit (%s min) in %.0f s: asking to wrap up", self.cfg.max_call_minutes, max(0, left))
+        self._add_user(messages, "[System: This call reaches its maximum length in about one minute and is then "
+                                 "ended by the phone system. Come to an end now: briefly sum up what was agreed, "
+                                 "say goodbye and hang up.]")
+
+    def _end_at_limit(self):
+        """max_call_minutes reached: a fixed goodbye, then the call is hung up (run)."""
+        log.warning("Call limit (%s min) reached: hanging up", self.cfg.max_call_minutes)
+        self.limit_reached = True
+        self.transcript.append(f"[Call ended by the phone system: maximum length ({self.cfg.max_call_minutes} min) "
+                               "reached]")
+        self.say(PHRASES.get(self.language, PHRASES["de"])["limit"])
+        self.wait_spoken()
 
     @property
     def unanswered(self) -> bool:
@@ -713,7 +753,8 @@ class CallSession:
 
     def _wait_input(self, timeout: float, pending=None):
         """What the caller says next: all utterances since the answer (the last one may still be tentative),
-        TIMEOUT or ENDED. Utterances that belong to an earlier question are dropped."""
+        TIMEOUT, ENDED or LIMIT (max_call_minutes reached). Utterances that belong to an earlier question are
+        dropped."""
         deadline = time.monotonic() + timeout
         batch = list(pending or [])
         self._waiting.set()
@@ -724,6 +765,8 @@ class CallSession:
                 except queue.Empty:
                     if not self.alive():
                         return ENDED
+                    if self._over_limit():
+                        return LIMIT  # also while noise or speech goes on without a pause
                     if batch and not self.user_speaking.is_set():
                         return batch
                     if time.monotonic() > deadline and not self.user_speaking.is_set():
@@ -877,9 +920,15 @@ class CallSession:
         silence = 0
         pending = []
         while self.alive():
+            if self._over_limit():
+                self._end_at_limit()
+                return
             got = self._wait_input(float(self.cfg.silence_timeout), pending)
             pending = []
             if got is ENDED:
+                return
+            if got is LIMIT:
+                self._end_at_limit()
                 return
             if got is TIMEOUT:
                 silence += 1
@@ -888,6 +937,7 @@ class CallSession:
                     self.wait_spoken()
                     return
                 messages.append({"role": "user", "content": "[System: The caller has not said anything for a while.]"})
+                self._wrap_up(messages)
                 if self._answer(messages, []) is True:
                     return
                 continue
@@ -898,6 +948,7 @@ class CallSession:
             if not heard:
                 continue  # noise
             silence = 0
+            self._wrap_up(messages)
             result = self._answer(messages, heard)
             if isinstance(result, list):
                 pending = result
@@ -992,6 +1043,7 @@ class CallSession:
         rights += previous
         if language:
             self.language = language
+        self.started_at = time.monotonic()
         threads = [threading.Thread(target=f, daemon=True)
                    for f in (self._reader, self._tts_worker, self._play_worker)]
         for t in threads:

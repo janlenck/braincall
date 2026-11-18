@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -685,3 +686,68 @@ def test_todo_call_drops_unset_fields(make_ha):
                 due_date="2026-11-20")
     assert h.http.posted("/services/todo/update_item") == [
         {"entity_id": "todo.shopping_rhythm", "item": "u1", "rename": "Milch (7 days)", "due_date": "2026-11-20"}]
+
+
+# ---------------------------------------------------------------- configured timezone (#26)
+@pytest.fixture
+def utc_machine():
+    """The machine runs in UTC, the configuration says Europe/Berlin (e.g. a server; berlin_time restores TZ)."""
+    import os
+    import time
+    if not hasattr(time, "tzset"):
+        pytest.skip("needs time.tzset")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    return ZoneInfo("Europe/Berlin")
+
+
+def test_local_time_in_the_configured_timezone(utc_machine):
+    assert ha_mod._local_time("2025-01-01T10:00:00+00:00", utc_machine) == "2025-01-01 11:00 local time"
+    assert ha_mod._local_time("2025-01-01T10:00:00+00:00") == "2025-01-01 10:00 local time"  # no tz: the machine's
+
+
+def test_span_in_the_configured_timezone(utc_machine):
+    s, e, _ = HA._span(ev("Call", "2030-01-05T09:00:00Z", "2030-01-05T10:00:00Z"), utc_machine)
+    assert (s.hour, e.hour) == (10, 11)
+    s, e, all_day = HA._span(ev("Urlaub", "2030-01-05", "2030-01-06"), utc_machine)
+    assert all_day and s == datetime(2030, 1, 5, tzinfo=utc_machine) and e == datetime(2030, 1, 6, tzinfo=utc_machine)
+
+
+def test_events_and_busy_times_in_the_configured_timezone(make_ha, utc_machine):
+    h = make_ha(default_calendars=["calendar.family"], timezone="Europe/Berlin", events={"calendar.family": [
+        ev("Zahnarzt", "2030-01-08T09:00:00Z", "2030-01-08T10:00:00Z"),
+        ev("Urlaub", "2030-01-10", "2030-01-11"),
+    ]})
+    assert h.events(days=7, start="2030-01-07").splitlines()[1:] == [
+        "Tue 2030-01-08 10:00–11:00: Zahnarzt  [Familie]", "Thu 2030-01-10 all-day: Urlaub  [Familie]"]
+    assert h.busy_times(days=7, start="2030-01-07").splitlines()[1:] == [
+        "Tue 2030-01-08 10:00–11:00: busy", "Thu 2030-01-10: all day busy"]
+    begin, end = h._period(1, "")
+    assert begin == datetime.now(utc_machine).replace(hour=0, minute=0, second=0, microsecond=0)
+    assert begin.utcoffset() in (timedelta(hours=1), timedelta(hours=2)) and end - begin == timedelta(days=1)
+
+
+def test_create_event_takes_naive_times_in_the_configured_timezone(make_ha, utc_machine):
+    h = make_ha(default_calendars=["family"], timezone="Europe/Berlin")
+    h.create_event("work", "Termin", "2030-01-08T14:00", confirmed=True)
+    body = created(h)[0]
+    assert (body["start_date_time"], body["end_date_time"]) == ("2030-01-08T14:00:00+01:00",
+                                                                "2030-01-08T15:00:00+01:00")
+
+
+def test_restricted_booking_past_and_today_in_the_configured_timezone(make_ha, utc_machine):
+    h = make_ha(default_calendars=["calendar.family"], timezone="Europe/Berlin")
+    berlin_now = datetime.now(utc_machine).replace(tzinfo=None)
+    # 5 minutes ago in Berlin is 55 or 115 minutes ahead on a UTC clock: still in the past
+    start = (berlin_now - timedelta(minutes=5)).isoformat(timespec="minutes")
+    assert h.create_event("", "x", start, confirmed=True, restricted=True).startswith(
+        "Not added: the start is in the past")
+    assert h.create_event("", "x", berlin_now.strftime("%Y-%m-%d"), confirmed=True, restricted=True) == "Added: x."
+
+
+def test_forecast_times_in_the_configured_timezone(make_ha, utc_machine):
+    h = forecast_ha(make_ha, FakeResponse({"service_response": {"weather.home": {"forecast": [
+        {"datetime": "2030-01-08T09:00:00+00:00", "condition": "sunny", "temperature": 3}]}}}))
+    h.tz = utc_machine
+    out = json.loads(h.forecast("weather.home", "hourly"))
+    assert out["forecast"][0]["time"] == "Tue 2030-01-08 10:00"

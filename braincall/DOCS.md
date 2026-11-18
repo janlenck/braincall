@@ -129,6 +129,9 @@ answering, outgoing calls as soon as the callee said "Hallo?".
 - *Early start* (`speculative_ms`, default 300 ms): transcription and answer start already after this pause, but are
   only spoken once the caller is really done. 0 = off.
 - *Fillers* on/off, *Filler after* (default 600 ms) and *Still on it after* (default 5 s, 0 = off).
+- *Longest call* (`max_call_minutes`, default 10 minutes, 0 = no limit): a minute before, the assistant wraps up;
+  at the limit it says goodbye and hangs up, also when hold music or a TV keeps the line open. The summary still
+  follows.
 
 What the caller says while the answer is being prepared is answered together with the rest. The log shows a timing
 line per turn and a summary per call (median/max per step) to compare settings.
