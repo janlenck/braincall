@@ -1125,6 +1125,20 @@ def test_call_back_from_another_phone_of_the_contact_continues_the_task(main, pl
     assert len(planned.store.get(task["id"])["attempts"]) == 2
 
 
+def test_the_phone_that_asked_not_to_be_called_is_blocked(main, planned, monkeypatch):
+    """Review of #96: a call back from the office asks not to be called again: the office is blocked."""
+    task = planned.add(number="0888777", name="Mark")
+    main.run_tasks()  # not answered
+    claimed = planned.store.claim_callback("0888666", main.datetime.now().astimezone())
+    assert claimed is None  # not a number of the task
+    planned.store.tasks[0]["attempts"].append({"time": "2026-11-10T12:00:00+01:00", "kind": "callback",
+                                               "number": "0888666", "outcome": ""})
+    planned.store.tasks[0]["status"] = "running"
+    planned.result = {"status": "failed", "summary": "Will keine Anrufe.", "do_not_call": True}
+    main.settle_task(planned.store.get(task["id"]), talked("Mark: Rufen Sie nie wieder an."))
+    assert planned.store.blocked("0888666") and not planned.store.blocked("0888777")
+
+
 def test_call_back_after_a_message_continues_the_task(main, planned, monkeypatch):
     """The message asks for a call back: it is answered (also from an unlisted number) and reported again."""
     task = planned.add(number="0888777", name="Mark")

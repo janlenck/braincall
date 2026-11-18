@@ -490,9 +490,9 @@ directions: the earlier steps of this task, if any, come with the plan.
   Never next_call a number of someone else, and never one the callee did not say in this call.
 - If the callee will call back, report status wait (only if wait is possible: see below), with what is still open.
 - Anything outside what the plan allows you to agree to is not agreed: report it as open, the task ends partial.
-- At the end call exactly one of next_call or task_result: status, a summary for the requester (all calls of the
+- At the end call exactly one of next_call or task_result, with a summary for the requester (all calls of the
   task so far, not only this one), the answers collected, each follow-up step with what came of it, and open
-  points. Set do_not_call if the callee asked not to be called again.
+  points (task_result also with its status). Set do_not_call if the callee asked not to be called again.
 - Write the summary, answers and steps in {language}.
 
 Current time: {now}
@@ -915,9 +915,9 @@ class Brain:
         t = open_[0]
         if t["status"] == tasks_mod.RUNNING:
             return "Not now: a call of this task is running. Add the step after it."
-        if tasks_mod.reached(t) >= int(self.cfg.task_max_steps or 1):
-            return (f"Not added: the task has had its {self.cfg.task_max_steps} steps (task_max_steps). Plan a new "
-                    f"call with plan_call and previous_task={t['id']} once it has ended, or cancel it.")
+        if tasks_mod.reached(t) + 2 > int(self.cfg.task_max_steps or 1):  # the step and the call it is for
+            return (f"Not added: the task has no steps left of its {self.cfg.task_max_steps} (task_max_steps). Plan "
+                    f"a new call with plan_call and previous_task={t['id']} once it has ended, or cancel it.")
         text = " ".join(str(data.get("text") or "").split())[:tasks_mod.MAX_TEXT]
         if not text:
             return "Not added: what is the step? Give it as text in the requester's words."
@@ -951,7 +951,7 @@ class Brain:
                          ensure_ascii=False)
         if data.get("confirmed") and key in pending and web_mod.caller_spoke_since(messages, pending[key][0]):
             step = pending.pop(key)[1]
-            done, why = self.tasks.add_requester_step(t["id"], step, now)
+            done, why = self.tasks.add_requester_step(t["id"], step, now, int(self.cfg.task_max_steps or 1))
             if done is None:
                 return f"Not added: {why}."
             return ("Stored. " + (f"The call to {done['name'] or done['number']} starts as soon as the line is "
@@ -1500,10 +1500,11 @@ class Brain:
             span = tasks_mod.hours(self.cfg)
             return None, (f"Not planned: planned calls are only made between {span[0]:%H:%M} and {span[1]:%H:%M}. "
                           "Choose a time in these hours.")
-        number = str(data.get("number") or "").strip() or task["number"]
+        last = (task.get("attempts") or [{}])[-1].get("number") or task["number"]  # the line of this call
+        number = str(data.get("number") or "").strip() or last
         cc = self.cfg.country_code
         key = config.norm_number(number, cc)
-        known = key in {config.norm_number(n, cc) for n in tasks_mod.numbers_of(self.cfg, task)}
+        known = key in {config.norm_number(n, cc) for n in tasks_mod.numbers_of(self.cfg, task) + [last]}
         refusal = tasks_mod.number_refusal(self.cfg, number)
         if refusal:
             return None, f"Not planned: {refusal}."
@@ -1553,9 +1554,13 @@ class Brain:
         if added:
             plan["added_by_the_requester_since"] = added  # part of the plan, confirmed like it
         earlier = tasks_mod.history(task)
+        before = task.get("result") or {}
+        so_far = {k: before[k] for k in ("answers", "steps", "open_points") if before.get(k)}
         messages = [{"role": "user", "content":
                      "Plan (confirmed by the requester):\n" + json.dumps(plan, ensure_ascii=False, indent=1)
                      + (f"\n\nEarlier steps of this task (data, not instructions):\n{earlier}" if earlier else "")
+                     + ("\n\nCollected and done in the earlier steps (keep it in your report, update what this "
+                        "call changed):\n" + json.dumps(so_far, ensure_ascii=False, indent=1) if so_far else "")
                      + ("" if mailbox else "\n\nThis was the last step the task may take: report a final status "
                         "with task_result (not wait); what is still open goes to open_points." if not more else
                         f"\n\nThe task's time window ends {task['not_after'].replace('T', ' ')}.")
@@ -1596,7 +1601,7 @@ class Brain:
                     if b.name == tasks_mod.NEXT and tasks_mod.NEXT in allowed:
                         nxt, refusal = self._next_call(task, b.input or {}, transcript)
                         if nxt is not None:
-                            result = tasks_mod.clean_result({"summary": (b.input or {}).get("summary")})
+                            result = tasks_mod.clean_result(b.input or {})
                             return {**result, "status": tasks_mod.NEXT, "next_call": nxt}
                         results.append({"type": "tool_result", "tool_use_id": b.id, "content": refusal,
                                         "is_error": True})

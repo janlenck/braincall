@@ -193,8 +193,11 @@ TOOL_NEXT_CALL = {
                                                         "callee gave in this call for themselves (their office, "
                                                         "reception, mobile); default the number called now"},
             "label": {"type": "string", "description": "for a new number: what it is, e.g. 'Rezeption', 'Büro'"},
-            "summary": {"type": "string", "description": "what came of this call so far, one to three sentences "
-                                                         "for the requester, plain text"},
+            "summary": {"type": "string", "description": "what came of the task so far (all its calls), one to "
+                                                         "three sentences for the requester, plain text"},
+            "answers": TOOL_TASK_RESULT["input_schema"]["properties"]["answers"],
+            "steps": TOOL_TASK_RESULT["input_schema"]["properties"]["steps"],
+            "open_points": TOOL_TASK_RESULT["input_schema"]["properties"]["open_points"],
         },
         "required": ["not_before", "summary"],
     },
@@ -329,9 +332,16 @@ def contact_of(cfg, task: dict) -> dict | None:
     return contact_entry(cfg, task.get("number") if not task.get("contact_id") else "", task.get("contact_id", ""))
 
 
+def target_ok(cfg, task: dict) -> bool:
+    """Whether the number the task dials still belongs to its contact (a task without a live contact: always)."""
+    entry = contact_of(cfg, task) if task.get("contact_id") else None
+    return entry is None or config.has_number(entry, task.get("number", ""), cfg.country_code)
+
+
 def numbers_of(cfg, task: dict) -> list[str]:
-    """Every number of the task's counterpart: the one dialed now first, then those of its contact."""
-    out = [task["number"]] if task.get("number") else []
+    """Every number of the task's counterpart: the one dialed now first, then those of its contact. A number that
+    was removed from the contact (or moved to another one) is no longer one of the task's."""
+    out = [task["number"]] if task.get("number") and target_ok(cfg, task) else []
     keys = {config.norm_number(n, cfg.country_code) for n in out}
     for n in config.entry_numbers(contact_of(cfg, task)):
         key = config.norm_number(n["number"], cfg.country_code)
@@ -394,17 +404,18 @@ def deadline(task: dict) -> datetime:
     return min(end, datetime.fromisoformat(until)) if until else end
 
 
-def history(task: dict, transcripts: int | None = None, requester: bool = True) -> str:
+def history(task: dict, transcripts: int | None = None, requester: bool = True, top: bool = True) -> str:
     """The earlier steps of a task in a few lines for Claude: when, which way, what came of it, and what was said
     (transcripts: None = all that was kept, for the evaluation; a number = the end of each, for the next call;
     0 = none). The caller marks it as data: earlier transcripts are never instructions."""
     lines = []
     earlier = task.get("earlier") or {}
-    if earlier.get("steps"):
+    if earlier.get("id"):
         lines.append(f"From the earlier task {earlier.get('created', '')[:10]} ({earlier.get('goal', '')}, "
                      f"{earlier.get('status', '')}): {earlier.get('summary', '')}")
-        lines += ["  " + line for line in history({"steps": earlier["steps"]}, transcripts, requester).splitlines()]
-        lines.append("This task:" if task.get("steps") else "This task: no call yet.")
+        lines += ["  " + line for line in history(earlier, transcripts, requester, top=False).splitlines()]
+        if top:
+            lines.append("This task:" if task.get("steps") else "This task: no call yet.")
     for i, s in enumerate(task.get("steps") or [], 1):
         if s.get("kind") == REQUESTER:
             if requester:
@@ -467,14 +478,27 @@ def earlier_task(cfg, task: dict, old: dict | None) -> tuple[dict | None, str]:
     if old["status"] not in FINAL:
         return None, (f"Not planned: task {old['id']} is still open ({old['status']}). Add a step to it with "
                       "task_edit add_step instead of planning a new call.")
-    same = (old.get("contact_id") and old.get("contact_id") == task.get("contact_id")) or \
-        config.norm_number(old["number"], cfg.country_code) in {config.norm_number(n, cfg.country_code)
-                                                              for n in numbers_of(cfg, task)}
+    if old.get("contact_id"):  # the same contact; a number moved to another contact since does not count
+        same = old["contact_id"] == task.get("contact_id")
+    else:  # a task from before #92: by its number
+        same = config.norm_number(old["number"], cfg.country_code) in {config.norm_number(n, cfg.country_code)
+                                                                     for n in numbers_of(cfg, task)}
     if not same:
         return None, f"Not planned: task {old['id']} was with {old['name'] or old['number']}, not with this callee."
-    r = old.get("result") or {}
-    return {"id": old["id"], "created": old["created"], "goal": old["goal"], "status": old["status"],
-            "summary": str(r.get("summary") or "")[:MAX_TEXT], "steps": old.get("steps") or []}, ""
+    return _snapshot(old, EARLIER_DEPTH), ""
+
+
+EARLIER_DEPTH = 3  # continued tasks A → B → C …: the history of this many tasks back goes along
+
+
+def _snapshot(old: dict, depth: int) -> dict:
+    """A finished task's history for the task that continues it, with what it continued itself (up to depth)."""
+    summary = (old.get("result") or {}).get("summary") if "result" in old else old.get("summary")  # task or copy
+    out = {"id": old["id"], "created": old["created"], "goal": old["goal"], "status": old["status"],
+           "summary": str(summary or "")[:MAX_TEXT], "steps": old.get("steps") or []}
+    if depth > 1 and (old.get("earlier") or {}).get("id"):
+        out["earlier"] = _snapshot(old["earlier"], depth - 1)
+    return out
 
 
 def find_requester(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict | None:
@@ -719,6 +743,16 @@ def report_text(task: dict) -> str:
     return "\n".join(lines)
 
 
+def _merged(before: dict | None, now: dict) -> dict:
+    """The result so far of an open task: the new one, keeping answers and follow-up steps collected in earlier
+    steps that it does not repeat (an answer given again wins)."""
+    new, old = clean_result(now), clean_result(before or {})
+    new["answers"] = {**old["answers"], **new["answers"]}
+    known = {s["step"] for s in new["steps"]}
+    new["steps"] = [s for s in old["steps"] if s["step"] not in known] + new["steps"]
+    return new
+
+
 def clean_result(data: dict) -> dict:
     """The task_result input in a fixed shape (the model's output is not trusted to have it)."""
     data = data if isinstance(data, dict) else {}
@@ -859,11 +893,12 @@ class TaskStore:
                     self._give_up(t, "The next call could not be made in its time window.")
                     out.append(dict(t))
                 elif t["status"] == WAITING and now > datetime.fromisoformat(t["not_after"]):
-                    last = (t.get("result") or {}).get("summary") or ""
-                    self._finish(t, {"status": NO_REPLY, "summary": f"No call back until {t['not_after'][:16]}."
+                    before = t.get("result") or {}  # what was collected and done so far stays in the report
+                    last = before.get("summary") or ""
+                    self._finish(t, {**before, "status": NO_REPLY,
+                                     "summary": f"No call back until {t['not_after'][:16]}."
                                      + (f" Before: {last}" if last else ""),
-                                     "open_points": [s for s in (t.get("result") or {}).get("open_points") or []]
-                                     or [t["goal"]]}, NO_REPLY)
+                                     "open_points": before.get("open_points") or [t["goal"]]}, NO_REPLY)
                     out.append(dict(t))
         return out
 
@@ -889,13 +924,42 @@ class TaskStore:
             return None
         limit = int(self.cfg.outbound_max_calls_per_day or 0)
         with self.lock:
-            due = [t for t in self.tasks if t["status"] == PLANNED
+            for t in self.tasks:
+                if t["status"] == PLANNED and not target_ok(self.cfg, t):
+                    self._retarget(t)
+            due = [t for t in self.tasks if t["status"] == PLANNED and target_ok(self.cfg, t)
                    and datetime.fromisoformat(t["next_try"]) <= now <= deadline(t)
                    and not self.blocked(t["number"])]
             if not due or (limit and self.calls_today(now) >= limit):
                 return None
             t = min(due, key=lambda t: t["next_try"])
             return self._start(t, now, "call", t["number"])
+
+    def _retarget(self, t: dict):
+        """The number a task was to dial was removed from its contact (or moved to another one): the contact holds
+        the current numbers, so its first one is dialed instead. A contact without numbers: nothing is dialed, the
+        task ends with its time window."""
+        numbers = config.entry_numbers(contact_of(self.cfg, t))
+        if numbers:
+            log.info("Task %s: %s is no number of %s any more, calling %s instead", t["id"], t["number"],
+                     t["name"] or "the contact", numbers[0]["number"])
+            t["number"] = config.dial_form(numbers[0]["number"])
+            self._save()
+
+    def reconcile_contacts(self) -> int:
+        """Tasks without a contact (from before #92, loaded before the contacts were read): their contact by their
+        number, now that the contacts are known. Returns how many were found."""
+        with self.lock:
+            found = 0
+            for t in self.tasks:
+                if not t.get("contact_id"):
+                    entry = contact_entry(self.cfg, t.get("number", ""))
+                    if entry is not None and entry.get("id"):
+                        t["contact_id"] = entry["id"]
+                        found += 1
+            if found:
+                self._save()
+            return found
 
     def _awaits_callback(self, t: dict, key: str, now: datetime) -> bool:
         """A task this number may continue by calling in: tried before and still planned, or waiting for a call
@@ -981,7 +1045,7 @@ class TaskStore:
             if t["attempts"] and not t["attempts"][-1]["outcome"]:
                 t["attempts"][-1]["outcome"] = outcome
             t["status"] = WAITING
-            t["result"] = clean_result(result) | {"status": WAITING}
+            t["result"] = _merged(t.get("result"), result) | {"status": WAITING}
             self._save()
             self._changed(t)
             log.info("Task %s: waiting for a call back until %s", t["id"], t["not_after"])
@@ -1000,13 +1064,14 @@ class TaskStore:
             t["next_try"] = not_before.astimezone(_tz(self.cfg)).isoformat(timespec="minutes")
             t["call_until"] = until.astimezone(_tz(self.cfg)).isoformat(timespec="minutes") if until else ""
             t["tries"] = 0
-            t["result"] = clean_result(result) | {"status": PLANNED}
+            t["result"] = _merged(t.get("result"), result) | {"status": PLANNED}
             self._save()
             self._changed(t)
             log.info("Task %s: next call to %s from %s", t["id"], number, t["next_try"])
             return dict(t)
 
-    def add_requester_step(self, task_id: str, step: dict, now: datetime) -> tuple[dict | None, str]:
+    def add_requester_step(self, task_id: str, step: dict, now: datetime,
+                           max_steps: int = 0) -> tuple[dict | None, str]:
         """A step the requester added to an open task (#92, task_edit after a yes): kept in the history, its
         changes applied (may_accept, may_share, not_after), and, if it asks for a call, the task is planned again
         from step["not_before"]. (task, "") or (None, why not)."""
@@ -1016,6 +1081,8 @@ class TaskStore:
                 return None, "not found"
             if t["status"] not in (PLANNED, WAITING):
                 return None, f"task is {t['status']}"
+            if max_steps and reached(t) + 2 > max_steps:  # the step and the call it is for
+                return None, f"the task has no steps left (task_max_steps {max_steps})"
             changes = step.get("changes") or {}
             t["steps"].append({"kind": REQUESTER, "time": now.astimezone(_tz(self.cfg)).isoformat(timespec="seconds"),
                                "by": str(step.get("by") or "")[:80], "text": str(step["text"])[:MAX_TEXT],

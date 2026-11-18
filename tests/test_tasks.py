@@ -1172,11 +1172,16 @@ def test_a_finished_or_running_task_gets_no_step(brain, conversation, today):
         last_result(conversation)
 
 
-def test_no_step_after_task_max_steps(brain, conversation, today):
-    brain.cfg["task_max_steps"] = 1
-    waiting_task(brain)
+def test_a_step_needs_room_for_itself_and_its_call(brain, conversation, today):
+    """Review of #96: with task_max_steps 2, one call and a requester step leave no room for another call."""
+    brain.cfg["task_max_steps"] = 2
+    t = waiting_task(brain)
     turn(brain, conversation, message(task_edit(action="add_step", task="Seeblick", text="x")), message("…"))
-    assert "has had its 1 steps (task_max_steps)" in last_result(conversation)
+    assert "has no steps left of its 2 (task_max_steps)" in last_result(conversation)
+    step = {"text": "x", "by": "Jan", "call": True, "not_before": "2026-11-10T12:00+01:00"}
+    assert brain.tasks.add_requester_step(t["id"], step, NOON, 2) == (
+        None, "the task has no steps left (task_max_steps 2)")
+    assert brain.tasks.add_requester_step(t["id"], step, NOON, 3)[0]["status"] == "planned"
 
 
 def test_a_new_call_continues_a_finished_task(brain, conversation, today):
@@ -1205,3 +1210,86 @@ def test_previous_task_must_be_a_finished_one_of_the_same_callee(brain, conversa
     assert "was with Restaurant Seeblick, not with this callee" in last_result(conversation)
     turn(brain, conversation, message(plan_call(**plan(previous_task="nope"))), message("…"))
     assert "there is no task with the id given as previous_task" in last_result(conversation)
+
+
+# ---------------------------------------------------------------- review of #96
+def test_a_number_removed_from_the_contact_is_no_number_of_the_task(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number="", retries=1), JAN, NOON)[0])
+    store.claim(NOON)
+    store.not_reached(t["id"], "no answer", NOON)
+    c["callers"][0].update(number="040 5555", numbers=[{"number": "040 5555", "label": "Büro"}])  # mobile gone
+    assert tasks.numbers_of(c, store.get(t["id"])) == ["040 5555"] and not store.has_callback("0170222")
+    claimed = store.claim(NOON + timedelta(minutes=15))  # the contact holds the current numbers: its first one
+    assert claimed["number"] == "0405555"
+    c["callers"][0].update(number="", numbers=[])
+    store.not_reached(t["id"], "no answer", NOON + timedelta(minutes=15))
+    assert store.claim(NOON + timedelta(hours=1)) is None  # no number left: nothing is dialed
+
+
+def test_previous_task_of_another_contact_is_refused_even_with_the_same_number():
+    c = cfg_people()
+    new, _ = tasks.build(c, plan(name="Mark", number=""), JAN, NOON)
+    old = {**new, "id": "o1", "status": "done", "contact_id": "j1", "created": "2026-11-09T10:00:00+01:00"}
+    assert tasks.earlier_task(c, new, old)[1].startswith("Not planned: task o1 was with")
+    legacy = {**old, "contact_id": ""}  # from before #92: by its number
+    assert tasks.earlier_task(c, new, legacy)[0]["id"] == "o1"
+
+
+def test_continued_tasks_keep_the_whole_chain():
+    a = {**build(), "id": "a", "status": "done", "created": "2026-11-08T10:00:00+01:00",
+         "result": {"summary": "A war so."}, "steps": [{"kind": "call_out", "time": "2026-11-08T10:00:00+01:00",
+                                                         "number": "1", "outcome": "talked", "result": "Schritt A"}]}
+    b = {**build(), "id": "b", "status": "done", "created": "2026-11-09T10:00:00+01:00",
+         "result": {"summary": "B war so."}, "steps": [], "earlier": tasks.earlier_task(cfg(), build(), a)[0]}
+    c = build()
+    c["earlier"] = tasks.earlier_task(cfg(), c, b)[0]
+    text = tasks.history(c)
+    assert "B war so." in text and "A war so." in text and "Schritt A" in text
+
+
+def test_a_call_back_from_another_phone_is_called_back_there(brain, today):
+    """Review of #96: next_call without a number means the line of this call, not the one dialed first."""
+    task = build(not_after="2026-11-10T22:00")
+    task["attempts"] = [{"time": "2026-11-10T12:00:00+01:00", "kind": "callback", "number": "04542 9876",
+                         "outcome": ""}]
+    result, _, _ = follow(brain, task, message(tool("next_call", not_before="2026-11-10T13:00", summary="x")))
+    assert result["next_call"]["number"] == "045429876"
+
+
+def test_what_was_collected_survives_the_next_call_and_the_wait(brain, today, tmp_path):
+    task = build(not_after="2026-11-10T22:00")
+    result, _, _ = follow(brain, task, message(tool(
+        "next_call", not_before="2026-11-10T13:00", summary="Termin steht, Preis offen.",
+        answers={"Termin": "Freitag 10 Uhr"}, steps=[{"step": "Termin eintragen", "done": True}],
+        open_points=["Preis"])))
+    assert result["answers"] == {"Termin": "Freitag 10 Uhr"} and result["open_points"] == ["Preis"]
+    store = tasks.TaskStore(tmp_path / "tasks.json", brain.cfg)
+    t = store.add(build(not_after="2026-11-10T22:00"))
+    store.claim(NOON)
+    nxt = result["next_call"]
+    store.plan_next(t["id"], nxt["number"], nxt["not_before"], None, result)
+    _, _, fake = follow(brain, store.get(t["id"]), message(tool("task_result", status="wait", summary="x")))
+    assert "Freitag 10 Uhr" in fake.requests[0]["messages"][0]["content"]  # the evaluation knows it
+    store.claim(NOON + timedelta(hours=1))
+    store.wait(t["id"], {"status": "wait", "summary": "Ruft wegen des Preises zurück.", "answers": {"Preis": "?"}})
+    waiting = store.get(t["id"])["result"]
+    assert waiting["answers"] == {"Termin": "Freitag 10 Uhr", "Preis": "?"}
+    assert waiting["steps"] == [{"step": "Termin eintragen", "done": True, "result": ""}]
+    (gone,) = store.expire(NOON.replace(hour=22, minute=1))
+    assert gone["status"] == "no_reply" and gone["result"]["answers"]["Termin"] == "Freitag 10 Uhr"
+    assert gone["result"]["steps"][0]["done"] is True
+
+
+def test_tasks_loaded_before_the_contacts_find_them_later(tmp_path):
+    c = cfg_people([])
+    old = {"id": "a1", "number": "040 5555", "name": "Mark", "status": "planned", "goal": "x", "task": "x",
+           "requester": {"number": "0151111", "name": "Jan"}, "not_after": "2099-01-01T00:00+01:00",
+           "next_try": "2026-11-10T12:00+01:00", "attempts": []}
+    (tmp_path / "tasks.json").write_text(json.dumps({"tasks": [old]}), encoding="utf-8")
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    assert store.get("a1")["contact_id"] == ""
+    c["callers"][:] = config._callers(TWO_PHONES)  # the contacts are read after the tasks (main)
+    assert store.reconcile_contacts() == 1 and store.get("a1")["contact_id"] == "m1"
+    assert tasks.TaskStore(tmp_path / "tasks.json", c).get("a1")["contact_id"] == "m1"  # stored

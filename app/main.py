@@ -548,8 +548,8 @@ def settle_task(task: dict, session):
             if status != "not_reached":  # someone was reached, or a message was left: a step of the history (#92)
                 task_store.record_step(task["id"], session.transcript,
                                        "message left" if status == tasks.LEFT else "talked", result.get("summary"))
-            if result.get("do_not_call"):
-                task_store.block(task["number"], task["id"])
+            if result.get("do_not_call"):  # the line of this call: a call back may come from another phone
+                task_store.block((task["attempts"] or [{}])[-1].get("number") or task["number"], task["id"])
                 if status in (tasks.WAIT, tasks.NEXT):  # nobody is called again: the task ends with what it has
                     status = "partial"
             if status == "not_reached":
@@ -1187,6 +1187,8 @@ def main():
     log.info("Config: %s | logs: %s", config.CONFIG_FILE[0], _LOGDIR)
     try:
         log.info("Contacts: %s", contact_store.setup())
+        if task_store is not None and task_store.reconcile_contacts():
+            log.info("Tasks: contacts found for tasks stored before 1.16.0")
     except OSError as e:
         log.error("Contacts: %s could not be written (%s); the callers from the settings are used",
                   contact_store.path, e)
