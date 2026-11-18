@@ -570,12 +570,16 @@ same computer; only `GET /health` is open. Where the token comes from decides wh
 - `api_token` set (or `BRAINCALL_API_TOKEN`): that token counts and the API listens on all addresses, i.e. is
   reachable in the LAN. There is no TLS: use it in a trusted network only.
 
+`/health` is `503` when the SIP watchdog loop has stopped or hangs for 10 minutes; SIP not registered alone is not
+unhealthy (the watchdog reconnects). As an add-on, the Supervisor's watchdog asks `/health` on the ingress port
+(8098, only on the Supervisor's network), which passes on the API's answer, and restarts BrainCall on a failure.
+
 The token is never written to the log. Until 1.10.x an empty `api_token` meant "no token needed from 127.0.0.1":
 such requests now get `401`, add the header.
 
 | Request | Purpose |
 |---|---|
-| `GET /health` | status without token: `sip`, `busy`, `phone`, `time` |
+| `GET /health` | status without token: `status` (`ok` / `unhealthy`), `problems`, `sip`, `busy`, `phone`, `time`; `503` when unhealthy |
 | `POST /call` | call a number now: `{"message": "…", "number": "…"}` |
 | `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant` |
 | `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |

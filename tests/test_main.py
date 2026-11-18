@@ -453,6 +453,109 @@ def wait_dialed(server):
 def test_health(server):
     status, body = server("GET", "/health", token=None)
     assert status == 200 and body["sip"] == PhoneStatus.REGISTERED.value and body["busy"] is False
+    assert body["status"] == "ok" and body["problems"] == []
+
+
+class _Thread:
+    def __init__(self, alive=True):
+        self.alive = alive
+
+    def is_alive(self):
+        return self.alive
+
+
+def test_health_503_when_the_sip_watchdog_hangs_or_stopped(server, main, monkeypatch):
+    """#37: the Supervisor restarts the app on a 503; a hanging or dead SIP watchdog loop is one."""
+    monkeypatch.setattr(main, "sip_watchdog", _Thread())
+    monkeypatch.setattr(main, "watchdog_seen", time.monotonic() - 40)
+    assert server("GET", "/health", token=None)[0] == 200
+    monkeypatch.setattr(main, "watchdog_seen", time.monotonic() - main.WATCHDOG_STALL - 5)
+    status, body = server("GET", "/health", token=None)
+    assert status == 503 and body["status"] == "unhealthy" and body["problems"][0].startswith("SIP watchdog stuck")
+    assert body["sip"] == PhoneStatus.REGISTERED.value  # the status fields are still there
+    monkeypatch.setattr(main, "watchdog_seen", time.monotonic())
+    monkeypatch.setattr(main, "sip_watchdog", _Thread(alive=False))
+    assert server("GET", "/health", token=None)[1]["problems"] == ["SIP watchdog stopped"]
+
+
+def test_health_ok_while_sip_is_not_registered(server, main, monkeypatch):
+    """The watchdog reconnects on its own; a restart would not help while the FRITZ!Box is down."""
+    monkeypatch.setattr(main, "sip_watchdog", _Thread())
+    monkeypatch.setattr(main, "watchdog_seen", time.monotonic())
+    monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.FAILED)
+    status, body = server("GET", "/health", token=None)
+    assert status == 200 and body["sip"] == PhoneStatus.FAILED.value
+
+
+def test_the_watchdog_loop_notes_every_round(main, monkeypatch):
+    class Twice:
+        rounds = 0
+
+        def wait(self, timeout):
+            self.rounds += 1
+            return self.rounds > 2
+
+        def is_set(self):
+            return False
+    monkeypatch.setattr(main, "stopping", Twice())
+    monkeypatch.setattr(main, "sip_status", lambda: PhoneStatus.REGISTERED)
+    monkeypatch.setattr(main, "watchdog_seen", 0.0)
+    main.watchdog()
+    assert time.monotonic() - main.watchdog_seen < 5
+
+
+@pytest.fixture
+def ingress(main):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), main.IngressHandler)
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+
+    def get(path):
+        conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+        conn.request("GET", path)
+        r = conn.getresponse()
+        out = r.status, json.loads(r.read() or b"{}")
+        conn.close()
+        return out
+    yield get
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_watchdog_health_on_the_ingress_port_asks_the_api(main, server, ingress, monkeypatch):
+    """#37: the Supervisor asks [HOST]:8098 (the ingress port on its network), whatever http_port is and also when
+    the API listens on 127.0.0.1 only; the answer is the API's own /health, from any client (no token)."""
+    monkeypatch.setattr(main, "INGRESS_PROXY", "172.30.32.2")  # the test client is not the ingress proxy
+    monkeypatch.setitem(main.cfg, "http_port", server.port)
+    monkeypatch.setattr(main, "api_up", threading.Event())
+    main.api_up.set()
+    status, body = ingress("/health")
+    assert status == 200 and body["status"] == "ok" and body["sip"] == PhoneStatus.REGISTERED.value
+    monkeypatch.setattr(main, "sip_watchdog", _Thread(alive=False))
+    status, body = ingress("/health")
+    assert status == 503 and body["problems"] == ["SIP watchdog stopped"]
+
+
+def test_watchdog_health_503_when_the_api_does_not_answer(main, ingress, monkeypatch):
+    import socket
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setitem(main.cfg, "http_port", port)
+    monkeypatch.setattr(main, "api_up", threading.Event())
+    main.api_up.set()
+    status, body = ingress("/health")
+    assert status == 503 and body["problems"][0].startswith(f"HTTP API not answering on port {port}")
+
+
+def test_watchdog_health_while_starting(main, ingress, monkeypatch):
+    """SIP is set up before the API listens, which may take minutes while the FRITZ!Box is down: no restart then,
+    but one if the API never comes up."""
+    monkeypatch.setattr(main, "api_up", threading.Event())
+    monkeypatch.setattr(main, "started", time.monotonic() - 30)
+    assert ingress("/health") == (200, {"status": "starting", "problems": []})
+    monkeypatch.setattr(main, "started", time.monotonic() - main.STARTUP_GRACE - 5)
+    status, body = ingress("/health")
+    assert status == 503 and body["problems"][0].startswith("HTTP API not started after")
 
 
 def test_call_starts_outbound(server):
@@ -1353,7 +1456,7 @@ def test_ingress_serves_only_the_contacts_page(main, contact_book, monkeypatch):
     try:
         assert get("/") == 200 and get("/api/contacts") == 200
         assert get("/api/contacts", user="someone") == 403
-        assert get("/api/tasks") == 404 and get("/health") == 404       # nothing else of the API
+        assert get("/api/tasks") == 404 and get("/api/version") == 404  # nothing else of the API
         assert get("/api/contacts", proxy=False) == 403                 # only through Home Assistant
     finally:
         srv.shutdown()

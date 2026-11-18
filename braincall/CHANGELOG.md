@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.18.0
+
+The Supervisor's watchdog notices a BrainCall that hangs and restarts it (#37).
+
+- `GET /health` answers `503` with `status: unhealthy` and the reasons in `problems` when the SIP watchdog loop has
+  stopped or has not done a round for 10 minutes (e.g. pyVoIP stuck in a reconnect); otherwise `200` with
+  `status: ok`. The fields `sip`, `busy`, `phone`, `time` stay. SIP not registered alone is no reason: the watchdog
+  reconnects on its own
+- The add-on has a `watchdog` URL: the Supervisor asks `/health` on the ingress port (8098 on its own network),
+  which asks the API's `/health` and passes the answer on. So it works whatever `http_port` is and also while the
+  API listens on `127.0.0.1` only (empty `api_token`); an API that no longer answers within 5 s counts as unhealthy.
+  While the app starts (SIP is set up before the API) it is healthy for up to 10 minutes
+- *Watchdog* must be on in the app's Info tab (as the setup already says); the contacts page in Home Assistant now
+  starts before the FRITZ!Box registration
+
 ## 1.17.0
 
 Three bugs fixed: calls have a maximum length, calls rejected on a busy line are reported, and calendar and weather

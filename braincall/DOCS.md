@@ -16,6 +16,8 @@ Home Assistant during the call. The add-on is the same program as the Windows ve
 
    Home Assistant access needs no token, the add-on gets it automatically.
 3. **Info tab:** enable *Start on boot* and *Watchdog*, then *Start*. The log must show `SIP status: REGISTERED`.
+   *Watchdog* restarts BrainCall when it stops or hangs (`/health` fails); a FRITZ!Box that is down is no reason,
+   BrainCall registers again on its own.
 
 Without a phone: leave user name and password of the IP phone empty. BrainCall then only answers
 [Brain Assist](#brain-assist) and needs no OpenAI key; the log shows `Phone: off`.
