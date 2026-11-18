@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.1
+
+- No more Supervisor warning "uses build.yaml which is deprecated": the base image (`python:3.12-slim`) is now fixed
+  in the Dockerfile and `build.yaml` is gone. The image is the same as before
+
 ## 1.18.0
 
 The Supervisor's watchdog notices a BrainCall that hangs and restarts it (#37).

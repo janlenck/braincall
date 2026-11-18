@@ -6,8 +6,6 @@ from pathlib import Path
 import yaml
 
 ADDON = Path(__file__).resolve().parents[2] / "braincall"
-# Supervisor accepts build images only as namespace/name[:tag] (supervisor/apps/validate.py)
-RE_IMAGE = re.compile(r"^([a-zA-Z\-\.:\d{}]+/)*?([\-\w{}]+)/([\-\w{}]+)(:[\.\-\w{}]+)?$")
 
 errors = []
 config = yaml.safe_load((ADDON / "config.yaml").read_text(encoding="utf-8"))
@@ -29,12 +27,13 @@ if config.get("watchdog") != f"http://[HOST]:[PORT:{config['ingress_port']}]/hea
 main_py = (ADDON.parent / "app" / "main.py").read_text(encoding="utf-8")
 if f"INGRESS_PORT = {config['ingress_port']} " not in main_py:
     errors.append(f"ingress_port {config['ingress_port']} differs from INGRESS_PORT in app/main.py")
-build = yaml.safe_load((ADDON / "build.yaml").read_text(encoding="utf-8"))
-for arch, image in build["build_from"].items():
-    if not RE_IMAGE.match(image):
-        errors.append(f"build_from {arch}: {image!r} must be namespace/name[:tag], e.g. library/python:3.12-slim")
-if set(build["build_from"]) != set(config["arch"]):
-    errors.append("build.yaml architectures differ from config.yaml arch")
+# build.yaml is deprecated by the Supervisor: the base image is fixed in the Dockerfile, BUILD_FROM is not used
+if (ADDON / "build.yaml").exists():
+    errors.append("build.yaml is deprecated: put the base image into the Dockerfile (FROM)")
+froms = [line.split()[1] for line in (ADDON / "Dockerfile").read_text(encoding="utf-8").splitlines()
+         if line.startswith("FROM ")]
+if not froms or any("$" in image for image in froms):
+    errors.append(f"Dockerfile FROM {froms} must name a fixed image, not ${{BUILD_FROM}}")
 
 print("\n".join(errors) or "add-on config ok")
 sys.exit(1 if errors else 0)

@@ -1,3 +1,0 @@
-build_from:
-  aarch64: library/python:3.12-slim
-  amd64: library/python:3.12-slim
