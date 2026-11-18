@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.16.0
+
+A task is a case with a history: it stays open over several calls, in both directions, and every call knows what
+happened before (#92).
+
+- Every task has a contact (`contact_id`); the contact holds the current numbers, the task keeps none of its own. A
+  number that is no contact yet needs a name (`plan_call`, `POST /api/tasks`: 400 without one)
+- History: every call that reached someone (or left a message) is a step (`call_out` / `call_in`, time, number,
+  shortened transcript, result); steps the requester adds too. The next call and a call back get the earlier steps,
+  marked as data
+- The follow-up after a call is the evaluation of the step: besides the final result it may plan the next call
+  (`next_call`, inside the task's window and `outbound_hours`) or wait for a call back. A number the callee gives
+  for themselves is added to their contact with its label (checked: said in the call, allowed, no other contact's)
+- New status `waiting` (after a message on the mailbox, or a call back is expected; short notification, report at
+  the end) and `no_reply` (nothing until `not_after`). A message on the mailbox no longer ends the task as
+  `message_left`. A next call that reaches nobody ends the task `partial`
+- A call back from any number of the contact continues an open task; after the end it is a normal call
+- New admin tool `task_edit`: `status` ("Hat das Restaurant zurückgerufen?") and `add_step` for an open task ("Ruf
+  nochmal an, wir sind doch zu sechst"), read back and stored after a yes; a changed `may_accept`, `may_share` or
+  time window is read back explicitly
+- `plan_call` / `POST /api/tasks`: `previous_task` continues a finished task of the same callee with its history
+- New option `task_max_steps` (default 6): calls that reached someone plus steps of the requester. Retries after no
+  answer or busy start again for every planned call and are no steps
+- `DELETE /api/tasks/<id>` also cancels a waiting task. `GET /api/tasks/<id>` shows `contact_id` and `steps`;
+  `braincall_task_updated` carries `contact` and `steps`
+- Tasks stored before load with a history and their contact; a `message_left` whose window is not over waits
+
 ## 1.15.1
 
 - Contacts page: the list is alphabetical by name, case and accents ignored ("Änne" next to "Anna"). The list of

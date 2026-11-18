@@ -226,10 +226,22 @@ The assistant reads the plan back (number, time, what it may tell and agree to, 
 after a yes. After you hung up it calls, tries again if nobody is reached (a callee who calls back continues the task),
 then does the follow-up steps of the plan (calendar, shopping list, web search) and reports the result: as a
 notification (*Notify services*), as event `braincall_task_finished` and, if asked for, with a call back.
-On a mailbox it leaves a short message after the beep and does not call again: the task ends as "message left"
-(`message_left`). This also works for an announcement that starts with a short "Guten Tag." and goes on after a
+On a mailbox it leaves a short message after the beep and does not call again: the task waits for a call back
+(`waiting`). This also works for an announcement that starts with a short "Guten Tag." and goes on after a
 short pause. A call in which nothing the assistant said got an answer (the other side only spoke when it picked up,
 then hung up) counts as not reached and is tried again.
+
+A task can take several calls and keeps a history of them:
+
+- "Ich muss nachschauen, rufen Sie in einer Stunde nochmal an": the assistant plans the next call itself, at that
+  time, and refers to the first one. A number the callee gives for themselves ("rufen Sie die Rezeption an: …") is
+  added to their contact with a label and called next; a number of someone else is not.
+- The callee calls back, from any of their numbers: the call continues the task and knows the earlier calls. After
+  a message, or when the callee will call back, the task waits (`waiting`, with a short notification) until the end
+  of its time window; nothing until then ends it as `no_reply`.
+- Ask "Hat das Restaurant zurückgerufen?" or add a step to an open task: "Ruf nochmal an, wir sind doch zu sechst".
+  The step is read back and stored after a yes. A finished task is planned anew; the new call knows the old one.
+- *Most steps per task* (`task_max_steps`, default 6) limits the calls that reached someone plus the steps you add.
 
 - During the call the callee only gets what the plan grants (free/busy times of certain days, one appointment with a
   fixed title), never details of your calendar and no control of the house.
@@ -237,15 +249,16 @@ then hung up) counts as not reached and is tried again.
   dialed and when. The assistant says that it is an AI calling on your behalf; a callee who does not want to be
   called again is remembered.
 - From Home Assistant: `POST http://127.0.0.1:8099/api/tasks` with `{"number": "…", "task": "…"}` plans a call,
-  `GET /api/tasks` lists the tasks with their status and result, `DELETE /api/tasks/<id>` cancels one (all with the
+  `GET /api/tasks` lists the tasks with their status, steps and result, `DELETE /api/tasks/<id>` cancels one (all with the
   API token, see above; the paths without `/api` still work). Tasks are kept in `tasks.json` in the add-on's
   config folder and survive a restart.
-- Whom to call: a number, or a person from *Callers* by name ("Ruf Mark an", `{"name": "Mark", "task": "…"}`), whose
-  number is taken from there. The requester is a person too: on the phone by their number, in Assist by their Home
+- Whom to call: a number, or a contact by name ("Ruf Mark an", `{"name": "Mark", "task": "…"}`), whose
+  number is taken from there. Every task has a contact: a number that is no contact yet needs a name and becomes a
+  contact with the yes to the plan. The requester is a person too: on the phone by their number, in Assist by their Home
   Assistant user. Without a number in their entry there is no call back, the result comes as notification and event.
 - In Brain Assist an administrator plans calls by voice or in the chat, with the same read-back and yes. Brain Assist
-  0.3.0 or newer also has the action `brainassist.call` and a to-do list of the tasks (deleting an item cancels the
-  task). Every change of a task fires the event `braincall_task_updated`.
+  0.3.0 or newer also has the action `brainassist.call` and a to-do list of the tasks (deleting an item cancels a
+  planned or waiting task). Every change of a task fires the event `braincall_task_updated`.
 
 ## Automatic shopping list
 
