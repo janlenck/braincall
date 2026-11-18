@@ -56,8 +56,12 @@ def main(tmp_path_factory):
 @pytest.fixture
 def events(main, monkeypatch):
     """Everything main sends to Home Assistant, instead of sending it."""
-    sent = {"events": [], "notify": []}
-    monkeypatch.setattr(main.ha, "fire_event", lambda name, data: sent["events"].append((name, data)))
+    sent = {"events": [], "notify": [], "state": []}
+
+    def fire(name, data):  # braincall_state (#100) comes from its own thread, on every change of the line: apart
+        sent["state" if name == "braincall_state" else "events"].append(data if name == "braincall_state"
+                                                                         else (name, data))
+    monkeypatch.setattr(main.ha, "fire_event", fire)
     monkeypatch.setattr(main.ha, "notify", lambda service, title, text: sent["notify"].append((service, title, text)))
     return sent
 
@@ -454,6 +458,7 @@ def test_health(server):
     status, body = server("GET", "/health", token=None)
     assert status == 200 and body["sip"] == PhoneStatus.REGISTERED.value and body["busy"] is False
     assert body["status"] == "ok" and body["problems"] == []
+    assert body["line"] == "idle" and "call" not in body  # no number or name without the token (#100)
 
 
 class _Thread:
@@ -612,6 +617,7 @@ def test_unknown_paths(server):
 @pytest.mark.parametrize("method, path", [
     ("POST", "/call"), ("GET", "/tasks"), ("POST", "/tasks"), ("DELETE", "/tasks/abc"), ("GET", "/api/tasks"),
     ("POST", "/api/tasks"), ("DELETE", "/api/tasks/abc"), ("GET", "/api/version"), ("POST", "/api/converse"),
+    ("GET", "/api/status"),
 ])
 @pytest.mark.parametrize("token", [None, "wrong"])
 def test_every_endpoint_needs_the_token(server, method, path, token):
@@ -658,7 +664,7 @@ def test_version(server, main):
     status, body = server("GET", "/api/version")
     assert status == 200
     assert body == {"api": 1, "version": config.version(), "phone": True, "assistant": "Claudine",
-                    "home_assistant": False, "tasks": True}
+                    "home_assistant": False, "tasks": True, "line": True}
     assert body["version"].count(".") == 2
 
 
@@ -1519,3 +1525,127 @@ def test_tasks_api_refuses_a_name_that_belongs_to_another_contact(server, contac
     assert status == 409 and "already a contact named Jan" in body["error"] and store.all() == []
     status, _ = server("POST", "/api/tasks", {"number": "0160 9999", "name": "Seeblick", "task": "x", "goal": "x"})
     assert status == 201 and contact_book.by_name("Seeblick")["origin"] == "task"
+
+
+# ---------------------------------------------------------------- line state for Brain Assist (#100)
+def states(main, sent):
+    """The braincall_state events sent so far (they go out from their own thread)."""
+    main.state_events.join()
+    return [(d["line"], (d["call"] or {}).get("direction")) for d in sent["state"]]
+
+
+def test_an_incoming_call_rings_is_in_call_and_frees_the_line(main, events, server, monkeypatch):
+    seen = {}
+
+    class Session:
+        transcript, caller_turns, actions = [], 0, []
+
+        def __init__(self, *a):
+            pass
+
+        def run(self, **kw):
+            seen["health"] = server("GET", "/health", token=None)[1]["line"]
+            seen["status"] = server("GET", "/api/status")
+
+    monkeypatch.setattr(main, "CallSession", Session)
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+    call, denied = incoming("0151111")
+    call.answer = lambda: seen.setdefault("answered", main.line_status()["line"])
+    main.on_incoming(call)
+    assert seen["answered"] == "ringing" and seen["health"] == "in_call"
+    status, body = seen["status"]
+    assert status == 200 and body["line"] == "in_call" and body["sip"] == "REGISTERED" and body["phone"] is True
+    assert {k: v for k, v in body["call"].items() if k != "since"} == {
+        "number": "0151111", "caller_name": "Jan Mobile", "direction": "in"}
+    assert datetime.fromisoformat(body["call"]["since"]).tzinfo is not None
+    assert states(main, events) == [("ringing", "in"), ("in_call", "in"), ("idle", None)]
+    assert events["state"][-1] == {"line": "idle", "sip": "REGISTERED", "call": None}
+    assert server("GET", "/api/status")[1] == {"line": "idle", "sip": "REGISTERED", "call": None, "phone": True}
+
+
+def test_a_rejected_call_does_not_change_the_line(main, events):
+    busy_rejected(main, "0151111")
+    call, denied = incoming("")  # withheld
+    main.on_incoming(call)
+    assert states(main, events) == [] and main.line_status()["line"] == "idle"
+
+
+class _Call:
+    def __init__(self, state):
+        self.state, self.call_id = state, "cid-100"
+
+    def hangup(self):
+        pass
+
+
+def phone_for(main, monkeypatch, state, seen):
+    def call(number):
+        seen.append(main.line_status())
+        return _Call(state)
+    monkeypatch.setattr(main, "phone", SimpleNamespace(call=call, calls={}, sip=SimpleNamespace(pending_invites={})))
+    monkeypatch.setattr(main, "finish", lambda *a, **kw: None)
+
+
+def test_an_outbound_call_dials_is_in_call_and_frees_the_line(main, events, monkeypatch):
+    from pyVoIP.VoIP import CallState
+    seen = []
+
+    class Session:
+        def __init__(self, *a):
+            pass
+
+        def run(self, **kw):
+            seen.append(main.line_status())
+
+    phone_for(main, monkeypatch, CallState.ANSWERED, seen)
+    monkeypatch.setattr(main, "CallSession", Session)
+    assert main.busy.acquire(blocking=False)
+    main.outbound("0171444", "test")
+    assert [s["line"] for s in seen] == ["dialing", "in_call"]
+    assert seen[1]["call"]["caller_name"] == "Walter" and seen[1]["call"]["direction"] == "out"
+    assert states(main, events) == [("dialing", "out"), ("in_call", "out"), ("idle", None)]
+    assert not main.busy.locked() and main.line_status()["line"] == "idle"
+
+
+def test_an_outbound_call_nobody_answers_goes_back_to_idle(main, events, monkeypatch):
+    from pyVoIP.VoIP import CallState
+    phone_for(main, monkeypatch, CallState.ENDED, [])
+    assert main.busy.acquire(blocking=False)
+    assert main.outbound("0999", "test") is None
+    assert states(main, events) == [("dialing", "out"), ("idle", None)]
+    assert events["state"][0]["call"]["caller_name"] == ""  # not listed (no "*" for outbound)
+
+
+def test_a_refused_number_never_dials(main, events, monkeypatch):
+    phone_for(main, monkeypatch, None, [])
+    assert main.busy.acquire(blocking=False)
+    assert main.outbound("112", "test") is None
+    assert states(main, events) == []
+
+
+def watchdog_rounds(main, monkeypatch, statuses):
+    """Runs the SIP watchdog loop for one round per status, never reconnecting."""
+    rounds = iter(statuses)
+    current = {}
+
+    class Stop:
+        def wait(self, timeout):
+            current["status"] = next(rounds, None)
+            return current["status"] is None
+
+        def is_set(self):
+            return False
+    monkeypatch.setattr(main, "stopping", Stop())
+    monkeypatch.setattr(main, "sip_status", lambda: current.get("status") or PhoneStatus.REGISTERED)
+    monkeypatch.setattr(main, "RECONNECT_AFTER", 10 ** 6)
+    main.watchdog()
+
+
+def test_a_lost_registration_is_announced_from_the_second_round(main, events, monkeypatch):
+    """pyVoIP re-registers every 2 min (registering for a moment): one round is no change, two are."""
+    monkeypatch.setattr(main, "sip_seen", "REGISTERED")
+    R, G, F = PhoneStatus.REGISTERED, PhoneStatus.REGISTERING, PhoneStatus.FAILED
+    watchdog_rounds(main, monkeypatch, [R, G, R, F, F, F, R])
+    main.state_events.join()
+    assert [d["sip"] for d in events["state"]] == ["FAILED", "REGISTERED"]
+    assert {d["line"] for d in events["state"]} == {"idle"}

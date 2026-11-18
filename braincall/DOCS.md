@@ -195,6 +195,13 @@ A `rest_command` from before 1.11.0 without the `headers` lines gets `401 unauth
 After each call the event `braincall_call` is fired (`number`, `answered`, `reason`, `duration_s`,
 `transcript`, `caller_name`, `access`, `summary`).
 
+Every change of the line fires the event `braincall_state`: `line` (`idle`, `ringing` for an incoming call until it
+is answered, `dialing` for an outbound call until it is answered, `in_call`), `sip` (the FRITZ!Box registration, e.g.
+`REGISTERED`, `FAILED`) and `call` (`number`, `caller_name`, `direction` `in`/`out`, `since`: when the line got into
+this state; `null` while idle). A lost registration is reported once it lasts longer than one watchdog round (30 s).
+A call rejected on a busy line or from an unknown number does not change the line. `GET /api/status` (with the
+token) answers the same, `GET /health` has `line` without the call. Brain Assist shows this as entities.
+
 ## Brain Assist
 
 BrainCall can also be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on

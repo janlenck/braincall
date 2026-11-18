@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.19.0
+
+Home Assistant can see what the line is doing (#100), for Brain Assist's status entities.
+
+- `GET /health` has `line`: `idle`, `ringing` (incoming, until answered), `dialing` (outbound, until answered) or
+  `in_call`. `busy` stays; it is also set while the watchdog reconnects, `line` only for calls
+- New `GET /api/status` (with the token): `line`, `sip`, `phone` and the current call: `number`, `caller_name`,
+  `direction` (`in`/`out`), `since` (when the line got into this state, with UTC offset); `null` while idle
+- New event `braincall_state` on every change of the line or of the SIP registration, with `line`, `sip` and `call`.
+  The events go out one after the other from their own thread, a slow Home Assistant never holds up a call. A lost
+  registration counts from the second watchdog round, so pyVoIP's re-registration every 2 minutes is no change
+- `GET /api/version` has `line: true`. `api` stays 1: the change only adds fields, every Brain Assist keeps working
+- Calls rejected on a busy line or from an unknown number do not change the line
+
 ## 1.18.1
 
 - No more Supervisor warning "uses build.yaml which is deprecated": the base image (`python:3.12-slim`) is now fixed
