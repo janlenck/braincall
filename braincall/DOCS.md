@@ -239,6 +239,8 @@ The assistant reads the plan back (number, time, what it may tell and agree to, 
 after a yes. After you hung up it calls, tries again if nobody is reached (a callee who calls back continues the task),
 then does the follow-up steps of the plan (calendar, shopping list, web search) and reports the result: as a
 notification (*Notify services*), as event `braincall_task_finished` and, if asked for, with a call back.
+Something to be done only after asking you ("…und frag mich dann, ob ich die Garage öffnen soll") always gets a call
+back: the assistant tells you the result, asks the question, and does it after your yes, with your rights.
 On a mailbox it leaves a short message after the beep and does not call again: the task waits for a call back
 (`waiting`). This also works for an announcement that starts with a short "Guten Tag." and goes on after a
 short pause. A call in which nothing the assistant said got an answer (the other side only spoke when it picked up,

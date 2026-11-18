@@ -78,6 +78,13 @@ TOOL_PLAN_CALL = {
                                          "tool": {"type": "string", "enum": list(FOLLOW_TOOLS)}},
                           "required": ["step"]},
             },
+            "ask_requester": {"type": "array", "items": {"type": "string"},
+                              "description": "what the requester wants to be asked after the call because it is "
+                                             "theirs to order, e.g. 'Soll ich die Garage öffnen?' when the task says "
+                                             "to open the garage after asking them, or anything else that needs a "
+                                             "tool no follow-up step has. You call them back after the call, ask "
+                                             "it, and they give the order in that call with their own rights. Makes "
+                                             "the call back mandatory (needs a requester with a phone number)"},
             "not_before": {"type": "string", "description": "earliest time to call, YYYY-MM-DDTHH:MM local time; "
                                                             "default now"},
             "not_after": {"type": "string", "description": "give up after this time; default 24 hours later"},
@@ -85,7 +92,7 @@ TOOL_PLAN_CALL = {
             "leave_message": {"type": "boolean", "description": "leave a short message on a mailbox, default true; "
                                                                 "the message ends the task, no further attempt"},
             "call_back": {"type": "boolean", "description": "call the requester back with the result (a notification "
-                                                            "is sent in any case)"},
+                                                            "is sent in any case); always on with ask_requester"},
             "language": {"type": "string", "enum": ["de", "uk", "en", "auto"]},
             "previous_task": {"type": "string", "description": "only to continue a finished task with the same "
                                                               "person or business (e.g. 'wegen der Reservierung "
@@ -570,6 +577,10 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
         if isinstance(s, dict) and str(s.get("step") or "").strip():
             tool = str(s.get("tool") or "")
             steps.append({"step": str(s["step"]).strip()[:MAX_TEXT], "tool": tool if tool in FOLLOW_TOOLS else ""})
+    ask = _texts(data.get("ask_requester"))
+    if ask and not requester.get("number"):
+        return None, ("Not planned: asking the requester after the call needs a call back, and there is no phone "
+                      "number to call them back on.")
     language = str(data.get("language") or "")
     return {
         "id": uuid.uuid4().hex[:8],
@@ -589,11 +600,12 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
         "may_accept": str(data.get("may_accept") or "").strip()[:MAX_TEXT],
         "grants": grants,
         "follow_up": steps[:MAX_ITEMS],
+        "ask_requester": ask,  # asked in the call back, the requester orders it there (#102)
         "not_before": not_before.isoformat(timespec="minutes"),
         "not_after": not_after.isoformat(timespec="minutes"),
         "retries": max(0, min(retries, int(cfg.task_max_retries or 0))),
         "leave_message": data.get("leave_message") is not False,
-        "call_back": bool(data.get("call_back")) and bool(requester.get("number")),
+        "call_back": bool(data.get("call_back") or ask) and bool(requester.get("number")),
         "status": PLANNED,
         "attempts": [],
         "tries": 0,       # calls since the last planned one (retries count these)
@@ -613,7 +625,8 @@ def confirm_key(task: dict, cfg=None, data: dict | None = None) -> str:
                                                   for k in ("not_before", "not_after"))]
     return json.dumps([config.norm_number(task["number"]), times, task["grants"],
                        sorted({s["tool"] for s in task["follow_up"]}), task["call_back"],
-                       task["retries"], task["leave_message"], task.get("previous", "")], sort_keys=True)
+                       task["retries"], task["leave_message"], task.get("previous", ""),
+                       len(task.get("ask_requester") or [])], sort_keys=True)
 
 
 def when(task: dict, cfg) -> str:
@@ -652,6 +665,9 @@ def read_back(task: dict, cfg, known: bool) -> str:
                      + (f" and book one appointment '{g['book_title']}' there." if g.get("book_title") else "."))
     if task["follow_up"]:
         parts.append("Afterwards you will: " + "; ".join(s["step"] for s in task["follow_up"]) + ".")
+    if task.get("ask_requester"):
+        parts.append("Then you call back and ask: " + "; ".join(task["ask_requester"])
+                     + " (done only after a yes in that call).")
     if (task.get("earlier") or {}).get("goal"):
         parts.append(f"It continues the earlier task ({task['earlier']['goal']}): the call knows what came of it.")
     parts.append(f"Not reached: {task['retries']} more attempt(s)"
@@ -702,6 +718,10 @@ def brief(task: dict, owner: str, phone: str = "") -> str:
     if task["follow_up"]:
         parts.append("Steps for after the call (" + "; ".join(s["step"] for s in task["follow_up"])
                      + ") are done by the phone system later: only collect what is needed for them")
+    if task.get("ask_requester"):
+        parts.append(f"After the call you ask {who} in a call back: " + "; ".join(task["ask_requester"])
+                     + f". That is {who}'s decision, not the callee's and not yours: do not do or promise it in this "
+                       "call, only find out what is needed for it")
     parts.append(f"Etiquette: say right at the start that you are an AI assistant calling on behalf of {who}, unless "
                  "the greeting already said so. If the callee does not want to talk or asks not to be called again, "
                  "accept that, apologize briefly and end the call. Before the goodbye say in one sentence that "
@@ -741,6 +761,26 @@ def report_text(task: dict) -> str:
     if open_:
         lines.append("Open: " + "; ".join(open_))
     return "\n".join(lines)
+
+
+def call_back_brief(task: dict, text: str, owner: str = "") -> str:
+    """The reason of the call back to the requester: the result, the questions the plan left for them (#102), and
+    that they talk with their own rights: what they order now is their order, not the callee's."""
+    who = ((task["requester"]["name"] or owner).split("(")[0].split() or ["the requester"])[0]
+    parts = [f"You call {who} back with the result of the task “{task['goal']}” (call to "
+             f"{task['name'] or task['number']}). Report it briefly in your own words and answer questions about it. "
+             f"Result ({task['status']}): {text}"]
+    ask = task.get("ask_requester") or []
+    if ask:
+        parts.append(f"Before you say goodbye, ask {who} what the plan left for them to decide: "
+                     + "; ".join(ask) + ". Say what the call brought that matters for it (e.g. \"Er hat ja gesagt, "
+                     "soll ich die Garage jetzt öffnen?\"); if the result makes a question pointless, say why "
+                     "instead of asking")
+    parts.append(f"{who} is on the line with their own rights, as in any call with them: whatever they ask or order "
+                 f"now (also beyond this task) is their order, not the callee's. Do it if their rights and your "
+                 f"tools allow it, with the usual confirmation (e.g. a yes before ha_control with confirmed=true); "
+                 f"do not refuse it because this call is about a task")
+    return ". ".join(p.rstrip(". ") for p in parts) + "."
 
 
 def _merged(before: dict | None, now: dict) -> dict:

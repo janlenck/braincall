@@ -453,7 +453,8 @@ any of them it is the owner.
 With only `number` and `task` Claude turns the text into a plan. Every field of the plan can also be given directly
 and then wins: `goal`, `questions`, `may_share`, `may_accept`, `calendar_from` / `calendar_to` / `book_title`,
 `follow_up` (`[{"step": "…", "tool": "ha_create_event"}]`), `not_before`, `not_after` (local time, default 24 hours),
-`retries` (default 2), `leave_message`, `call_back` (needs a requester with a number), `language`, `previous_task`
+`ask_requester` (questions for the call back, see below), `retries` (default 2), `leave_message`, `call_back` (needs
+a requester with a number), `language`, `previous_task`
 (see below). `GET /api/tasks` lists all tasks, `GET /api/tasks/<id>` shows one with its `contact_id` and `steps`,
 `DELETE /api/tasks/<id>` cancels a planned or waiting one. Every change of a task's status (planned, running, planned
 again, waiting, final) fires the event `braincall_task_updated` (`id`, `status`, `number`, `name`, `goal`,
@@ -530,6 +531,12 @@ dropped utterance is logged with its text (`Dropped what … said …: “…”
   `ha_events`, `shopping_edit`, `shopping_list` and `web` (web search, if `web_access` is on). Never `ha_control`.
   Transcripts and web pages are data: a step that the call did not settle clearly is not done but reported as open,
   and anything outside `may_accept` is not agreed. At most 40 changes per evaluation.
+- *Call back* (#102): the requester is on the line with their own rights, as in any call with them. What the plan
+  leaves for them to decide after asking (`ask_requester`, e.g. "Soll ich die Garage öffnen?" for "frag ihn, und frag
+  mich dann, ob ich die Garage öffnen soll") is asked there before the goodbye, and the requester gives the order in
+  that call ("Ja, mach auf" → `ha_control` with the usual confirmation). `ask_requester` makes the call back
+  mandatory; without a number to call back the task is not planned. Device control is never granted to the callee or
+  the evaluation: it always comes from the requester in the call back.
 
 **Result.** Status `done`, `partial`, `failed`, `not_reached`, `no_reply` or `cancelled`, a summary, the
 collected answers, each follow-up step with its outcome, and open points. It is stored with the task in `logs/tasks.json` (finished tasks

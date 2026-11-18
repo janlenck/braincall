@@ -211,6 +211,68 @@ def test_requester_is_a_person():
                                                                         "ha_user": "u9"}
 
 
+# ---------------------------------------------------------------- asking the requester after the call (#102)
+GARAGE = "Soll ich die Garage öffnen?"
+
+
+def test_asking_the_requester_makes_the_call_back_mandatory():
+    t = build(ask_requester=[GARAGE, " "], call_back=False)
+    assert t["ask_requester"] == [GARAGE] and t["call_back"] is True
+    assert build()["ask_requester"] == []
+
+
+def test_asking_the_requester_needs_a_number_to_call_back():
+    task, error = tasks.build(cfg(), plan(ask_requester=[GARAGE]), {"number": "", "name": "Flur", "ha_user": "x"},
+                              NOON)
+    assert task is None and "call back" in error
+
+
+def test_asking_the_requester_is_read_back_and_part_of_the_confirm_key():
+    t = build(ask_requester=[GARAGE])
+    assert f"Then you call back and ask: {GARAGE}" in tasks.read_back(t, cfg(), True)
+    assert "and you call back." in tasks.read_back(t, cfg(), True)
+    assert tasks.confirm_key(t) != tasks.confirm_key(build(call_back=True))
+
+
+def test_the_callee_is_told_the_question_is_not_theirs():
+    text = tasks.brief(build(ask_requester=[GARAGE]), "Jan Lenck")
+    assert f"After the call you ask Jan in a call back: {GARAGE}" in text and "do not do or promise it" in text
+    assert "call back" not in tasks.brief(build(), "Jan Lenck")
+
+
+def test_call_back_brief_asks_and_lets_the_requester_give_orders():
+    t = {**build(ask_requester=[GARAGE]), "status": "done"}
+    text = tasks.call_back_brief(t, "Er möchte, dass die Garage geöffnet wird.", "Jan")
+    assert text.startswith("You call Jan back with the result of the task “Reserve a table for 4 tonight”")
+    assert "Er möchte, dass die Garage geöffnet wird." in text
+    assert f"Before you say goodbye, ask Jan what the plan left for them to decide: {GARAGE}" in text
+    assert "is their order, not the callee's" in text and "do not refuse it" in text
+    plain = tasks.call_back_brief({**build(call_back=True), "status": "done"}, "Tisch um 19 Uhr.", "Jan")
+    assert "Before you say goodbye" not in plain and "is their order, not the callee's" in plain
+
+
+def test_a_task_from_before_102_has_no_questions():
+    old = build(call_back=True)
+    del old["ask_requester"]
+    assert "Before you say goodbye" not in tasks.call_back_brief({**old, "status": "done"}, "x", "Jan")
+    assert "call back and ask" not in tasks.read_back(old, cfg(), True)
+    tasks.confirm_key(old)
+
+
+def test_the_follow_up_leaves_the_question_to_the_requester(brain):
+    result, _, fake = follow(brain, build(ask_requester=[GARAGE]),
+                             message(tool("task_result", status="done", summary="Er will die Garage offen."),
+                                     stop="tool_use"))
+    content = fake.requests[0]["messages"][0]["content"]
+    assert '"ask_requester"' in content and GARAGE in content
+    assert "ask_requester is not yours" in fake.requests[0]["system"]
+    assert result["status"] == "done"
+
+
+def test_the_requester_has_home_control_in_the_call_back(brain):
+    assert "ha_control" in names(brain.tools_for(parse_access("admin")))
+
+
 def test_without_a_number_there_is_no_call_back():
     task, _ = tasks.build(cfg(), plan(call_back=True), {"number": "", "name": "Flur", "ha_user": "dashboard"}, NOON)
     assert task["call_back"] is False and task["requester"]["ha_user"] == "dashboard"

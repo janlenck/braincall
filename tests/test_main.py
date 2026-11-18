@@ -1007,6 +1007,20 @@ def test_message_left_does_not_count_when_no_message_was_to_be_left(main, planne
     assert again["status"] == "planned" and again["attempts"][0]["outcome"] == "mailbox"
 
 
+def test_the_call_back_asks_the_requester_what_the_plan_left_to_them(main, planned):
+    """#102: "frag ihn, und frag mich dann, ob ich die Garage öffnen soll": the call back is mandatory, asks the
+    question and lets the requester give the order there with their own rights."""
+    planned.add(ask_requester=["Soll ich die Garage öffnen?"])
+    planned.sessions.append(talked("Fahrer: Ja, bitte die Garage auf."))
+    planned.result = {"status": "done", "summary": "Der Fahrer möchte, dass die Garage geöffnet wird."}
+    main.run_tasks()
+    assert [d[0] for d in planned.dialed] == ["045421234", "0151111"]
+    back = planned.dialed[1][1]
+    assert "Der Fahrer möchte, dass die Garage geöffnet wird." in back
+    assert "Before you say goodbye, ask Jan what the plan left for them to decide: Soll ich die Garage öffnen?" in back
+    assert "is their order, not the callee's" in back
+
+
 def test_mailbox_follow_up_failure_still_waits_for_the_call_back(main, planned, monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError("API down")
