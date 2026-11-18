@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import threading
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -73,6 +74,12 @@ def _access_list(value) -> list:
 
 def _fold(s) -> str:
     return " ".join(str(s or "").split()).casefold()
+
+
+def sort_key(c: dict) -> tuple:
+    """Alphabetical by name, case and accents ignored ("Änne" next to "Anna", not after "Zoe")."""
+    name = unicodedata.normalize("NFKD", _fold(c.get("name")))
+    return "".join(ch for ch in name if not unicodedata.combining(ch)), _fold(c.get("name")), c.get("id", "")
 
 
 class Contacts:
@@ -223,8 +230,9 @@ class Contacts:
 
     # ------------------------------------------------------------------ lookup
     def all(self) -> list[dict]:
+        """All contacts, alphabetical by name (the contacts page and the list read out by voice)."""
         with self.lock:
-            return json.loads(json.dumps(self.items))
+            return sorted(json.loads(json.dumps(self.items)), key=sort_key)
 
     def get(self, cid: str) -> dict | None:
         with self.lock:

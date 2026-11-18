@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.15.1
+
+- Contacts page: the list is alphabetical by name, case and accents ignored ("Änne" next to "Anna"). The list of
+  names read out by voice too. `contacts.json` keeps its order
+
 ## 1.15.0
 
 Contacts: one entry per person with several named numbers and a mail address, edited on a page in Home Assistant
