@@ -787,11 +787,11 @@ class Brain:
             return f"Error: {e}"
         return "Unknown tool."
 
-    @staticmethod
-    def _granted_days(grants: dict) -> tuple:
-        """(days, start) for ha_busy_times: the days of the grant, never before today; 0 days = all of them
-        are over (a later day was never granted)."""
-        first = max(datetime.fromisoformat(grants["calendar_from"]).date(), datetime.now().date())
+    def _granted_days(self, grants: dict) -> tuple:
+        """(days, start) for ha_busy_times: the days of the grant, never before today (in the configured
+        timezone); 0 days = all of them are over (a later day was never granted)."""
+        today = datetime.now(ZoneInfo(self.cfg.timezone)).date()
+        first = max(datetime.fromisoformat(grants["calendar_from"]).date(), today)
         last = datetime.fromisoformat(grants["calendar_to"]).date()
         return max(0, (last - first).days + 1), first.isoformat()
 

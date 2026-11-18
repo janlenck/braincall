@@ -3,6 +3,7 @@ main configures itself on import, so it is imported once with a test configurati
 import http.client
 import importlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -127,6 +128,37 @@ def test_incoming_while_busy_is_denied(main, events):
     assert denied == [True]
 
 
+def busy_rejected(main, number):
+    call, denied = incoming(number)
+    assert main.busy.acquire(blocking=False)
+    try:
+        main.on_incoming(call)
+    finally:
+        main.busy.release()
+    assert denied == [True]
+
+
+def test_incoming_while_busy_is_logged_and_reported(main, events, caplog):
+    """#25: a second call during a running call shows up in the log and as a braincall_call event."""
+    with caplog.at_level(logging.WARNING, logger="main"):
+        busy_rejected(main, "0999")
+    assert any(r.getMessage() == "Incoming call from 0999 (unknown) rejected (line busy)" for r in caplog.records)
+    (name, data), = events["events"]
+    assert name == "braincall_call" and data["answered"] is False and data["reason"] == "rejected: line busy"
+    assert data["access"] == "guest"
+    assert events["notify"] == [("notify.phone", "Verpasster Anruf von 0999",
+                                 "Die Leitung war besetzt (ein anderes Gespräch lief), der Anruf wurde abgewiesen.")]
+
+
+def test_incoming_while_busy_notifies_like_a_summary(main, events):
+    busy_rejected(main, "0151111")  # admin: no notification
+    busy_rejected(main, "0160333")  # notify: false
+    assert events["notify"] == []
+    busy_rejected(main, "0171444")  # read access, notify: true
+    assert events["notify"][0][1] == "Verpasster Anruf von Walter (0171444)"
+    assert [e[1]["caller_name"] for e in events["events"]] == ["Jan Mobile", "Jan Lenck", "Walter"]
+
+
 # ---------------------------------------------------------------- after the call
 def session(*transcript, actions=(), mailbox=False):
     return SimpleNamespace(transcript=list(transcript), caller_turns=len(transcript), actions=list(actions),
@@ -187,6 +219,17 @@ def test_after_call_summary_failure_falls_back_to_transcript(main, after, monkey
     monkeypatch.setattr(main.brain, "summarize", fail)
     sent = after("0999")
     assert sent["notify"][0][2] == "caller: Hallo\nClaudine: Hallo!"
+
+
+def test_event_reason_says_the_call_limit_ended_the_call(main, after, monkeypatch):
+    """#22: max_call_minutes ended the call."""
+    s = session("caller: Hallo", "Claudine: Hallo!")
+    s.limit_reached = True
+    assert after("0999", s=s)["events"][0][1]["reason"] == "test; ended: call limit"
+    events = []
+    monkeypatch.setattr(main.ha, "fire_event", lambda name, data: events.append(data))
+    main.report(True, "0999", time.time(), s)
+    assert events[0]["reason"] == "ended: call limit"
 
 
 def test_summary_is_told_the_direction_and_a_mailbox(after):

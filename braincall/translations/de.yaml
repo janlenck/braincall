@@ -128,6 +128,9 @@ configuration:
   silence_timeout:
     name: Stille bis Nachfrage (s)
     description: Zweimal hintereinander = auflegen.
+  max_call_minutes:
+    name: Längste Gesprächsdauer (min)
+    description: Danach verabschiedet sich der Assistent und legt auf; eine Minute vorher kommt er zum Schluss. 0 = keine Grenze.
   barge_in:
     name: Unterbrechen erlaubt
     description: Anrufer darf dem Assistenten ins Wort fallen.

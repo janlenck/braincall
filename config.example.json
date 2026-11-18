@@ -111,6 +111,8 @@
   "speculative_ms": 300,              // after this pause STT and Claude already start; spoken only once the pause
                                       // reaches end_silence_ms, dropped if the caller goes on (0 = off)
   "silence_timeout": 12,              // seconds without speech before asking; twice in a row = hang up
+  "max_call_minutes": 10,             // a call ends after this long, with a goodbye; a minute before, Claude is
+                                      // told to wrap up. 0 = no limit
   "barge_in": true,                   // caller may interrupt the assistant
   "barge_in_min_ms": 1000,            // how long the caller must speak to interrupt
   "fillers": true,                    // short "Hmm…", "Moment, ich schau kurz nach" … while the answer is prepared

@@ -126,6 +126,9 @@ configuration:
   silence_timeout:
     name: Silence until asking (s)
     description: Twice in a row = hang up.
+  max_call_minutes:
+    name: Longest call (min)
+    description: After this the assistant says goodbye and hangs up; a minute before, it wraps up. 0 = no limit.
   barge_in:
     name: Allow interrupting
     description: Caller may interrupt the assistant.

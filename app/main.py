@@ -184,6 +184,11 @@ def same_number(a: str, b: str) -> bool:
 
 GUEST = frozenset({"guest"})
 SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзвінок від {who}"}
+MISSED_TITLE = {"de": "Verpasster Anruf von {who}", "en": "Missed call from {who}",
+                "uk": "Пропущений дзвінок від {who}"}
+MISSED_TEXT = {"de": "Die Leitung war besetzt (ein anderes Gespräch lief), der Anruf wurde abgewiesen.",
+               "en": "The line was busy (another call was going on), the call was rejected.",
+               "uk": "Лінія була зайнята (тривала інша розмова), дзвінок відхилено."}
 TASK_TITLE = {"de": "Auftrag Anruf bei {who}: {status}", "en": "Task call to {who}: {status}",
               "uk": "Завдання, дзвінок до {who}: {status}"}
 STATUS_WORDS = {"de": {"done": "erledigt", "partial": "teilweise erledigt", "failed": "nicht geklappt",
@@ -325,6 +330,8 @@ def assist_loop():
 
 def report(answered: bool, number: str, started: float, session=None, message="", caller=None, summary="",
            ended: float = 0.0):
+    if session is not None and getattr(session, "limit_reached", False):  # max_call_minutes ended it (#22)
+        message = f"{message}; ended: call limit" if message else "ended: call limit"
     ha.fire_event("braincall_call", {
         "number": number,
         "answered": answered,
@@ -623,6 +630,30 @@ def shopping_lookup_loop():
             return
 
 
+def rejected_busy(call, number: str, caller):
+    """An incoming call while the line is busy (another call, a reconnect): denied, but logged, reported as a
+    braincall_call event and notified like a summary would be (#25)."""
+    callback = task_store is not None and task_store.has_callback(number)
+    log.warning("Incoming call from %s (%s) rejected (line busy)%s", number, caller_label(caller, number) or "unknown",
+                ": a task waits for a call back from this number, it stays waiting" if callback else "")
+    try:
+        call.deny()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        report(False, number, time.time(), message="rejected: line busy", caller=caller)
+        access = caller["access"] if caller else GUEST
+        notify = caller.get("notify") if caller else None
+        if notify if notify is not None else "admin" not in access:
+            lang = cfg.language if cfg.language in MISSED_TITLE else "de"
+            label = caller_label(caller, number)
+            title = MISSED_TITLE[lang].format(who=f"{label} ({number})" if label else number)
+            for service in cfg.notify_services or []:
+                ha.notify(str(service), title, MISSED_TEXT[lang])
+    except Exception:  # noqa: BLE001
+        log.exception("Reporting the rejected call from %s failed", number)
+
+
 def on_incoming(call):
     try:
         number = call.request.headers["From"]["number"] or ""
@@ -644,10 +675,7 @@ def on_incoming(call):
         report(False, number or "unknown", time.time(), message=f"rejected: {reason}")
         return
     if not busy.acquire(blocking=False):
-        try:
-            call.deny()
-        except Exception:  # noqa: BLE001
-            pass
+        rejected_busy(call, number, caller)
         return
     started = time.time()
     session = None
@@ -1059,7 +1087,7 @@ class Handler(BaseHTTPRequestHandler):
         elif asked["requester"] and not (requester["number"] or asked["requester_user_id"]
                                          or asked["requester_user_name"]):  # a phone number that is not listed
             requester = {"number": "", "name": OWNER, "ha_user": ""}
-        task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
+        task, error = tasks.build(cfg, fixed, requester, datetime.now(tasks._tz(cfg)))
         if task is None:
             return self._send(400, {"error": error})
         if task["previous"]:  # continues a finished task of the same contact: its history goes along (#92)
