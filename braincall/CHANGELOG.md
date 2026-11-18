@@ -7,13 +7,15 @@ times follow the configured timezone.
 
 - New option `max_call_minutes` (default 10, 0 = no limit): about a minute before, Claude is told to sum up, say
   goodbye and hang up; at the limit a fixed goodbye ends the call, also while hold music, a TV or a robocall keeps
-  the line busy. The summary still follows, the `braincall_call` event has `ended: call limit` in `reason` (#22)
+  the line busy; a turn still running is cut off 45 s after the limit. The summary still follows, the
+  `braincall_call` event has `ended: call limit` in `reason` (#22)
 - An incoming call while the line is busy (another call, a reconnect) is logged as a warning, fires a
   `braincall_call` event with `reason: rejected: line busy` and is notified like a summary (not for admin unless
   `notify: true`) (#25)
 - Calendar (events, busy times, bookings and their limits), weather forecast, `last_changed` of states, the days of
   a planned call's grant and tasks made through the HTTP API use the configured `timezone`, not the machine's.
-  Times without an offset are read in that timezone (#26)
+  Times without an offset are read in that timezone; times keep a fixed UTC offset, so the night clocks go back
+  compares and measures them exactly (#26)
 
 ## 1.16.0
 

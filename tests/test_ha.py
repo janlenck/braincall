@@ -751,3 +751,25 @@ def test_forecast_times_in_the_configured_timezone(make_ha, utc_machine):
     h.tz = utc_machine
     out = json.loads(h.forecast("weather.home", "hourly"))
     assert out["forecast"][0]["time"] == "Tue 2030-01-08 10:00"
+
+
+def test_times_across_the_dst_change_compare_exactly(make_ha, utc_machine):
+    """02:45+02:00 -> 02:15+01:00 on the night clocks go back is 30 minutes, not minus 30 (same ZoneInfo would
+    compare wall clocks)."""
+    s, e, _ = HA._span(ev("Nacht", "2030-10-27T02:45:00+02:00", "2030-10-27T02:15:00+01:00"), utc_machine)
+    assert e > s and e - s == timedelta(minutes=30)
+    h = make_ha(default_calendars=["calendar.family"], timezone="Europe/Berlin")
+    out = h.create_event("", "x", "2030-10-27T02:45:00+02:00", "2030-10-27T02:15:00+01:00", confirmed=True,
+                         restricted=True)
+    assert out == "Added: x."
+
+
+def test_busy_blocks_across_the_dst_change_are_not_merged_by_wall_clock(make_ha, utc_machine):
+    h = make_ha(default_calendars=["calendar.family"], timezone="Europe/Berlin", events={"calendar.family": [
+        ev("A", "2030-10-27T02:00:00+02:00", "2030-10-27T02:30:00+02:00"),
+        ev("B", "2030-10-27T02:40:00+01:00", "2030-10-27T03:00:00+01:00"),  # an hour later, after the change
+    ]})
+    blocks, _ = h._busy(datetime(2030, 10, 27, tzinfo=utc_machine), datetime(2030, 10, 28, tzinfo=utc_machine))
+    assert [(s.isoformat(), e.isoformat()) for s, e, _ in blocks] == [
+        ("2030-10-27T02:00:00+02:00", "2030-10-27T02:30:00+02:00"),
+        ("2030-10-27T02:40:00+01:00", "2030-10-27T03:00:00+01:00")]

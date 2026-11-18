@@ -1191,3 +1191,33 @@ def test_the_limit_starts_with_the_conversation(monkeypatch):
     monkeypatch.setattr(threading.Thread, "start", lambda self: None)
     s.run(outbound=False, caller="0999")
     assert 0 < s.time_left() <= 60
+
+
+def test_speech_while_thinking_does_not_restart_the_turn_past_the_limit():
+    """Noise that never pauses: every turn would be restarted, the limit still ends the call."""
+    def restarted(ctx):
+        s.restart.set()
+        return False
+
+    brain = FakeBrain(restarted, hang_up)
+    s = make(brain, max_call_minutes=1)
+    s.started_at -= 61
+    u = utt(s, "Fernseher …", queue_it=False)
+    s._transcribe_async(u)
+    assert u.done.wait(2)
+    hang = s._answer([{"role": "user", "content": "[System: intro]"}], [u])
+    assert hang is True and s.limit_reached and len(brain.seen) == 1
+    assert "Jan: Fernseher …" in s.transcript and s.speech.synthesized == [LIMIT_PHRASE]
+
+
+def test_a_turn_that_does_not_end_is_cut_off_after_the_limit(caplog):
+    frames = []
+    call = SimpleNamespace(state=CallState.ANSWERED, write_audio=lambda chunk: None, hangup=lambda: None,
+                           read_audio=lambda n, blocking: frames.append(1) or b"\x7f" * n)
+    s = CallSession(call, FakeBrain(), FakeSpeech(), make_cfg(max_call_minutes=1), None)
+    s.started_at -= 60 + session_mod.HARD_LIMIT_S + 1
+    with caplog.at_level(logging.WARNING, logger="session"):
+        s._reader()
+    assert frames == [] and not s.alive() and s.limit_reached
+    assert s.transcript == ["[Call cut off by the phone system: maximum length (1 min) passed]"]
+    assert any("cutting the call off" in r.getMessage() for r in caplog.records)

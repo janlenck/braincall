@@ -145,10 +145,11 @@ def _spelled(t: str) -> str:
 
 
 def _in_tz(t: datetime, tz=None) -> datetime:
-    """t in tz (None = timezone of the machine); a naive t is local time in tz (#26)."""
-    if t.tzinfo is None:
-        return t.replace(tzinfo=tz) if tz else t.astimezone()
-    return t.astimezone(tz)
+    """t in tz (None = timezone of the machine), as a fixed UTC offset; a naive t is local time in tz (#26).
+    Fixed offsets keep comparisons and durations exact across DST changes: two times with the same ZoneInfo
+    compare by wall clock (02:45+02:00 would be after 02:15+01:00 in the repeated hour)."""
+    t = (t.replace(tzinfo=tz) if tz else t.astimezone()) if t.tzinfo is None else t.astimezone(tz)
+    return t.replace(tzinfo=timezone(t.utcoffset()))
 
 
 def _local_time(iso: str, tz=None) -> str:
@@ -1347,12 +1348,11 @@ class HA:
         return _in_tz(d, tz), _in_tz(max(e, d + timedelta(days=1)), tz), True
 
     def _now(self) -> datetime:
-        """Now in the configured timezone (the machine's without one)."""
-        return datetime.now(self.tz).astimezone(self.tz)
+        """Now in the configured timezone (the machine's without one), as a fixed UTC offset like _in_tz."""
+        return _in_tz(datetime.now(timezone.utc), self.tz)
 
     def _period(self, days, start: str):
-        now = self._now()
-        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight = _in_tz(datetime.combine(self._now().date(), datetime.min.time()), self.tz)  # its own offset
         try:
             begin = _in_tz(datetime.fromisoformat(start), self.tz) if start else midnight
         except ValueError:

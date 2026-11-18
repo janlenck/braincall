@@ -35,6 +35,7 @@ ENDED = object()
 TIMEOUT = object()
 LIMIT = object()        # max_call_minutes reached (#22)
 WRAP_UP_S = 60.0        # this long before max_call_minutes the model is told to wrap up
+HARD_LIMIT_S = 45.0     # this long after max_call_minutes the call is cut off, also in the middle of a turn
 
 # Voice activity detection on 20 ms frames
 ECHO_FACTOR = 4.0       # while we speak the threshold is raised so the echo of our own voice does not count
@@ -193,9 +194,9 @@ class CallSession:
             limit = 0.0
         return limit - (time.monotonic() - self.started_at) if limit > 0 else None
 
-    def _over_limit(self) -> bool:
+    def _over_limit(self, grace: float = 0.0) -> bool:
         left = self.time_left()
-        return left is not None and left <= 0
+        return left is not None and left <= -grace
 
     def _wrap_up(self, messages):
         """Once, about WRAP_UP_S before max_call_minutes: the model is told to come to an end (#22)."""
@@ -214,6 +215,10 @@ class CallSession:
         self.limit_reached = True
         self.transcript.append(f"[Call ended by the phone system: maximum length ({self.cfg.max_call_minutes} min) "
                                "reached]")
+        with self._answer_lock:  # also from a turn the caller restarted: the goodbye must not be dropped
+            self._thinking = False
+            self.restart.clear()
+        self.interrupt.clear()
         self.say(PHRASES.get(self.language, PHRASES["de"])["limit"])
         self.wait_spoken()
 
@@ -231,6 +236,15 @@ class CallSession:
         """Reads one frame every 20 ms (non-blocking; pyVoIP would otherwise block on digital silence)."""
         next_t = time.monotonic()
         while self.alive():
+            if self._over_limit(HARD_LIMIT_S):
+                # the goodbye at the limit comes between turns; a turn that does not end is cut off here
+                log.warning("Call limit (%s min) passed by %.0f s: cutting the call off", self.cfg.max_call_minutes,
+                            HARD_LIMIT_S)
+                if not self.limit_reached:
+                    self.limit_reached = True
+                    self.transcript.append(f"[Call cut off by the phone system: maximum length "
+                                           f"({self.cfg.max_call_minutes} min) passed]")
+                break
             try:
                 data = self.call.read_audio(FRAME, False)
             except Exception:  # noqa: BLE001  call ended
@@ -827,9 +841,13 @@ class CallSession:
                 if timer is not None:
                     self.timing.turns.remove(timer)
                 more = self._transcribed(self._drain())
+                heard += more
+                if self._over_limit():  # noise that never pauses must not restart the turn past the limit
+                    self._note_heard(heard)
+                    self._end_at_limit()
+                    return True
                 log.info("%s spoke while the answer was being prepared: answering everything together",
                          self.caller_label)
-                heard += more
                 continue
             if hang is True and self._turn_cut and self.alive():
                 # the goodbye was interrupted (barge-in): the callee has something more to say (#87)
