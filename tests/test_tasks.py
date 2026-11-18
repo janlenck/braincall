@@ -534,6 +534,104 @@ def test_granted_booking_up_to_the_end_of_the_last_day(brain, ha, start, end):
     assert ha.calls[-1][0] == "create_event"
 
 
+# ---------------------------------------------------------------- the task's contact and history (#92)
+TWO_PHONES = [{"id": "m1", "name": "Mark", "numbers": [{"number": "0170222", "label": "Handy"},
+                                                     {"number": "040 5555", "label": "Büro"}], "access": "guest"},
+              {"id": "j1", "name": "Jan Mobile", "number": "0151111", "access": "admin"}]
+
+
+def cfg_people(people=TWO_PHONES):
+    return make_cfg(anthropic_api_key="test", owner_name="Jan Lenck", callers=people, outbound_allowed_regex="")
+
+
+def test_a_task_points_to_the_contact_of_its_number():
+    c = cfg_people()
+    task, _ = tasks.build(c, plan(number="+49 40 5555", name="Marks Büro"), JAN, NOON)
+    assert task["contact_id"] == "m1" and task["name"] == "Mark"  # the contact's name, not the one given
+    assert tasks.numbers_of(c, task) == ["+49405555", "0170222"]
+    task, _ = tasks.build(c, plan(), JAN, NOON)
+    assert task["contact_id"] == "" and tasks.contact_of(c, task) is None  # made with the yes (brain, main)
+
+
+def test_a_call_back_from_any_number_of_the_contact_continues_the_task(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number=""), JAN, NOON)[0])
+    assert t["number"] == "0170222"
+    store.claim(NOON)
+    store.not_reached(t["id"], "no answer", NOON)
+    assert store.has_callback("040 5555")  # the office, not the phone dialed
+    claimed = store.claim_callback("+49 40 5555", NOON + timedelta(minutes=5))
+    assert claimed["id"] == t["id"] and claimed["attempts"][-1]["number"] == "+49 40 5555"
+
+
+def test_a_number_added_to_the_contact_later_is_matched_too(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number=""), JAN, NOON)[0])
+    store.claim(NOON)
+    store.not_reached(t["id"], "no answer", NOON)
+    assert not store.has_callback("040 7777")
+    c["callers"][0]["numbers"].append({"number": "040 7777", "label": "Rezeption"})  # the contact's live list
+    assert store.has_callback("040 7777")
+
+
+def test_a_call_that_reached_someone_is_a_step_of_the_history(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number=""), JAN, NOON)[0])
+    store.claim(NOON)
+    long = ["Mark: " + "bla " * 600, "Claudine: Danke, bis später."]
+    store.record_step(t["id"], long, "talked", "Mark schaut nach und meldet sich.")
+    (step,) = store.get(t["id"])["steps"]
+    assert (step["kind"], step["number"], step["outcome"]) == ("call_out", "0170222", "talked")
+    assert step["result"] == "Mark schaut nach und meldet sich." and step["time"].startswith("2026-11-10T12:00")
+    assert len(step["transcript"]) <= tasks.MAX_TRANSCRIPT + 3 and step["transcript"].endswith("bis später.")
+    store.not_reached(t["id"], "no answer", NOON)  # an attempt without a conversation is no step
+    store.claim_callback("040 5555", NOON + timedelta(minutes=30))
+    store.record_step(t["id"], ["Mark: Freitag geht."], "talked")
+    assert [s["kind"] for s in store.get(t["id"])["steps"]] == ["call_out", "call_in"]
+    assert store.get(t["id"])["steps"][1]["number"] == "040 5555"
+
+
+def test_retries_count_only_dialed_calls(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number="", retries=1), JAN, NOON)[0])
+    store.claim(NOON)
+    assert store.not_reached(t["id"], "no answer", NOON)["status"] == "planned"
+    store.claim_callback("0170222", NOON + timedelta(minutes=5))  # a call back is no try
+    assert store.not_reached(t["id"], "nothing said", NOON + timedelta(minutes=5))["status"] == "planned"
+    store.claim(NOON + timedelta(minutes=20))
+    assert store.not_reached(t["id"], "busy", NOON + timedelta(minutes=20))["status"] == "not_reached"
+
+
+def test_tasks_from_before_92_load_with_a_history_and_a_contact(tmp_path):
+    c = cfg_people()
+    old = {"id": "a1", "number": "040 5555", "name": "Mark", "status": "done", "goal": "x", "task": "x",
+           "requester": {"number": "0151111", "name": "Jan"}, "not_after": "2026-11-10T19:00",
+           "attempts": [{"time": "2026-11-10T12:00:00+01:00", "kind": "call", "outcome": "no answer"},
+                        {"time": "2026-11-10T12:15:00+01:00", "kind": "call", "outcome": "talked"}],
+           "result": {"status": "done", "summary": "Freitag 10 Uhr."}}
+    gone = {**old, "id": "a2", "number": "0999", "attempts": [{"time": "2026-11-10T12:00:00+01:00",
+                                                               "kind": "call", "outcome": "no answer"}]}
+    (tmp_path / "tasks.json").write_text(json.dumps({"tasks": [old, gone]}), encoding="utf-8")
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    a1, a2 = store.get("a1"), store.get("a2")
+    assert a1["contact_id"] == "m1" and a1["channels"] == ["call"] and a1["tries"] == 2
+    assert a1["steps"] == [{"kind": "call_out", "time": "2026-11-10T12:15:00+01:00", "number": "040 5555",
+                            "outcome": "talked", "transcript": "", "result": "Freitag 10 Uhr."}]
+    assert a2["contact_id"] == "" and a2["steps"] == [] and tasks.numbers_of(c, a2) == ["0999"]
+
+
+def test_merged_contacts_take_their_tasks_along(tmp_path):
+    c = cfg_people()
+    store = tasks.TaskStore(tmp_path / "tasks.json", c)
+    t = store.add(tasks.build(c, plan(name="Mark", number=""), JAN, NOON)[0])
+    assert store.rekey_contact("m1", "j1") == 1 and store.get(t["id"])["contact_id"] == "j1"
+    assert store.open_for("j1")["id"] == t["id"] and store.open_for("m1") is None
+
+
 # ---------------------------------------------------------------- plan_call
 class Fake:
     """messages.stream / messages.create answering with the given messages in turn."""

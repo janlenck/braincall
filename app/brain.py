@@ -841,11 +841,13 @@ class Brain:
                 return refusal
             if data.get("override_do_not_call"):
                 self.tasks.unblock(task["number"])
-            self.tasks.add(task)
-            if new_contact:  # every task has a contact as its anchor (#93): called back, called again by name
+            if new_contact:  # every task has a contact as its anchor (#93, #92): saved first, the task points to it
                 saved, errors = self.contacts.save(new_contact, origin="task")
-                if errors:
+                if saved:
+                    task = {**task, "contact_id": saved["id"]}
+                else:
                     log.info("Contact for task %s not saved: %s", task["id"], contacts_mod.problems(errors))
+            self.tasks.add(task)
             soon = datetime.fromisoformat(task["next_try"]) <= now
             if (call or {}).get("channel") in ASSIST_HEAD:  # no line of this conversation is in the way
                 return (f"Stored (task {task['id']}). " + ("The call starts in a moment." if soon else
@@ -861,10 +863,13 @@ class Brain:
 
     def contact_for_task(self, task: dict, known: bool) -> tuple[dict | None, str]:
         """The contact a planned call to a number nobody has yet creates (#93): (contact data, "") or (None, "") if
-        none is made (known number, no name, no contacts), or (None, why not planned) if the name is taken by
-        another contact."""
-        if known or self.contacts is None or not task.get("name"):
+        none is made (known number, no contacts), or (None, why not planned) if the name is missing (every task has
+        a contact, #92) or taken by another contact."""
+        if known or self.contacts is None:
             return None, ""
+        if not task.get("name"):  # every task has a contact (#92): a number nobody has gets a name first
+            return None, ("Not planned: the number belongs to no contact. Ask whom it belongs to (a person or "
+                          "business) and give that as name: it is saved as a contact with the yes to the plan.")
         other = self.contacts.by_name(task["name"])
         if other is not None:
             return None, (f"Not planned: there is already a contact named {other['name']} with other numbers "

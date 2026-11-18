@@ -23,6 +23,8 @@ FINAL = ("done", "partial", "failed", "not_reached", LEFT, "cancelled")
 KEEP_DAYS = 30            # finished tasks stay in tasks.json this long
 DEFAULT_WINDOW_H = 24     # a task without not_after is given up this long after not_before
 MAX_ITEMS, MAX_TEXT = 12, 500
+MAX_TRANSCRIPT = 4000     # characters of a call's transcript kept in its step (start and end)
+CALL_OUT, CALL_IN, REQUESTER = "call_out", "call_in", "requester"  # kinds of steps in a task's history (#92)
 
 # What the follow-up after the call may use, if the confirmed plan names it ("web" = web_search and web_fetch)
 FOLLOW_TOOLS = ("ha_create_event", "ha_events", "shopping_edit", "shopping_list", "web")
@@ -243,6 +245,69 @@ def callee(cfg, data: dict) -> tuple[str, str, str]:
     return number, entry["name"], ""
 
 
+def contact_entry(cfg, number: str = "", contact_id: str = "") -> dict | None:
+    """The contact (live callers entry) by id, else the one that has this number; None if there is none."""
+    people = [c for c in cfg.callers or [] if not config.is_rule(c)]
+    if contact_id:
+        found = next((c for c in people if c.get("id") == contact_id), None)
+        if found is not None:
+            return found
+    if number:
+        return next((c for c in people if config.has_number(c, number, cfg.country_code)), None)
+    return None
+
+
+def contact_of(cfg, task: dict) -> dict | None:
+    """The task's counterpart (#92): its contact by contact_id, for an old task by its number. The contact holds
+    the current numbers and mail address; the task keeps none of its own."""
+    return contact_entry(cfg, task.get("number") if not task.get("contact_id") else "", task.get("contact_id", ""))
+
+
+def numbers_of(cfg, task: dict) -> list[str]:
+    """Every number of the task's counterpart: the one dialed now first, then those of its contact."""
+    out = [task["number"]] if task.get("number") else []
+    keys = {config.norm_number(n, cfg.country_code) for n in out}
+    for n in config.entry_numbers(contact_of(cfg, task)):
+        key = config.norm_number(n["number"], cfg.country_code)
+        if key not in keys:
+            keys.add(key)
+            out.append(n["number"])
+    return out
+
+
+def clip(transcript, limit: int = MAX_TRANSCRIPT) -> str:
+    """A call's transcript for its step: as it is, or its start and its end with "…" between."""
+    text = "\n".join(transcript) if isinstance(transcript, list) else str(transcript or "")
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = limit // 3
+    return text[:head].rstrip() + "\n…\n" + text[-(limit - head):].lstrip()
+
+
+def upgrade(cfg, t: dict) -> dict:
+    """A task as stored before #92 (no history, no contact) in today's shape: a step for a call that reached
+    someone (from its result), the contact found by its number, one channel."""
+    t.setdefault("channels", ["call"])
+    t.setdefault("previous", "")
+    if "contact_id" not in t:
+        entry = contact_entry(cfg, t.get("number", ""))
+        t["contact_id"] = entry.get("id", "") if entry else ""
+    if "steps" not in t:
+        steps = []
+        for a in t.get("attempts") or []:
+            if a.get("outcome") in ("talked", "message left"):
+                steps.append({"kind": CALL_IN if a.get("kind") == "callback" else CALL_OUT, "time": a["time"],
+                              "number": a.get("number") or t.get("number", ""), "outcome": a["outcome"],
+                              "transcript": "", "result": ""})
+        if steps and t.get("result"):
+            steps[-1]["result"] = str(t["result"].get("summary") or "")[:MAX_TEXT]
+        t["steps"] = steps
+    if "tries" not in t:
+        t["tries"] = sum(a.get("kind") == "call" for a in t.get("attempts") or [])
+    return t
+
+
 def find_requester(cfg, number: str = "", user_id: str = "", user_name: str = "") -> dict | None:
     """The contact of whoever plans a call, found by any of their phone numbers or by Home Assistant user (id before
     name), as {"number", "name", "ha_user"}; None if nothing matches ("*" never does). number is the one they called
@@ -281,6 +346,9 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
     refusal = number_refusal(cfg, number)
     if refusal:
         return None, f"Not planned: {refusal}."
+    entry = contact_entry(cfg, number)
+    if entry is not None and entry.get("name"):
+        name = entry["name"]  # a known number: its contact, under its name (#93)
     text = str(data.get("task") or "").strip()
     if not text:
         return None, "Not planned: the task is missing."
@@ -314,6 +382,8 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
         "id": uuid.uuid4().hex[:8],
         "created": now.isoformat(timespec="seconds"),
         "source": source,
+        "contact_id": entry.get("id", "") if entry else "",  # set on saving for a new contact (#92)
+        "channels": ["call"],
         "requester": {"number": str(requester.get("number") or ""), "name": str(requester.get("name") or ""),
                       "ha_user": str(requester.get("ha_user") or "")},
         "number": number,
@@ -333,6 +403,9 @@ def build(cfg, data: dict, requester: dict, now: datetime, source: str = "api") 
         "call_back": bool(data.get("call_back")) and bool(requester.get("number")),
         "status": PLANNED,
         "attempts": [],
+        "tries": 0,       # calls since the last planned one (retries count these)
+        "steps": [],      # the history: calls that reached someone, steps of the requester (#92)
+        "previous": "",   # a finished task of the same contact whose history this one continues
         "next_try": not_before.isoformat(timespec="minutes"),
         "result": None,
     }, ""
@@ -503,7 +576,7 @@ class TaskStore:
     def _load(self):
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            self.tasks = [t for t in data.get("tasks", []) if isinstance(t, dict) and t.get("id")]
+            self.tasks = [upgrade(self.cfg, t) for t in data.get("tasks", []) if isinstance(t, dict) and t.get("id")]
             self.do_not_call = [d for d in data.get("do_not_call", []) if isinstance(d, dict) and d.get("number")]
         except FileNotFoundError:
             return
@@ -616,12 +689,13 @@ class TaskStore:
             if not due or (limit and self.calls_today(now) >= limit):
                 return None
             t = min(due, key=lambda t: t["next_try"])
-            return self._start(t, now, "call")
+            return self._start(t, now, "call", t["number"])
 
     def _awaits_callback(self, t: dict, key: str, now: datetime) -> bool:
         """A task this number may continue by calling in: tried before and still planned, or ended with a message
-        on the mailbox (which asks for a call back) while its time window lasts."""
-        if not t["attempts"] or self._key(t["number"]) != key:
+        on the mailbox (which asks for a call back) while its time window lasts. Any number of the task's contact
+        counts (#92), not only the one dialed."""
+        if not t["attempts"] or key not in {self._key(n) for n in numbers_of(self.cfg, t)}:
             return False
         return t["status"] == PLANNED or (t["status"] == LEFT and now <= datetime.fromisoformat(t["not_after"]))
 
@@ -632,7 +706,7 @@ class TaskStore:
             open_ = [t for t in self.tasks if self._awaits_callback(t, key, now)]
             # a task that would be dialed again comes first: continued here, it is not called once more
             t = min(open_, key=lambda t: t["status"] != PLANNED, default=None)
-            return self._start(t, now, "callback") if t else None
+            return self._start(t, now, "callback", number) if t else None
 
     def has_callback(self, number: str, now: datetime | None = None) -> bool:
         """Whether a call from this number would continue an open task (see claim_callback)."""
@@ -641,10 +715,12 @@ class TaskStore:
         with self.lock:
             return any(self._awaits_callback(t, key, now) for t in self.tasks)
 
-    def _start(self, t: dict, now: datetime, kind: str) -> dict:
+    def _start(self, t: dict, now: datetime, kind: str, number: str = "") -> dict:
         t["status"] = RUNNING
         t["attempts"].append({"time": now.astimezone(_tz(self.cfg)).isoformat(timespec="seconds"), "kind": kind,
-                              "outcome": ""})
+                              "number": number or t["number"], "outcome": ""})
+        if kind == "call":
+            t["tries"] = t.get("tries", 0) + 1
         self._save()
         self._changed(t)
         return dict(t)
@@ -660,7 +736,7 @@ class TaskStore:
                 self._save()
                 self._changed(t)
                 return dict(t)
-            calls = sum(a["kind"] == "call" for a in t["attempts"])
+            calls = t["tries"]  # dialed since the last planned call (#92); calls back are not counted
             again = now + timedelta(minutes=max(1, int(self.cfg.task_retry_minutes or 15)))
             if calls <= t["retries"] and again < datetime.fromisoformat(t["not_after"]):
                 t["status"] = PLANNED
@@ -673,6 +749,43 @@ class TaskStore:
                                  "summary": f"Nobody was reached after {calls} attempt(s) ({outcome})."},
                              "not_reached")
             return dict(t)
+
+    def record_step(self, task_id: str, transcript, outcome: str = "talked", result: str = "") -> dict:
+        """A step in the task's history (#92) for its last call, which reached someone (talked, or a message was
+        left): direction, time, number, the transcript shortened, and what came of it. Returns the task."""
+        with self.lock:
+            t = self._find(task_id)
+            last = t["attempts"][-1] if t["attempts"] else {}
+            t["steps"].append({"kind": CALL_IN if last.get("kind") == "callback" else CALL_OUT,
+                               "time": last.get("time") or datetime.now(_tz(self.cfg)).isoformat(timespec="seconds"),
+                               "number": last.get("number") or t["number"], "outcome": outcome,
+                               "transcript": clip(transcript), "result": str(result or "").strip()[:MAX_TEXT]})
+            self._save()
+            return dict(t)
+
+    def set_contact(self, task_id: str, contact_id: str):
+        """The contact made for a task when it was planned (#93): the task points to it from now on."""
+        with self.lock:
+            t = self._find(task_id)
+            if t is not None and contact_id and t.get("contact_id") != contact_id:
+                t["contact_id"] = contact_id
+                self._save()
+
+    def rekey_contact(self, old: str, new: str) -> int:
+        """After two contacts were merged: the tasks of the one merged away point to the merged one."""
+        with self.lock:
+            moved = [t for t in self.tasks if old and t.get("contact_id") == old]
+            for t in moved:
+                t["contact_id"] = new
+            if moved:
+                self._save()
+            return len(moved)
+
+    def open_for(self, contact_id: str) -> dict | None:
+        """An open task (not final) of this contact; None if there is none."""
+        with self.lock:
+            return next((dict(t) for t in self.tasks if contact_id and t.get("contact_id") == contact_id
+                         and t["status"] not in FINAL), None)
 
     def finish(self, task_id: str, result: dict, outcome: str = "talked") -> dict:
         with self.lock:

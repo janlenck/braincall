@@ -631,7 +631,14 @@ def test_web_setting_per_caller(main):
 @pytest.fixture
 def planned(main, events, monkeypatch, tmp_path):
     """A fresh task store, a registered phone, and outbound() replaced: records calls, returns the next session."""
+    import contacts
     import tasks
+    # contacts made for tasks (#92) go to a file of this test; the live list is a copy, so other tests keep theirs
+    monkeypatch.setitem(main.cfg, "callers", list(main.cfg.callers))
+    book = contacts.Contacts(main.cfg, tmp_path / "contacts.json", in_use=main.contact_in_use)
+    book.items = main.contact_store.all()
+    monkeypatch.setattr(main, "contact_store", book)
+    monkeypatch.setattr(main.brain, "contacts", book)
     store = tasks.TaskStore(tmp_path / "tasks.json", main.cfg)
     store.on_change = main.announce_task
     monkeypatch.setattr(main, "task_store", store)
@@ -683,6 +690,30 @@ def test_due_task_is_called_followed_up_and_reported(main, planned):
     name, data = planned.events["events"][-1]
     assert name == "braincall_task_finished" and data["status"] == "done" and data["answers"] == {"Uhrzeit": "19:00"}
     assert not main.busy.locked()
+
+
+def test_a_call_that_reached_someone_becomes_a_step_of_the_task(main, planned):
+    """#92: the history keeps the call (direction, number, transcript, result); a try without an answer does not."""
+    task = planned.add(retries=1)
+    main.run_tasks()  # nobody answers
+    planned.sessions.append(talked("Seeblick: Ja, 19 Uhr geht.", "Claudine: Danke!"))
+    planned.store.claim(main.datetime.now().astimezone() + timedelta(hours=1))
+    main.settle_task(planned.store.get(task["id"]), planned.sessions.pop())
+    (step,) = planned.store.get(task["id"])["steps"]
+    assert (step["kind"], step["number"], step["outcome"]) == ("call_out", "045421234", "talked")
+    assert step["transcript"] == "Seeblick: Ja, 19 Uhr geht.\nClaudine: Danke!"
+    assert step["result"] == "Tisch um 19 Uhr reserviert."
+
+
+def test_an_open_task_keeps_its_contact_by_id(main, planned):
+    """#92: the contact of an open task cannot be deleted, found by its id even if its numbers changed."""
+    saved, _ = main.contact_store.save({"name": "Seeblick", "numbers": [{"number": "04542 1234"}]}, origin="task")
+    task = planned.add()
+    assert task["contact_id"] == saved["id"]
+    moved = {**saved, "numbers": [{"number": "04542 9999"}]}
+    assert main.contact_in_use(moved) == task["goal"]
+    planned.store.cancel(task["id"])
+    assert main.contact_in_use(moved) == ""
 
 
 def test_unanswered_task_call_is_retried_without_follow_up(main, planned):
@@ -851,7 +882,7 @@ def test_outbound_dials_the_complete_number_without_spaces(main, monkeypatch):
 
 def test_tasks_api(server, planned):
     assert server("GET", "/tasks", token=None)[0] == 401
-    status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Tisch reservieren",
+    status, task = server("POST", "/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "Tisch reservieren",
                                              "goal": "Reserve a table", "requester": "0151111", "call_back": True})
     assert status == 201 and task["status"] == "planned" and task["requester"]["name"] == "Jan Mobile"
     assert server("GET", "/tasks")[1]["tasks"][0]["id"] == task["id"]
@@ -878,7 +909,8 @@ def wait_for(check, tries=100):
 
 def test_every_status_change_is_announced(server, planned):
     """braincall_task_updated on planned, running, planned again and the end: Brain Assist's to-do list follows."""
-    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x", "retries": 1})
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "x", "goal": "x",
+                                                 "retries": 1})
     assert status == 201
     store, now = planned.store, datetime.now().astimezone()
     store.claim(now)
@@ -903,15 +935,15 @@ def test_tasks_api_calls_a_person_by_name_for_a_home_assistant_user(server, plan
     assert status == 201 and (task["number"], task["name"]) == ("0170222", "Maryna")
     assert task["requester"] == {"number": "0151111", "name": "Jan", "ha_user": "Jan"} and task["call_back"] is True
 
-    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
-                                                 "requester_user_id": "u-77", "requester_user_name": "Flur",
-                                                 "call_back": True})
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "x",
+                                                 "goal": "x", "requester_user_id": "u-77",
+                                                 "requester_user_name": "Flur", "call_back": True})
     assert status == 201 and task["call_back"] is False  # nobody to call back
     assert task["requester"] == {"number": "", "name": "Flur", "ha_user": "u-77"}
 
     # an unlisted number next to a Home Assistant user: the user asks, not the owner
-    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
-                                                 "requester": "0999", "requester_user_name": "Flur"})
+    status, task = server("POST", "/api/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "x",
+                                                 "goal": "x", "requester": "0999", "requester_user_name": "Flur"})
     assert status == 201 and task["requester"] == {"number": "", "name": "Flur", "ha_user": "Flur"}
 
     assert server("POST", "/api/tasks", {"name": "Küche", "task": "x", "goal": "x"}) == (
@@ -924,9 +956,13 @@ def test_tasks_api_refuses(server, planned):
     assert server("POST", "/tasks", {"number": "04542 1234"}) == (400, {"error": "no task"})
     assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
                                      "not_after": "2020-01-01T10:00"})[0] == 400
+    # every task has a contact (#92): a number nobody has needs a name
+    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x"}) == (
+        400, {"error": "the number belongs to no contact: give the name of the person or business (it is saved as "
+                       "a contact)"})
     planned.store.block("04542 1234")
-    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x"})[0] == 409
-    assert server("POST", "/tasks", {"number": "04542 1234", "task": "x", "goal": "x",
+    assert server("POST", "/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "x", "goal": "x"})[0] == 409
+    assert server("POST", "/tasks", {"number": "04542 1234", "name": "Seeblick", "task": "x", "goal": "x",
                                      "override_do_not_call": True})[0] == 201
     assert server("POST", "/call", {"number": "0900 123"})[0] == 400
     assert planned.store.all()[0]["status"] == "planned" and len(planned.store.all()) == 1
@@ -934,9 +970,11 @@ def test_tasks_api_refuses(server, planned):
 
 def test_tasks_api_plans_free_text_with_claude(server, planned, main, monkeypatch):
     monkeypatch.setattr(main.brain, "plan", lambda text, number, name: {
-        "number": "0999", "goal": "Reserve a table for 4", "may_share": ["Name Jan Lenck"], "retries": 1})
+        "number": "0999", "name": "Restaurant Seeblick", "goal": "Reserve a table for 4",
+        "may_share": ["Name Jan Lenck"], "retries": 1})
     status, task = server("POST", "/tasks", {"number": "04542 1234", "task": "Reservier einen Tisch für 4"})
     assert status == 201 and task["number"] == "045421234"  # the number given is never replaced, only spaces drop
+    assert task["name"] == "Restaurant Seeblick" and task["contact_id"]  # the plan named it: a contact for it
     assert task["goal"] == "Reserve a table for 4" and task["may_share"] == ["Name Jan Lenck"] and task["retries"] == 1
 
 

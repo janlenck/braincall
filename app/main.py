@@ -100,7 +100,8 @@ def task_event(task: dict) -> dict:
     return {"id": task["id"], "status": task["status"], "number": task["number"], "name": task["name"],
             "goal": task["goal"], "requester": task["requester"]["name"],
             "requester_ha_user": task["requester"].get("ha_user", ""), "next_try": task.get("next_try", ""),
-            "attempts": len(task["attempts"])}
+            "attempts": len(task["attempts"]), "contact": task.get("contact_id", ""),
+            "steps": len(task.get("steps") or [])}
 
 
 def announce_task(task: dict):
@@ -121,7 +122,9 @@ def contact_in_use(contact: dict) -> str:
     now = datetime.now(timezone.utc)
     for t in task_store.all():
         waiting = t["status"] == tasks.LEFT and now <= datetime.fromisoformat(t["not_after"])
-        if (t["status"] not in tasks.FINAL or waiting) and config.has_number(contact, t["number"], cfg.country_code):
+        mine = (t["contact_id"] == contact.get("id") if t.get("contact_id")
+                else config.has_number(contact, t["number"], cfg.country_code))  # a task from before #92
+        if (t["status"] not in tasks.FINAL or waiting) and mine:
             return t.get("goal") or t.get("name") or t["id"]
     return ""
 
@@ -133,6 +136,8 @@ def contact_merged(other: dict, merged: dict):
                          "numbers": [n["number"] for n in config.entry_numbers(other)]}, merged["id"])
     if moved:
         log.info("Memory: %d summaries of %s now belong to %s", moved, other["name"], merged["name"])
+    if task_store is not None and task_store.rekey_contact(other["id"], merged["id"]):
+        log.info("Tasks of %s now belong to %s", other["name"], merged["name"])
 
 
 contact_store = contacts.Contacts(cfg, in_use=contact_in_use, on_merge=contact_merged)
@@ -528,6 +533,9 @@ def settle_task(task: dict, session):
                 status = tasks.LEFT  # the phone system knows; the follow-up only wrote the summary
             elif status == tasks.LEFT and not task["leave_message"]:
                 status = "not_reached"  # no message was to be left: what was said there does not end the task
+            if status != "not_reached":  # someone was reached, or a message was left: a step of the history (#92)
+                task_store.record_step(task["id"], session.transcript,
+                                       "message left" if status == tasks.LEFT else "talked", result.get("summary"))
             if status == "not_reached":
                 done = task_store.not_reached(task["id"], "mailbox", now)
             elif status == tasks.LEFT:
@@ -1014,10 +1022,11 @@ class Handler(BaseHTTPRequestHandler):
         if not str(body.get("task") or "").strip():
             return self._send(400, {"error": "no task"})
         caller = find_caller(number, wildcard=False)
-        fixed = {**body, "number": number, "name": name or caller_name(caller)}
+        name = name or caller_name(caller)
+        fixed = {**body, "number": number, **({"name": name} if name else {})}  # no name: the plan may find one
         if not body.get("goal"):
             try:
-                fixed = {**brain.plan(fixed["task"], number, fixed["name"]), **fixed}  # what was given wins
+                fixed = {**brain.plan(fixed["task"], number, fixed.get("name", "")), **fixed}  # what was given wins
             except Exception as e:  # noqa: BLE001
                 log.warning("Planning the task failed: %s", e)
                 return self._send(502, {"error": f"planning failed: {e}"})
@@ -1032,13 +1041,20 @@ class Handler(BaseHTTPRequestHandler):
         task, error = tasks.build(cfg, fixed, requester, datetime.now().astimezone())
         if task is None:
             return self._send(400, {"error": error})
+        if caller is None and not task["name"]:  # every task has a contact (#92), and a contact a name
+            return self._send(400, {"error": "the number belongs to no contact: give the name of the person or "
+                                             "business (it is saved as a contact)"})
         new_contact, refusal = brain.contact_for_task(task, caller is not None)
         if refusal:  # e.g. the name belongs to another contact: refused like by voice, nothing stored
             return self._send(409, {"error": refusal.removeprefix("Not planned: ")})
         if body.get("override_do_not_call"):
             task_store.unblock(number)
-        if new_contact:
-            contact_store.save(new_contact, origin="task")
+        if new_contact:  # saved first: the task points to it (#92)
+            saved, errors = contact_store.save(new_contact, origin="task")
+            if saved:
+                task["contact_id"] = saved["id"]
+            else:
+                log.info("Contact for task %s not saved: %s", task["id"], contacts.problems(errors))
         self._send(201, task_store.add(task))
 
     def do_POST(self):  # noqa: N802

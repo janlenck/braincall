@@ -106,12 +106,13 @@ def plan_twice(brain, tmp_path, **inp):
     brain.cfg["outbound_allowed_regex"] = ""
     brain.tasks = tasks.TaskStore(tmp_path / "tasks.json", brain.cfg)
     store = assist.Conversations()
+    people = brain.contacts.all()  # the contacts with their ids, as the live list has them
     events, fake, _ = run(brain, {"text": "Ruf im Restaurant an", "user_name": "Jan"},
-                          message(plan(**inp), stop="tool_use"), message("Soll ich?"), store=store, callers=PEOPLE)
+                          message(plan(**inp), stop="tool_use"), message("Soll ich?"), store=store, callers=people)
     read_back = tool_result(fake, "p1")
     events, fake, _ = run(brain, {"text": "Ja", "conversation_id": events[0]["conversation_id"], "user_name": "Jan"},
                           message(plan("p2", **inp, confirmed=True), stop="tool_use"), message("Gut."),
-                          store=store, callers=PEOPLE)
+                          store=store, callers=people)
     return read_back, tool_result(fake, "p2")
 
 
@@ -127,6 +128,27 @@ def test_a_planned_call_to_a_new_number_creates_its_contact(brain, tmp_path):
 def test_a_planned_call_to_a_known_number_creates_nothing(brain, tmp_path):
     read_back, _ = plan_twice(brain, tmp_path, name="Walter", task="Frag nach dem Termin")
     assert "new contact" not in read_back and len(brain.contacts.all()) == len(PEOPLE) - 0
+
+
+def test_the_task_points_to_the_contact_made_for_it(brain, tmp_path):
+    """#92: the contact is saved before the task, so the task carries its id."""
+    plan_twice(brain, tmp_path, number="04542 5555", name="Restaurant Seeblick", task="Tisch für 4 reservieren")
+    (task,) = brain.tasks.all()
+    assert task["contact_id"] == brain.contacts.by_name("Restaurant Seeblick")["id"]
+    assert task["channels"] == ["call"] and task["steps"] == [] and task["tries"] == 0
+
+
+def test_a_known_number_points_to_its_contact_under_its_name(brain, tmp_path):
+    plan_twice(brain, tmp_path, number="+49 4542 81234", name="Jans Festnetz", task="Frag nach dem Termin")
+    (task,) = brain.tasks.all()
+    jan = brain.contacts.by_number("04542 81234")
+    assert task["contact_id"] == jan["id"] and task["name"] == jan["name"]
+
+
+def test_a_number_nobody_has_needs_a_name(brain, tmp_path):
+    """#92: every task has a contact, so an unknown number without a name is not planned."""
+    read_back, _ = plan_twice(brain, tmp_path, number="04542 5555", task="Tisch reservieren")
+    assert read_back.startswith("Not planned: the number belongs to no contact") and brain.tasks.all() == []
 
 
 def test_a_taken_name_with_another_number_is_asked_about(brain, tmp_path):
