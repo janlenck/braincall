@@ -1,5 +1,6 @@
-ARG BUILD_FROM=python:3.12-slim
-FROM ${BUILD_FROM}
+# the base image is fixed here, build.yaml is deprecated: whatever BUILD_FROM the Supervisor passes is not used;
+# python:3.12-slim exists for aarch64 and amd64, Docker picks the right one
+FROM python:3.12-slim
 
 # Home Assistant passes the add-on version; the code of the matching release tag is built into the image
 ARG BUILD_VERSION
