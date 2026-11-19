@@ -38,6 +38,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 import assist  # noqa: E402
 import config  # noqa: E402
 import contacts  # noqa: E402
+import inbox  # noqa: E402
 import discovery  # noqa: E402
 import fritz_sip  # noqa: E402
 import logfilter  # noqa: E402
@@ -92,6 +93,9 @@ speech = Speech(cfg)
 brain = Brain(cfg, ha)
 phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
+# the calls taken for the owner (#104): told when they call in, messages tool; whatever caller_memory is
+owner_inbox = inbox.Inbox(_LOGDIR / inbox.FILE, cfg.country_code, cfg.timezone)
+brain.inbox = owner_inbox
 task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks and PHONE else None
 brain.tasks = task_store
 
@@ -114,6 +118,20 @@ def announce_task(task: dict):
 
 if task_store is not None:
     task_store.on_change = announce_task
+
+
+def announce_messages():
+    """Inbox.on_change: braincall_messages_updated with the counts, in the background (brainassist#9 refreshes its
+    call list on it; the entries come from GET /api/messages)."""
+    def fire():
+        try:
+            ha.fire_event("braincall_messages_updated", owner_inbox.counts())
+        except Exception:  # noqa: BLE001
+            log.exception("Announcing the messages failed")
+    threading.Thread(target=fire, name="messages event", daemon=True).start()
+
+
+owner_inbox.on_change = announce_messages
 
 
 def contact_in_use(contact: dict) -> str:
@@ -206,6 +224,7 @@ GUEST = frozenset({"guest"})
 SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзвінок від {who}"}
 MISSED_TITLE = {"de": "Verpasster Anruf von {who}", "en": "Missed call from {who}",
                 "uk": "Пропущений дзвінок від {who}"}
+NEW_CONTACT = {"de": "Neu in den Kontakten: {name}", "en": "New contact: {name}", "uk": "Новий контакт: {name}"}
 MISSED_TEXT = {"de": "Die Leitung war besetzt (ein anderes Gespräch lief), der Anruf wurde abgewiesen.",
                "en": "The line was busy (another call was going on), the call was rejected.",
                "uk": "Лінія була зайнята (тривала інша розмова), дзвінок відхилено."}
@@ -261,11 +280,12 @@ def previous(number: str, access, caller: dict | None = None) -> str:
     """What Claude remembers of earlier calls and Assist conversations with this caller, for the intro
     (memory.note). caller: the entry of the number, so the notes of its Home Assistant user are found too."""
     try:
-        return memory.note(calls.recent(memory.who(caller, number), access), OWNER_FIRST or "the owner",
+        text = memory.note(calls.recent(memory.who(caller, number), access), OWNER_FIRST or "the owner",
                            cfg.timezone, calls.enabled)
     except Exception:  # noqa: BLE001  the memory must never stop a call
         log.exception("Reading the caller memory failed")
-        return ""
+        text = ""
+    return text + (owner_inbox.note(OWNER_FIRST or "the owner") if "admin" in access else "")
 
 
 def same_person(whom: dict) -> list:
@@ -287,8 +307,9 @@ def same_person(whom: dict) -> list:
 
 def recall(person: dict) -> str:
     """What Claude remembers of the person of an Assist conversation (assist.identify), for its first note."""
-    return memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
+    text = memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
                        calls.enabled, subject=assist.subject(person))
+    return text + (owner_inbox.note(OWNER_FIRST or "the owner", phone=False) if "admin" in person["access"] else "")
 
 
 def after_assist(conv):
@@ -366,37 +387,101 @@ def report(answered: bool, number: str, started: float, session=None, message=""
     })
 
 
+def for_owner(caller, inbound: bool = True) -> bool:
+    """Whether the owner hears about this incoming call (notification and messages, #104): everyone without admin
+    rights, unless their contact says notify: false (or an admin's says notify: true)."""
+    access = caller["access"] if caller else GUEST
+    notify = caller.get("notify") if caller else None
+    return inbound and (notify if notify is not None else "admin" not in access)
+
+
+def save_caller(number: str, name: str, rule) -> tuple[dict | None, str]:
+    """An unknown caller (the "*" entry) who gave their name becomes a contact (#104) with what that entry allowed
+    (never admin, never more), so the next call knows them and the owner can have them called back by name.
+    Returns (the new contact or None, a note for the owner's messages: what was done)."""
+    name = " ".join(str(name or "").split())
+    if not name or not norm(number):
+        return None, ""
+    if contact_store.by_number(number):
+        return None, ""
+    twin = contact_store.by_name(name)
+    if twin:
+        return None, (f"not saved as a contact: there already is a contact {twin['name']} with another number "
+                      "(perhaps a new number of theirs, contact_edit can add it)")
+    rule = rule or {}
+    # the same as before, only with a name: rights, notify and instructions of the "*" entry, and never the web
+    # (web_for gives "*" none; a contact with read rights would otherwise get it by default)
+    data = {"name": name, "numbers": [{"number": number}],
+            "access": sorted(set(rule.get("access") or ()) - {"admin", "guest"}),
+            "instructions": rule.get("instructions") or "", "web": False}
+    if isinstance(rule.get("notify"), bool):
+        data["notify"] = rule["notify"]
+    saved, errors = contact_store.save(data, origin="call")
+    if errors:
+        log.info("Caller %s (%s) not saved as a contact: %s", name, number, contacts.problems(errors))
+        return None, f"not saved as a contact ({contacts.problems(errors)})"
+    return saved, "saved as a new contact (name as understood on the phone; contact_edit can correct it)"
+
+
 def after_call(answered: bool, number: str, started: float, ended: float, session, message: str, caller,
-               inbound: bool):
-    """Summary, event, notification and call note; runs after the line is free again."""
+               inbound: bool, for_task: bool = False):
+    """Summary, event, notification, the owner's messages and call note; runs after the line is free again.
+    for_task: an incoming call that went on with a task (a call back we waited for): reported with the task."""
     try:
         access = caller["access"] if caller else GUEST
         summary = ""
+        notify = for_owner(caller, inbound)
+        owner_hears = notify and not for_task  # a task's call back is reported with the task, not as a message
         if session and session.caller_turns:
             lang = cfg.language if cfg.language in SUMMARY_TITLE else "de"
             name = caller_name(caller)
+            unknown = inbound and caller is not None and not name  # the "*" entry: may become a contact
+            talked = session.caller_turns >= 2 and not (session.mailbox or session.unanswered)
             # a contact's language follows what they spoke last (#93); not for a mailbox or a very short call
-            spoken = {} if caller and caller.get("id") and session.caller_turns >= 2 and not (
-                session.mailbox or session.unanswered) else None
+            spoken = {} if talked and ((caller and caller.get("id")) or unknown) else None
+            facts = {} if owner_hears else None  # name, call back, when (#104)
             try:
                 summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
                                           session.actions, lang, outbound=not inbound, mailbox=session.mailbox,
                                           unanswered=session.unanswered,
-                                          **({"spoken": spoken} if spoken is not None else {}))
+                                          **({"spoken": spoken} if spoken is not None else {}),
+                                          **({"facts": facts} if facts is not None else {}))
             except Exception as e:  # noqa: BLE001
                 log.warning("Summary failed: %s", e)
-            if spoken and spoken.get("language"):
+            facts = facts or {}
+            contact, note = None, ""
+            if unknown and owner_hears and facts.get("name"):
                 try:
-                    contact_store.set_language(caller["id"], spoken["language"])
+                    contact, note = save_caller(number, facts["name"], caller)
+                except Exception:  # noqa: BLE001  the summary and the message still go out
+                    log.exception("Saving the caller %s as a contact failed", number)
+            target = (contact or {}).get("id") or (caller.get("id") if caller and name else "")
+            if spoken and spoken.get("language") and target:
+                try:
+                    contact_store.set_language(target, spoken["language"])
                 except OSError as e:
                     log.warning("Contacts: storing the language failed: %s", e)
-            notify = caller.get("notify") if caller else None
-            if inbound and (notify if notify is not None else "admin" not in access):
-                label = caller_label(caller, number)
+            if notify:
+                label = caller_label(caller, number) or facts.get("name", "")
                 title = SUMMARY_TITLE[lang].format(who=f"{label} ({number})" if label else number)
                 text = summary or "\n".join(session.transcript)[-1500:]
+                if contact:
+                    text += "\n" + NEW_CONTACT[lang].format(name=contact["name"])
                 for service in cfg.notify_services or []:
                     ha.notify(str(service), title, text)
+            if owner_hears:
+                try:
+                    owner_inbox.add(number, summary or "\n".join(session.transcript)[-inbox.MAX_SUMMARY:],
+                                    name=name or facts.get("name", ""), contact=target,
+                                    callback=facts.get("callback", False), when=facts.get("when", ""), note=note,
+                                    at=datetime.fromtimestamp(ended, timezone.utc), duration=ended - started)
+                except Exception:  # noqa: BLE001
+                    log.exception("Saving the message in %s failed", owner_inbox.path)
+            elif not inbound and not (session.mailbox or session.unanswered):
+                try:  # we talked with them: a call back they asked for before this call is done
+                    owner_inbox.settle(number, datetime.fromtimestamp(ended, timezone.utc))
+                except Exception:  # noqa: BLE001
+                    log.exception("Settling the call backs to %s failed", number)
             if summary:
                 log.info("Summary: %s", summary)
                 try:
@@ -417,9 +502,11 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
         log.exception("After-call handling failed")
 
 
-def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
+def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool,
+           for_task: bool = False):
     threading.Thread(target=after_call, name="after call", daemon=True,
-                     args=(answered, number, started, time.time(), session, message, caller, inbound)).start()
+                     args=(answered, number, started, time.time(), session, message, caller, inbound,
+                           for_task)).start()
 
 
 # ---------------------------------------------------------------------- line state (#100)
@@ -732,14 +819,15 @@ def rejected_busy(call, number: str, caller):
         pass
     try:
         report(False, number, time.time(), message="rejected: line busy", caller=caller)
-        access = caller["access"] if caller else GUEST
-        notify = caller.get("notify") if caller else None
-        if notify if notify is not None else "admin" not in access:
+        if for_owner(caller):
             lang = cfg.language if cfg.language in MISSED_TITLE else "de"
             label = caller_label(caller, number)
             title = MISSED_TITLE[lang].format(who=f"{label} ({number})" if label else number)
             for service in cfg.notify_services or []:
                 ha.notify(str(service), title, MISSED_TEXT[lang])
+            owner_inbox.add(number, "missed call: the line was busy, no message", name=caller_name(caller),
+                            contact=(caller.get("id") or "") if caller and caller_name(caller) else "",
+                            kind=inbox.MISSED)
     except Exception:  # noqa: BLE001
         log.exception("Reporting the rejected call from %s failed", number)
 
@@ -794,7 +882,8 @@ def on_incoming(call):
         log.exception("Incoming call failed")
     finally:
         set_line(IDLE)
-        finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True)
+        finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True,
+               for_task=bool(task))
         busy.release()
         if task:
             threading.Thread(target=settle_task, args=(task, session), name="task", daemon=True).start()
@@ -1117,6 +1206,49 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("Brain Assist request failed")
             emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
 
+    def _messages(self) -> bool:
+        """The owner's messages (#104) for Brain Assist's call list (brainassist#9). True if the request was one of
+        them (and is answered). GET /api/messages?days=7&open=1: the entries, newest first, with the counts;
+        PATCH /api/messages/<id> {"heard": true|false, "done": true|false}; DELETE /api/messages/<id>."""
+        path = urlsplit(self.path).path
+        if not (path == "/api/messages" or path.startswith("/api/messages/")):
+            return False
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return True
+        entry_id = path[len("/api/messages/"):] if path.startswith("/api/messages/") else ""
+        if self.command == "GET" and not entry_id:
+            query = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            try:
+                days = float(query["days"]) if query.get("days") else None
+            except ValueError:
+                days = -1.0
+            if days is not None and not (math.isfinite(days) and 0 < days <= inbox.OPEN_DAYS):
+                self._send(400, {"error": f"days must be a number from 0 to {inbox.OPEN_DAYS}"})
+                return True
+            items = owner_inbox.recent(days) if days is not None else owner_inbox.entries()
+            if query.get("open") in ("1", "true", "yes"):
+                items = [e for e in items if inbox.is_open(e)]
+            self._send(200, {"messages": items[::-1], **owner_inbox.counts()})
+            return True
+        if not entry_id or self.command not in ("PATCH", "DELETE"):
+            self._send(404 if not entry_id else 405, {"error": "not found" if not entry_id else "method not allowed"})
+            return True
+        if self.command == "DELETE":
+            gone = owner_inbox.delete(entry_id)
+            self._send(200 if gone else 404, {"deleted": entry_id} if gone else {"error": "not found"})
+            return True
+        body = self._body()
+        if body is None:
+            return True
+        change = {k: body[k] for k in ("heard", "done") if k in body}
+        if not change or not all(isinstance(v, bool) for v in change.values()):
+            self._send(400, {"error": "give heard and/or done as true or false"})
+            return True
+        entry = owner_inbox.update(entry_id, **change)
+        self._send(200 if entry else 404, entry or {"error": "not found"})
+        return True
+
     def _task_id(self) -> str:
         """The id in /tasks/<id>; "" for other paths."""
         return self.path[len("/tasks/"):] if self.path.startswith("/tasks/") and task_store is not None else ""
@@ -1134,7 +1266,7 @@ class Handler(BaseHTTPRequestHandler):
                          "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
 
     def do_GET(self):  # noqa: N802
-        if self._contacts():
+        if self._contacts() or self._messages():
             return
         self._route()
         if self.path == "/health":  # the only path without token: nothing but the status (503: unhealthy, #37)
@@ -1145,7 +1277,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"api": assist.API_VERSION, "version": config.version(), "phone": PHONE,
                                     "assistant": cfg.assistant_name or "Claude",
                                     "home_assistant": bool(ha.enabled), "tasks": task_store is not None,
-                                    "line": True})
+                                    "line": True, "messages": True})
         if self.path == "/api/status":  # the line with the current call (#100); /health has no number or name
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -1182,12 +1314,16 @@ class Handler(BaseHTTPRequestHandler):
                  ", ".join(f"{k} {v}" for k, v in whom.items() if v))
         self._send(200, {"forgotten": forgotten})
 
+    def do_PATCH(self):  # noqa: N802
+        if not self._messages():
+            self._send(404, {"error": "not found"})
+
     def do_PUT(self):  # noqa: N802
         if not self._contacts():
             self._send(404, {"error": "not found"})
 
     def do_DELETE(self):  # noqa: N802
-        if self._contacts():
+        if self._contacts() or self._messages():
             return
         self._route()
         if urlsplit(self.path).path == "/api/memory":
@@ -1324,7 +1460,7 @@ class IngressHandler(Handler):
         if not self._contacts():
             self._send(404, {"error": "not found"})
 
-    do_GET = do_POST = do_PUT = do_DELETE = _only_page
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _only_page
 
 
 def check_ha_admin():

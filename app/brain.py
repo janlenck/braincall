@@ -10,6 +10,7 @@ import anthropic
 
 import config
 import contacts as contacts_mod
+import inbox as inbox_mod
 import tasks as tasks_mod
 import web as web_mod
 
@@ -440,9 +441,29 @@ TOOL_CONTACT_EDIT = {
         "required": ["action", "name"],
     },
 }
+TOOL_MESSAGES = {
+    "name": "messages",
+    "description": "The calls you took for {owner} (and calls missed while the line was busy): who called, what they "
+                   "want, whether they want a call back. action new: the calls not heard yet and the open call "
+                   "backs. recent: all calls of the last days (default 7), also those already heard or done. "
+                   "heard: the entries ids were told to {owner} (only the ones you really told). done: the "
+                   "entries ids are dealt with (called back, or {owner} says it is settled). To call someone back "
+                   "for {owner}, plan the call with plan_call and their number.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["new", "recent", "heard", "done"]},
+            "days": {"type": "integer", "description": "recent: how many days back (default 7)"},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "heard, done: the ids of the entries"},
+            "confirmed": {"type": "boolean", "description": "done after web content: only true after the caller "
+                                                             "said yes"},
+        },
+        "required": ["action"],
+    },
+}
 # recorded for the summary after the call, and only run for words the caller really finished saying
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit",
-            "task_edit")
+            "task_edit", "messages")
 ASKING = ("plan_call", "contact_edit", "task_edit")  # read back and stored only after a yes, checked in code
 ADMIN = frozenset({"admin"})
 MAX_FOLLOW_REQUESTS = 12   # requests of one follow-up after a planned call
@@ -643,10 +664,12 @@ class Brain:
             self.tools += [TOOL_SHOPPING, TOOL_SHOPPING_EDIT]
         owner = (cfg.owner_name or "").strip().split(" ")[0] or "the owner"
         self.tool_busy = {**TOOL_BUSY, "description": TOOL_BUSY["description"].replace("{owner}", owner)}
+        self.tool_messages = {**TOOL_MESSAGES, "description": TOOL_MESSAGES["description"].replace("{owner}", owner)}
         self.web_budget = web_mod.Budget(cfg)
         self.tasks = None  # tasks.TaskStore while planned calls are on (set by main)
         self.contacts = None  # contacts.Contacts (set by main): contact_edit for admins
         self.shopping = None  # shopping.Shopping while the automatic shopping list is on (set by main)
+        self.inbox = None  # inbox.Inbox: the calls taken for the owner, messages tool for admins (set by main)
 
     def tools_for(self, access, web=None, messages=None, limits=None, grants=None) -> list:
         """The tools a caller gets: the code decides what is allowed, not the prompt.
@@ -668,6 +691,8 @@ class Brain:
             tools += [tasks_mod.TOOL_PLAN_CALL, tasks_mod.TOOL_TASK_EDIT]
         if self.contacts is not None and "admin" in access:
             tools.append(TOOL_CONTACT_EDIT)
+        if self.inbox is not None and "admin" in access:
+            tools.append(self.tool_messages)
         if web_mod.allowed(self.cfg, access, web):
             search, fetch, _ = limits or web_mod.turn_limits(self.cfg, self.web_budget, messages or [])
             tools = tools + web_mod.tools(self.cfg, search, fetch)
@@ -788,10 +813,43 @@ class Brain:
                                             i.get("data") or {}, bool(i.get("confirmed")))
             if block.name == "ha_state":
                 return self.ha.get_state(i.get("entity_id", ""))
+            if block.name == "messages":
+                return self._messages(i)
         except Exception as e:  # noqa: BLE001
             log.warning("Tool %s failed: %s", block.name, e)
             return f"Error: {e}"
         return "Unknown tool."
+
+    def _messages(self, i: dict) -> str:
+        """messages (#104): the calls taken for the owner. Only heard and done change them: reading the list
+        marks nothing, so a message the owner was not told comes again."""
+        action = i.get("action") or "new"
+        if action in ("heard", "done"):
+            ids = [str(x) for x in i.get("ids") or [] if str(x).strip()]
+            if not ids:
+                return f"Nothing {action}: give the ids of the entries (messages new or recent shows them)."
+            if action == "heard":
+                count = self.inbox.heard(ids)
+                return (f"Noted as heard: {count}." if count
+                        else "Nothing changed: no new entry with these ids (they may be heard already).")
+            closed = self.inbox.done(ids)
+            if not closed:
+                return "Nothing changed: no open entry with these ids (messages recent shows them)."
+            return "Done: " + "; ".join(self.inbox.line(e) for e in closed)
+        if action == "recent":
+            try:
+                days = max(1, min(int(i.get("days") or 7), inbox_mod.OPEN_DAYS))
+            except (TypeError, ValueError):
+                days = 7
+            items = self.inbox.recent(days)
+            if not items:
+                return f"No calls for the owner in the last {days} days."
+            return f"Calls of the last {days} days, oldest first:\n" + "\n".join(self.inbox.line(e) for e in items)
+        items = self.inbox.open()
+        if not items:
+            return "Nothing new and no open call backs."
+        return ("New calls and open call backs, oldest first. After telling them, call messages heard with the ids "
+                "you told; open call backs stay until done:\n" + "\n".join(self.inbox.line(e) for e in items))
 
     def _granted_days(self, grants: dict) -> tuple:
         """(days, start) for ha_busy_times: the days of the grant, never before today (in the configured
@@ -1162,6 +1220,8 @@ class Brain:
         Returns "" (go ahead) or the refusal for Claude."""
         if block.name not in MUTATING or block.name in ASKING or not web_mod.has_content(messages):
             return ""  # plan_call, contact_edit and task_edit always ask first, e.g. for a number found on the web
+        if block.name == "messages" and (block.input or {}).get("action") != "done":
+            return ""  # reading the messages, or noting them as told, changes nothing a web page could misuse
         pending = counters.setdefault("web_confirm", {})
         key = self._confirm_key(block)
         if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,
@@ -1354,12 +1414,15 @@ class Brain:
 
     def summarize(self, transcript: list, caller: str, actions: list, language: str = "de",
                   outbound: bool = False, mailbox: bool = False, channel: str = "phone",
-                  unanswered: bool = False, spoken: dict | None = None) -> str:
+                  unanswered: bool = False, spoken: dict | None = None, facts: dict | None = None) -> str:
         """Short summary of a finished call for the owner, translated into their language.
         caller: the other party; outbound: the assistant made the call; mailbox: the phone system recognized a
         mailbox announcement (CallSession.mailbox); unanswered: an outbound call in which the other side answered
         nothing the assistant said (CallSession.unanswered). channel "voice" or "text": a conversation in Brain
-        Assist instead of a call (caller: who asked, and from which device)."""
+        Assist instead of a call (caller: who asked, and from which device).
+        spoken: filled with the language the caller spoke ({"language": "en"}, "" if unclear).
+        facts: filled for the owner's messages (#104), from an incoming call: {"name": the caller's name as they
+        gave it ("" if not), "callback": whether they want a call back, "when": when it suits them ("" if not said)}."""
         owner = (self.cfg.owner_name or "").strip() or "the owner"
         name = self.cfg.assistant_name or "Claude"
         if channel in ASSIST_HEAD:
@@ -1408,6 +1471,12 @@ class Brain:
             prompt += ("\n\nAfter the summary, on a line of its own, write LANGUAGE: and the two-letter ISO 639-1 "
                        f"code of the language {caller} spoke for most of the call and at its end (e.g. LANGUAGE: "
                        "en), or LANGUAGE: none if unclear.")
+        if facts is not None:  # the owner's messages (#104)
+            prompt += ("\n\nAfter the summary, each on a line of its own, write NAME: and the caller's name as they "
+                       "gave it in the call (first and last name if both were said, spelled as in the transcript; "
+                       "none if they gave no name), CALLBACK: yes if the caller asked to be called back or agreed to "
+                       "it, otherwise no, and WHEN: when a call back suits them, in a few words in the language of "
+                       "the summary (none if not said).")
         msg = self.client.messages.create(model=self.cfg.claude_model, max_tokens=600,
                                           messages=[{"role": "user", "content": prompt}])
         text = "".join(b.text for b in msg.content if b.type == "text").strip()
@@ -1416,8 +1485,21 @@ class Brain:
             if found:
                 code = found.group(1).lower()
                 spoken["language"] = "" if code == "none" else code
-            text = re.sub(r"^\s*LANGUAGE:.*$", "", text, flags=re.M | re.I).strip()
-        return text
+        if facts is not None:
+            facts.update(self._facts(text))
+        return re.sub(r"^\s*(?:LANGUAGE|NAME|CALLBACK|WHEN):.*$\n?", "", text, flags=re.M | re.I).strip()
+
+    @staticmethod
+    def _facts(text: str) -> dict:
+        """NAME, CALLBACK and WHEN from the end of a summary (summarize with facts)."""
+        def value(key: str) -> str:
+            found = re.search(rf"^\s*{key}:[ \t]*(.*?)\s*$", text, re.M | re.I)
+            got = (found.group(1) if found else "").strip().strip("\"'„“”*").strip()
+            return "" if got.casefold() in ("none", "no", "-", "unknown", "keine", "keiner") and key != "CALLBACK" \
+                else got
+        callback = value("CALLBACK").casefold()
+        return {"name": value("NAME")[:80], "callback": callback.startswith(("yes", "ja", "так")),
+                "when": value("WHEN")[:120]}
 
     def classify_products(self, names: list) -> dict:
         """What kind of product each name of the shopping list is (rhythm list, #70): staple, consumable or

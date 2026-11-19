@@ -37,6 +37,7 @@ app/main.py ── SIP/RTP ──► FRITZ!Box ──► phone
 | `app/phrases.py` | fixed phrases (greetings, fillers, status phrases) and their cached audio |
 | `app/timing.py` | timing log per turn and per call |
 | `app/memory.py` | memory per person: summaries of earlier calls and Brain Assist conversations (`caller_memory`) |
+| `app/inbox.py` | the owner's messages: the calls taken for them, call backs open until done (`inbox.json`, `messages`) |
 | `app/web.py` | web search and web fetch: tool definitions, limits per answer and per day, usage log |
 | `app/shopping.py` | automatic shopping list: watches the list, removes what stayed checked, history (`shopping-history.jsonl`), `shopping_history` |
 | `app/rhythm.py` | rhythm list: recurring products with interval, self-repair, automatic adding, forecast, `shopping_rhythm` |
@@ -127,6 +128,12 @@ folder (add-on: its config folder, part of Home Assistant's backups), one entry 
 - **Contacts from planned calls:** planning a call to a number that is no contact yet saves it as a contact
   (`guest`, `origin: task`) with the yes to the plan, so a call back is recognized and "Ruf das Restaurant nochmal
   an" needs no search. A number the callee gives during the call is not saved without a request.
+- **Contacts from calls:** an unknown caller (the `"*"` entry) who gives their name is saved as a contact after the
+  call (`origin: call`) with what the `"*"` entry allowed: its rights (never `admin`), `notify` and
+  `instructions`, and no web (`"web": false`), so the next call knows them and "Ruf Frau
+  Muster zurück" works by name. The name is spelled as understood on the phone: the notification says
+  "Neu in den Kontakten: …", correct it on the contacts page or by voice. If a contact with that name already
+  exists (another number), nothing is saved and the message says so.
 - **Language:** `language` is the language a call with this person starts in, any two-letter code. After a call in
   which the person spoke another language for most of it and at its end, it is updated by itself (logged:
   `Contact Jan: language de → en`); the system language is left out.
@@ -158,6 +165,20 @@ folder (add-on: its config folder, part of Home Assistant's backups), one entry 
 - After an incoming call Claude writes a short summary in `language` (translated if the caller spoke another
   language) and sends it to everything in `notify_services`: notify entities like `notify.phone` or notify
   services like `notify.mobile_app_phone` or an SMTP notifier. Default: for every caller except `admin`; `"notify": true/false` per caller overrides it.
+- **Messages for the owner** (`logs/inbox.json`, whatever `caller_memory` says): every call that is notified is
+  also kept as a message, with who called, the summary, whether they want a call back and when it suits them;
+  calls rejected on a busy line too. When an `admin` calls in, Claude says right away what is new and which call
+  backs are open; "Hat jemand angerufen?", "Gibt es was Offenes?" and "Was war diese Woche?" are answered from the
+  messages (tool `messages`: new, recent, heard, done). A message counts as heard once Claude told it (only the
+  ones told; listing them marks nothing); a call back stays open until the owner says it is done or BrainCall
+  talked with that number on an outgoing call after the request (e.g. a planned call back; a mailbox does not
+  count). Marking them happens only for words the owner finished saying; closing a call back after web content
+  needs a yes, like every change. In Brain Assist the messages are only mentioned when asked. Messages are kept 30 days, an open call
+  back up to 90. A call back for a planned call's task is reported with the task, not as a message.
+  Home Assistant gets the same list through `GET /api/messages` (Brain Assist's call list, brainassist#9) and the
+  event `braincall_messages_updated` (`open`, `new`, `callbacks`) on every change; a call back ticked off there
+  (`PATCH /api/messages/<id>`) is done on the phone too. The list has every caller's summary: whoever sees the
+  entities in Home Assistant reads them.
 - `caller_memory` (default `"none"`): remembers the summary of each call and each
   [Brain Assist](#brain-assist) conversation per person in `logs/calls.jsonl` and gives the last three calls and
   the last three Assist conversations to Claude the next time, e.g. so Maryna does not have to repeat last
@@ -589,11 +610,14 @@ such requests now get `401`, add the header.
 | `GET /health` | status without token: `status` (`ok` / `unhealthy`), `problems`, `sip`, `busy`, `line`, `phone`, `time`; `503` when unhealthy |
 | `GET /api/status` | the line: `line` (`idle` / `ringing` / `dialing` / `in_call`), `sip`, `phone` and `call` (`number`, `caller_name`, `direction` `in`/`out`, `since`; `null` while idle) |
 | `POST /call` | call a number now: `{"message": "…", "number": "…"}` |
-| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant`, `tasks`, `line` (`true`: `/api/status` and `braincall_state` exist) |
+| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant`, `tasks`, `line` (`true`: `/api/status` and `braincall_state` exist), `messages` (`true`: `/api/messages` and `braincall_messages_updated` exist) |
 | `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |
 | `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
 | `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
 | `DELETE /api/memory?number=…` / `ha_user=…` / `ha_device=…` | forgets what is remembered of a person; answers `{"forgotten": n}` |
+| `GET /api/messages?days=7&open=1` | the owner's messages, newest first: `id`, `time` (end of the call), `number`, `kind` (`message` / `missed`), `name`, `contact`, `summary`, `callback`, `when`, `note`, `duration_s`, `heard` / `done` (time, missing while not); plus `open`, `new`, `callbacks`. `days` (up to 90) limits the age, `open=1` to what is new or an open call back |
+| `PATCH /api/messages/<id>` `{"done": true}` | sets or clears `heard` and `done` (`true` / `false`), e.g. a call back ticked off in Home Assistant; answers the entry |
+| `DELETE /api/messages/<id>` | removes a message |
 | `GET /contacts` | the contacts page (asks for the token once) |
 | `GET /api/contacts`, `POST /api/contacts`, `PUT` / `DELETE /api/contacts/<id>`, `POST /api/contacts/<id>/merge` `{"other": id}` | [contacts](#callers-and-permissions); a refused change answers `400 {"errors": [{"field", "code", …}]}`, deleting a contact an open planned call needs `409` |
 

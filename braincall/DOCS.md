@@ -59,6 +59,13 @@ After an incoming call a short summary (translated into the configured language)
 *Notify after calls*: notify entities (e.g. `notify.<phone>`) or notify services (e.g. `notify.mobile_app_<phone>`, an e-mail notifier). Default: for everyone except
 `admin`; *notify* per caller overrides it.
 
+*Messages:* every notified call is also kept for you (`inbox.json`): who called, what they want, whether they want
+a call back and when. When you call in as `admin`, the assistant tells you right away what is new and which call
+backs are open; ask "Hat jemand angerufen?" or "Gibt es was Offenes?" any time. Say "erledigt" when you called
+back; a conversation with that number on an outgoing call settles it too. An unknown caller who gives their name
+is saved as a contact (`guest`), so you can say "Ruf Frau Muster zurück"; the notification says so, so you can
+correct the spelling on the contacts page.
+
 *Memory per person* (`caller_memory`, default `none`): the summary of each call and each
 [Brain Assist](#brain-assist) conversation is kept per person in `calls.jsonl`, and the last three calls and
 last three Assist conversations are given to the assistant the next time, so nobody has to repeat themselves.
@@ -76,7 +83,8 @@ last three Assist conversations are given to the assistant the next time, so nob
   forget everything, delete the file.
 - Assist conversations are never announced, also not with *notify* `true`: notifications are for calls.
 
-Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), the
+Logs (`braincall.log`), call notes of unknown callers (`call-notes.txt`), the caller memory (`calls.jsonl`), your
+messages (`inbox.json`), the
 shopping history (`shopping-history.jsonl`) and the web usage of the day (`web-usage.json`) are in the add-on's own folder
 `/app_configs/98055a04_braincall` (Samba, File editor). It is part of the add-on's backup.
 
@@ -202,6 +210,11 @@ this state; `null` while idle). `sip` is the registration as the watchdog confir
 once it lasts longer than one watchdog round (30 s), the moment of re-registering every 2 minutes never.
 A call rejected on a busy line or from an unknown number does not change the line. `GET /api/status` (with the
 token) answers the same, `GET /health` has `line` without the call. Brain Assist shows this as entities.
+
+Every change of your messages (a new one, heard, done, deleted) fires `braincall_messages_updated` with `open`,
+`new` and `callbacks`. `GET /api/messages` (with the token) has the list; `PATCH /api/messages/<id>`
+`{"done": true}` ticks a call back off, also for the phone. Entities made from it show every caller's summary to
+everyone who can see them in Home Assistant.
 
 ## Brain Assist
 
