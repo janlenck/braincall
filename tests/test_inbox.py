@@ -35,9 +35,17 @@ def test_a_message_is_new_until_heard_and_a_call_back_stays_open_until_done(box)
 def test_an_outgoing_conversation_settles_the_call_backs_of_that_number(box):
     a = box.add("04541 111", "Rückruf bitte.", callback=True, now=NOW)
     other = box.add("0170 222", "Rückruf bitte.", callback=True, now=NOW)
-    assert [e["id"] for e in box.settle("+494541111", NOW)] == [a["id"]]
+    assert [e["id"] for e in box.settle("+494541111", NOW, NOW)] == [a["id"]]
     assert [e["id"] for e in box.open(NOW)] == [other["id"]]
-    assert box.settle("", NOW) == []
+    assert box.settle("", NOW, NOW) == []
+
+
+def test_a_call_back_asked_for_after_the_outgoing_call_stays_open(box):
+    """The after-call handling runs in parallel: the outgoing call may be settled after a later request."""
+    later = box.add("04541 111", "Bitte nochmal zurückrufen.", callback=True, at=NOW + timedelta(minutes=5),
+                    now=NOW + timedelta(minutes=5))
+    assert box.settle("04541 111", NOW, NOW + timedelta(minutes=6)) == []
+    assert [e["id"] for e in box.open(NOW + timedelta(minutes=6))] == [later["id"]]
 
 
 def test_old_entries_are_dropped_open_call_backs_kept_longer(box):
@@ -112,12 +120,17 @@ def ask(brain, access="admin", **inp) -> str:
                 if isinstance(b, dict) and b.get("type") == "tool_result")
 
 
-def test_the_owner_hears_the_new_messages_and_they_count_as_heard(brain, box):
+def test_only_the_messages_told_count_as_heard(brain, box):
     e = box.add("04541 111", "Möchte einen neuen Termin.", name="Erika Muster", callback=True)
-    box.add("0170 222", "Nur ein Gruß.", name="Max")
+    hi = box.add("0170 222", "Nur ein Gruß.", name="Max")
+    untold = box.add("0170 333", "Noch eine.", name="Moritz")
     out = ask(brain, action="new")
     assert out.startswith("New calls and open call backs") and "Erika Muster" in out and "Nur ein Gruß." in out
-    assert [x["id"] for x in box.open()] == [e["id"]]  # heard; the call back stays open
+    assert len(box.open()) == 3  # listing them marks nothing
+    assert ask(brain, action="heard", ids=[e["id"], hi["id"].upper()]) == "Noted as heard: 2."
+    assert [x["id"] for x in box.open()] == [e["id"], untold["id"]]  # the call back stays open, Moritz is new
+    assert ask(brain, action="heard", ids=[hi["id"]]).startswith("Nothing changed")
+    box.heard([untold["id"]])
     assert ask(brain, action="done", ids=[e["id"]]).startswith("Done: - id") and box.open() == []
     assert ask(brain, action="new") == "Nothing new and no open call backs."
 
@@ -125,9 +138,25 @@ def test_the_owner_hears_the_new_messages_and_they_count_as_heard(brain, box):
 def test_recent_lists_heard_and_done_calls_too(brain, box):
     e = box.add("04541 111", "Termin.", name="Erika Muster", callback=True)
     box.done([e["id"]])
+    box.add("0170 222", "Neu.", name="Max")
     out = ask(brain, action="recent", days=3)
     assert out.startswith("Calls of the last 3 days") and "wants a call back: done" in out
+    assert len(box.open()) == 1  # recent marks nothing either
     assert ask(brain, action="done", ids=[]).startswith("Nothing done: give the ids")
+    assert ask(brain, action="heard").startswith("Nothing heard: give the ids")
+
+
+def test_messages_changes_only_for_finished_words_and_done_asks_after_web_content(brain, box):
+    import brain as brain_mod
+    assert "messages" in brain_mod.MUTATING and "messages" not in brain_mod.ASKING
+    e = box.add("04541 111", "Termin.", name="Erika Muster", callback=True)
+    web = [{"role": "assistant", "content": [{"type": "web_fetch_tool_result", "content": {}}]}]
+    block = SimpleNamespace(name="messages", input={"action": "new"})
+    assert brain._web_gate(block, web, {}) == ""  # reading is never held back
+    block = SimpleNamespace(name="messages", input={"action": "heard", "ids": [e["id"]]})
+    assert brain._web_gate(block, web, {}) == ""
+    block = SimpleNamespace(name="messages", input={"action": "done", "ids": [e["id"]]})
+    assert brain._web_gate(block, web, {}) != ""  # a web page cannot close a call back
 
 
 def test_a_guest_cannot_use_the_messages_tool(brain, box):

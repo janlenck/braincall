@@ -10,11 +10,13 @@ owner's messages (#31).
   call back and when it suits them (the summary now also writes down name, call back and time). Calls rejected on a
   busy line too. Independent of `caller_memory`
 - When an `admin` calls in, Claudine says in her first answer what is new and which call backs are open. New tool
-  `messages` for `admin` (phone and Brain Assist): `new` (and marks them heard), `recent` (the last days, also heard
-  and done ones), `done`. A call back stays open until it is done or BrainCall talked with that number on an
-  outgoing call. In Brain Assist the messages are only mentioned when asked
-- An unknown caller (the `"*"` entry) who gives their name is saved as a contact (`origin: call`, the rights of the
-  `"*"` entry, never `admin`; on the contacts page "from a call"). The notification adds "Neu in den Kontakten: …";
+  `messages` for `admin` (phone and Brain Assist): `new`, `recent` (the last days, also heard and done ones),
+  `heard` (only the messages told), `done`. A call back stays open until it is done or BrainCall talked with that
+  number on an outgoing call after the request (not a mailbox). In Brain Assist the messages are only mentioned
+  when asked
+- An unknown caller (the `"*"` entry) who gives their name is saved as a contact (`origin: call`; on the contacts
+  page "from a call") with what the `"*"` entry allowed: its rights (never `admin`), `notify`, `instructions`, and
+  no web. The notification adds "Neu in den Kontakten: …";
   a name that is already a contact with another number is not saved twice, the message says so
 - A call back for a planned call's task is reported with the task, not as a message (still notified as before)
 

@@ -456,6 +456,7 @@ def test_an_unknown_callers_message_is_kept_and_they_become_a_contact(main, owne
     contact = owner.book.by_number("04541999")
     assert (contact["name"], contact["origin"], contact.get("access"), contact.get("language")) == (
         "Erika Muster", "call", None, "en")
+    assert contact["web"] is False  # as before, when the "*" entry gave her no web
     assert entry["contact"] == contact["id"]
     assert main.find_caller("04541 999")["name"] == "Erika Muster"  # the next call knows her
     [(_, title, text)] = owner.events["notify"]
@@ -470,6 +471,16 @@ def test_the_owner_is_told_about_the_message_when_calling_in(main, owner):
     assert "Messages for" not in main.previous("04541 999", main.GUEST)  # only the owner hears them
     person = {"who": {"ha_user": "jan"}, "access": frozenset({"admin"}), "name": "Jan"}
     assert "Mention them only if they ask" in main.recall(person)  # Brain Assist: no news at every request
+
+
+def test_a_saved_caller_keeps_what_the_wildcard_allowed(main, owner, monkeypatch):
+    rule = {**main.find_caller("0999"), "access": frozenset({"read", "admin"}), "instructions": "Nur kurz.",
+            "notify": True}
+    contact, note = main.save_caller("04541 999", "Erika  Muster", rule)
+    assert (contact["name"], contact["access"], contact["instructions"], contact["notify"], contact["web"]) == (
+        "Erika Muster", ["read"], "Nur kurz.", True, False)  # never admin, never the web
+    assert note.startswith("saved as a new contact")
+    assert main.web_for(main.find_caller("04541 999")) is False
 
 
 def test_a_name_that_is_taken_makes_no_second_contact(main, owner):
@@ -513,9 +524,14 @@ def test_a_task_call_back_is_still_notified(main, owner):
 
 def test_talking_with_them_on_an_outgoing_call_settles_the_call_back(main, owner):
     owner.run("04541 999")
+    owner.box.heard([e["id"] for e in owner.box.open()])
     owner.run("+494541999", inbound=False, s=session("mailbox: Bitte sprechen Sie", "Claudine: …", mailbox=True))
     assert len(owner.box.open()) == 1  # a mailbox is no conversation
-    owner.run("+494541999", inbound=False)
+    s = session("Erika Muster: Ja, Sonntag passt.")  # one answer is a conversation too
+    s.unanswered = True
+    owner.run("+494541999", inbound=False, s=s)
+    assert len(owner.box.open()) == 1  # nothing we said was answered: no conversation
+    owner.run("+494541999", inbound=False, s=session("Erika Muster: Ja, Sonntag passt."))
     assert owner.box.open() == [] and all(e.get("done") for e in owner.box.entries())
 
 

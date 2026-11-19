@@ -445,23 +445,25 @@ TOOL_MESSAGES = {
     "name": "messages",
     "description": "The calls you took for {owner} (and calls missed while the line was busy): who called, what they "
                    "want, whether they want a call back. action new: the calls not heard yet and the open call "
-                   "backs, marks them as heard (use it when you read them out). recent: all calls of the last days "
-                   "(default 7), also those already heard or done. done: the entries ids are dealt with (called "
-                   "back, or the owner says it is settled). To call someone back for {owner}, plan the call with "
-                   "plan_call and their number.",
+                   "backs. recent: all calls of the last days (default 7), also those already heard or done. "
+                   "heard: the entries ids were told to {owner} (only the ones you really told). done: the "
+                   "entries ids are dealt with (called back, or {owner} says it is settled). To call someone back "
+                   "for {owner}, plan the call with plan_call and their number.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["new", "recent", "done"]},
+            "action": {"type": "string", "enum": ["new", "recent", "heard", "done"]},
             "days": {"type": "integer", "description": "recent: how many days back (default 7)"},
-            "ids": {"type": "array", "items": {"type": "string"}, "description": "done: the ids of the entries"},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "heard, done: the ids of the entries"},
+            "confirmed": {"type": "boolean", "description": "done after web content: only true after the caller "
+                                                             "said yes"},
         },
         "required": ["action"],
     },
 }
 # recorded for the summary after the call, and only run for words the caller really finished saying
 MUTATING = ("ha_control", "ha_create_event", "shopping_edit", "shopping_rhythm", "plan_call", "contact_edit",
-            "task_edit")
+            "task_edit", "messages")
 ASKING = ("plan_call", "contact_edit", "task_edit")  # read back and stored only after a yes, checked in code
 ADMIN = frozenset({"admin"})
 MAX_FOLLOW_REQUESTS = 12   # requests of one follow-up after a planned call
@@ -819,16 +821,21 @@ class Brain:
         return "Unknown tool."
 
     def _messages(self, i: dict) -> str:
-        """messages (#104): the calls taken for the owner. new marks what it returns as heard."""
+        """messages (#104): the calls taken for the owner. Only heard and done change them: reading the list
+        marks nothing, so a message the owner was not told comes again."""
         action = i.get("action") or "new"
-        if action == "done":
+        if action in ("heard", "done"):
             ids = [str(x) for x in i.get("ids") or [] if str(x).strip()]
             if not ids:
-                return "Nothing done: give the ids of the entries (messages new or recent shows them)."
+                return f"Nothing {action}: give the ids of the entries (messages new or recent shows them)."
+            if action == "heard":
+                count = self.inbox.heard(ids)
+                return (f"Noted as heard: {count}." if count
+                        else "Nothing changed: no new entry with these ids (they may be heard already).")
             closed = self.inbox.done(ids)
             if not closed:
                 return "Nothing changed: no open entry with these ids (messages recent shows them)."
-            return "Done: " + "; ".join(self.inbox.line({**e}) for e in closed)
+            return "Done: " + "; ".join(self.inbox.line(e) for e in closed)
         if action == "recent":
             try:
                 days = max(1, min(int(i.get("days") or 7), inbox_mod.OPEN_DAYS))
@@ -837,14 +844,12 @@ class Brain:
             items = self.inbox.recent(days)
             if not items:
                 return f"No calls for the owner in the last {days} days."
-            self.inbox.heard([e["id"] for e in items])
             return f"Calls of the last {days} days, oldest first:\n" + "\n".join(self.inbox.line(e) for e in items)
         items = self.inbox.open()
         if not items:
             return "Nothing new and no open call backs."
-        self.inbox.heard([e["id"] for e in items])
-        return ("New calls and open call backs, oldest first (now marked as heard; open call backs stay until "
-                "done):\n" + "\n".join(self.inbox.line(e) for e in items))
+        return ("New calls and open call backs, oldest first. After telling them, call messages heard with the ids "
+                "you told; open call backs stay until done:\n" + "\n".join(self.inbox.line(e) for e in items))
 
     def _granted_days(self, grants: dict) -> tuple:
         """(days, start) for ha_busy_times: the days of the grant, never before today (in the configured
@@ -1215,6 +1220,8 @@ class Brain:
         Returns "" (go ahead) or the refusal for Claude."""
         if block.name not in MUTATING or block.name in ASKING or not web_mod.has_content(messages):
             return ""  # plan_call, contact_edit and task_edit always ask first, e.g. for a number found on the web
+        if block.name == "messages" and (block.input or {}).get("action") != "done":
+            return ""  # reading the messages, or noting them as told, changes nothing a web page could misuse
         pending = counters.setdefault("web_confirm", {})
         key = self._confirm_key(block)
         if (block.input or {}).get("confirmed") and key in pending and web_mod.caller_spoke_since(messages,

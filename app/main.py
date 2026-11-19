@@ -382,8 +382,8 @@ def for_owner(caller, inbound: bool = True) -> bool:
 
 
 def save_caller(number: str, name: str, rule) -> tuple[dict | None, str]:
-    """An unknown caller (the "*" entry) who gave their name becomes a contact (#104), with the rights of that
-    entry (never admin), so the next call knows them and the owner can have them called back by name.
+    """An unknown caller (the "*" entry) who gave their name becomes a contact (#104) with what that entry allowed
+    (never admin, never more), so the next call knows them and the owner can have them called back by name.
     Returns (the new contact or None, a note for the owner's messages: what was done)."""
     name = " ".join(str(name or "").split())
     if not name or not norm(number):
@@ -394,9 +394,15 @@ def save_caller(number: str, name: str, rule) -> tuple[dict | None, str]:
     if twin:
         return None, (f"not saved as a contact: there already is a contact {twin['name']} with another number "
                       "(perhaps a new number of theirs, contact_edit can add it)")
-    rights = sorted(set(rule["access"] if rule else ()) - {"admin", "guest"})
-    saved, errors = contact_store.save({"name": name, "numbers": [{"number": number}], "access": rights},
-                                       origin="call")
+    rule = rule or {}
+    # the same as before, only with a name: rights, notify and instructions of the "*" entry, and never the web
+    # (web_for gives "*" none; a contact with read rights would otherwise get it by default)
+    data = {"name": name, "numbers": [{"number": number}],
+            "access": sorted(set(rule.get("access") or ()) - {"admin", "guest"}),
+            "instructions": rule.get("instructions") or "", "web": False}
+    if isinstance(rule.get("notify"), bool):
+        data["notify"] = rule["notify"]
+    saved, errors = contact_store.save(data, origin="call")
     if errors:
         log.info("Caller %s (%s) not saved as a contact: %s", name, number, contacts.problems(errors))
         return None, f"not saved as a contact ({contacts.problems(errors)})"
@@ -457,9 +463,9 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
                                     at=datetime.fromtimestamp(ended, timezone.utc))
                 except Exception:  # noqa: BLE001
                     log.exception("Saving the message in %s failed", owner_inbox.path)
-            elif not inbound and talked:  # we talked with them: a call back they wanted is done
-                try:
-                    owner_inbox.settle(number)
+            elif not inbound and not (session.mailbox or session.unanswered):
+                try:  # we talked with them: a call back they asked for before this call is done
+                    owner_inbox.settle(number, datetime.fromtimestamp(ended, timezone.utc))
                 except Exception:  # noqa: BLE001
                     log.exception("Settling the call backs to %s failed", number)
             if summary:

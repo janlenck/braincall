@@ -129,7 +129,8 @@ folder (add-on: its config folder, part of Home Assistant's backups), one entry 
   (`guest`, `origin: task`) with the yes to the plan, so a call back is recognized and "Ruf das Restaurant nochmal
   an" needs no search. A number the callee gives during the call is not saved without a request.
 - **Contacts from calls:** an unknown caller (the `"*"` entry) who gives their name is saved as a contact after the
-  call (`origin: call`, the rights of the `"*"` entry, never `admin`), so the next call knows them and "Ruf Frau
+  call (`origin: call`) with what the `"*"` entry allowed: its rights (never `admin`), `notify` and
+  `instructions`, and no web (`"web": false`), so the next call knows them and "Ruf Frau
   Muster zurück" works by name. The name is spelled as understood on the phone: the notification says
   "Neu in den Kontakten: …", correct it on the contacts page or by voice. If a contact with that name already
   exists (another number), nothing is saved and the message says so.
@@ -168,9 +169,11 @@ folder (add-on: its config folder, part of Home Assistant's backups), one entry 
   also kept as a message, with who called, the summary, whether they want a call back and when it suits them;
   calls rejected on a busy line too. When an `admin` calls in, Claude says right away what is new and which call
   backs are open; "Hat jemand angerufen?", "Gibt es was Offenes?" and "Was war diese Woche?" are answered from the
-  messages (tool `messages`: new, recent, done). A message counts as heard once it was read out; a call back stays
-  open until the owner says it is done or BrainCall talked with that number on an outgoing call (e.g. a planned
-  call back). In Brain Assist the messages are only mentioned when asked. Messages are kept 30 days, an open call
+  messages (tool `messages`: new, recent, heard, done). A message counts as heard once Claude told it (only the
+  ones told; listing them marks nothing); a call back stays open until the owner says it is done or BrainCall
+  talked with that number on an outgoing call after the request (e.g. a planned call back; a mailbox does not
+  count). Marking them happens only for words the owner finished saying; closing a call back after web content
+  needs a yes, like every change. In Brain Assist the messages are only mentioned when asked. Messages are kept 30 days, an open call
   back up to 90. A call back for a planned call's task is reported with the task, not as a message.
 - `caller_memory` (default `"none"`): remembers the summary of each call and each
   [Brain Assist](#brain-assist) conversation per person in `logs/calls.jsonl` and gives the last three calls and
