@@ -120,6 +120,20 @@ if task_store is not None:
     task_store.on_change = announce_task
 
 
+def announce_messages():
+    """Inbox.on_change: braincall_messages_updated with the counts, in the background (brainassist#9 refreshes its
+    call list on it; the entries come from GET /api/messages)."""
+    def fire():
+        try:
+            ha.fire_event("braincall_messages_updated", owner_inbox.counts())
+        except Exception:  # noqa: BLE001
+            log.exception("Announcing the messages failed")
+    threading.Thread(target=fire, name="messages event", daemon=True).start()
+
+
+owner_inbox.on_change = announce_messages
+
+
 def contact_in_use(contact: dict) -> str:
     """What an open planned call needs this contact for (its goal), so it is not deleted or merged away meanwhile;
     "" if nothing (contacts.Contacts.in_use)."""
@@ -460,7 +474,7 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
                     owner_inbox.add(number, summary or "\n".join(session.transcript)[-inbox.MAX_SUMMARY:],
                                     name=name or facts.get("name", ""), contact=target,
                                     callback=facts.get("callback", False), when=facts.get("when", ""), note=note,
-                                    at=datetime.fromtimestamp(ended, timezone.utc))
+                                    at=datetime.fromtimestamp(ended, timezone.utc), duration=ended - started)
                 except Exception:  # noqa: BLE001
                     log.exception("Saving the message in %s failed", owner_inbox.path)
             elif not inbound and not (session.mailbox or session.unanswered):
@@ -1192,6 +1206,49 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("Brain Assist request failed")
             emit({"type": "error", "message": f"{type(e).__name__}: {e}"[:300]})
 
+    def _messages(self) -> bool:
+        """The owner's messages (#104) for Brain Assist's call list (brainassist#9). True if the request was one of
+        them (and is answered). GET /api/messages?days=7&open=1: the entries, newest first, with the counts;
+        PATCH /api/messages/<id> {"heard": true|false, "done": true|false}; DELETE /api/messages/<id>."""
+        path = urlsplit(self.path).path
+        if not (path == "/api/messages" or path.startswith("/api/messages/")):
+            return False
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return True
+        entry_id = path[len("/api/messages/"):] if path.startswith("/api/messages/") else ""
+        if self.command == "GET" and not entry_id:
+            query = {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            try:
+                days = float(query["days"]) if query.get("days") else None
+            except ValueError:
+                days = -1.0
+            if days is not None and not (math.isfinite(days) and 0 < days <= inbox.OPEN_DAYS):
+                self._send(400, {"error": f"days must be a number from 0 to {inbox.OPEN_DAYS}"})
+                return True
+            items = owner_inbox.recent(days) if days is not None else owner_inbox.entries()
+            if query.get("open") in ("1", "true", "yes"):
+                items = [e for e in items if inbox.is_open(e)]
+            self._send(200, {"messages": items[::-1], **owner_inbox.counts()})
+            return True
+        if not entry_id or self.command not in ("PATCH", "DELETE"):
+            self._send(404 if not entry_id else 405, {"error": "not found" if not entry_id else "method not allowed"})
+            return True
+        if self.command == "DELETE":
+            gone = owner_inbox.delete(entry_id)
+            self._send(200 if gone else 404, {"deleted": entry_id} if gone else {"error": "not found"})
+            return True
+        body = self._body()
+        if body is None:
+            return True
+        change = {k: body[k] for k in ("heard", "done") if k in body}
+        if not change or not all(isinstance(v, bool) for v in change.values()):
+            self._send(400, {"error": "give heard and/or done as true or false"})
+            return True
+        entry = owner_inbox.update(entry_id, **change)
+        self._send(200 if entry else 404, entry or {"error": "not found"})
+        return True
+
     def _task_id(self) -> str:
         """The id in /tasks/<id>; "" for other paths."""
         return self.path[len("/tasks/"):] if self.path.startswith("/tasks/") and task_store is not None else ""
@@ -1209,7 +1266,7 @@ class Handler(BaseHTTPRequestHandler):
                          "events": shopping_list.events(query.get("item", ""), days, query.get("event", ""))})
 
     def do_GET(self):  # noqa: N802
-        if self._contacts():
+        if self._contacts() or self._messages():
             return
         self._route()
         if self.path == "/health":  # the only path without token: nothing but the status (503: unhealthy, #37)
@@ -1220,7 +1277,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"api": assist.API_VERSION, "version": config.version(), "phone": PHONE,
                                     "assistant": cfg.assistant_name or "Claude",
                                     "home_assistant": bool(ha.enabled), "tasks": task_store is not None,
-                                    "line": True})
+                                    "line": True, "messages": True})
         if self.path == "/api/status":  # the line with the current call (#100); /health has no number or name
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
@@ -1257,12 +1314,16 @@ class Handler(BaseHTTPRequestHandler):
                  ", ".join(f"{k} {v}" for k, v in whom.items() if v))
         self._send(200, {"forgotten": forgotten})
 
+    def do_PATCH(self):  # noqa: N802
+        if not self._messages():
+            self._send(404, {"error": "not found"})
+
     def do_PUT(self):  # noqa: N802
         if not self._contacts():
             self._send(404, {"error": "not found"})
 
     def do_DELETE(self):  # noqa: N802
-        if self._contacts():
+        if self._contacts() or self._messages():
             return
         self._route()
         if urlsplit(self.path).path == "/api/memory":
@@ -1399,7 +1460,7 @@ class IngressHandler(Handler):
         if not self._contacts():
             self._send(404, {"error": "not found"})
 
-    do_GET = do_POST = do_PUT = do_DELETE = _only_page
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _only_page
 
 
 def check_ha_admin():

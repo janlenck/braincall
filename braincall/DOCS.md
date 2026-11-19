@@ -211,6 +211,11 @@ once it lasts longer than one watchdog round (30 s), the moment of re-registerin
 A call rejected on a busy line or from an unknown number does not change the line. `GET /api/status` (with the
 token) answers the same, `GET /health` has `line` without the call. Brain Assist shows this as entities.
 
+Every change of your messages (a new one, heard, done, deleted) fires `braincall_messages_updated` with `open`,
+`new` and `callbacks`. `GET /api/messages` (with the token) has the list; `PATCH /api/messages/<id>`
+`{"done": true}` ticks a call back off, also for the phone. Entities made from it show every caller's summary to
+everyone who can see them in Home Assistant.
+
 ## Brain Assist
 
 BrainCall can also be the conversation agent of Home Assistant's own assistant (Assist: the chat in the app and on

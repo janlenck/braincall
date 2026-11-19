@@ -7,7 +7,11 @@ out (heard), call backs until they are done. A conversation with that number on 
 call backs on its own.
 
 Independent of caller_memory: that is what Claude may remember of a caller; this is the owner's answering machine.
-inbox.json in the log folder; entries are dropped after DAYS days, an open call back only after OPEN_DAYS."""
+inbox.json in the log folder; entries are dropped after DAYS days, an open call back only after OPEN_DAYS.
+
+Home Assistant gets the same list through the API (GET /api/messages, PATCH and DELETE /api/messages/<id>) for Brain
+Assist's call list (brainassist#9), and an event on every change (on_change), so a call back ticked off in Home
+Assistant is done on the phone too, and the other way round."""
 import json
 import logging
 import os
@@ -49,6 +53,13 @@ class Inbox:
         self.country_code = country_code
         self.tz_name = tz_name
         self.lock = threading.Lock()
+        self.on_change = lambda: None  # after every change (main: the event for Home Assistant); never raises here
+
+    def _changed(self):
+        try:
+            self.on_change()
+        except Exception:  # noqa: BLE001  the change is stored; only the announcement failed
+            log.exception("Inbox: announcing the change failed")
 
     # ------------------------------------------------------------------ file
     def _load(self) -> list[dict]:
@@ -81,9 +92,10 @@ class Inbox:
     # ------------------------------------------------------------------ changes
     def add(self, number: str, summary: str = "", name: str = "", contact: str = "", callback: bool = False,
             when: str = "", kind: str = MESSAGE, note: str = "", at: datetime | None = None,
-            now: datetime | None = None) -> dict:
+            duration: float | None = None, now: datetime | None = None) -> dict:
         """A new entry. at: when the call ended; name: the caller's name (as they said it, or the contact's);
-        contact: the contact id; note: what the phone did about the caller (e.g. saved as a new contact)."""
+        contact: the contact id; note: what the phone did about the caller (e.g. saved as a new contact);
+        duration: seconds the call lasted (none for a call rejected on a busy line)."""
         now = now or datetime.now(timezone.utc)
         entry = {"id": secrets.token_hex(2), "time": (at or now).isoformat(timespec="seconds"),
                  "number": number or "", "kind": kind if kind in (MESSAGE, MISSED) else MESSAGE}
@@ -93,12 +105,15 @@ class Inbox:
         if summary.strip():
             entry["summary"] = summary.strip()[:MAX_SUMMARY]
         entry["callback"] = bool(callback)
+        if duration is not None:
+            entry["duration_s"] = max(0, round(duration))
         with self.lock:
             entries = self._kept(self._load(), now)
             while any(e["id"] == entry["id"] for e in entries):
                 entry["id"] = secrets.token_hex(2)
             entries.append(entry)
             self._save(entries)
+        self._changed()
         log.info("Inbox: %s from %s%s", "message" if entry["kind"] == MESSAGE else "missed call",
                  entry.get("name") or number or "unknown", ", call back wanted" if callback else "")
         return dict(entry)
@@ -113,7 +128,9 @@ class Inbox:
                 e[field] = stamp
             if changed:
                 self._save(self._kept(entries, now))
-            return [dict(e) for e in changed]
+        if changed:
+            self._changed()
+        return [dict(e) for e in changed]
 
     def heard(self, ids, now: datetime | None = None) -> int:
         """The entries were read out to the owner."""
@@ -137,6 +154,48 @@ class Inbox:
         if closed:
             log.info("Inbox: call back to %s done (%d)", number, len(closed))
         return closed
+
+    def update(self, entry_id: str, heard: bool | None = None, done: bool | None = None,
+               now: datetime | None = None) -> dict | None:
+        """Sets or clears heard and done of one entry (the API: a call back ticked off in Home Assistant, or
+        unticked again). Returns the entry, None if there is none with this id."""
+        now = now or datetime.now(timezone.utc)
+        stamp = now.isoformat(timespec="seconds")
+        key = str(entry_id or "").strip().lower()
+        with self.lock:
+            entries = self._load()
+            entry = next((e for e in entries if e["id"] == key), None)
+            if entry is None:
+                return None
+            before = dict(entry)
+            for field, value in (("heard", heard), ("done", done)):
+                if value is True and not entry.get(field):
+                    entry[field] = stamp
+                elif value is False:
+                    entry.pop(field, None)
+            if entry != before:
+                self._save(entries)
+        if entry != before:
+            self._changed()
+        return dict(entry)
+
+    def delete(self, entry_id: str) -> bool:
+        """Removes one entry (deleted from the list in Home Assistant). True if there was one."""
+        key = str(entry_id or "").strip().lower()
+        with self.lock:
+            entries = self._load()
+            kept = [e for e in entries if e["id"] != key]
+            if len(kept) == len(entries):
+                return False
+            self._save(kept)
+        self._changed()
+        return True
+
+    def counts(self, now: datetime | None = None) -> dict:
+        """How many entries are new (not heard), how many call backs are open, and how many open items in all."""
+        items = self.open(now)
+        return {"open": len(items), "new": sum(1 for e in items if not e.get("heard")),
+                "callbacks": sum(1 for e in items if e.get("callback"))}
 
     # ------------------------------------------------------------------ reading
     def entries(self, now: datetime | None = None) -> list[dict]:

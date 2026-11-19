@@ -19,6 +19,10 @@ owner's messages (#31).
   no web. The notification adds "Neu in den Kontakten: …";
   a name that is already a contact with another number is not saved twice, the message says so
 - A call back for a planned call's task is reported with the task, not as a message (still notified as before)
+- For Brain Assist's call list (brainassist#9): `GET /api/messages` (`days`, `open=1`), `PATCH /api/messages/<id>`
+  (`heard` / `done` true or false), `DELETE /api/messages/<id>`, the event `braincall_messages_updated` with the
+  counts on every change, and `messages: true` in `GET /api/version`. A call back ticked off in Home Assistant is
+  done on the phone too. `api` stays 1: only additions
 
 ## 1.19.1
 

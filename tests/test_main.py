@@ -56,11 +56,15 @@ def main(tmp_path_factory):
 @pytest.fixture
 def events(main, monkeypatch):
     """Everything main sends to Home Assistant, instead of sending it."""
-    sent = {"events": [], "notify": [], "state": []}
+    sent = {"events": [], "notify": [], "state": [], "messages": []}
 
     def fire(name, data):  # braincall_state (#100) comes from its own thread, on every change of the line: apart
-        sent["state" if name == "braincall_state" else "events"].append(data if name == "braincall_state"
-                                                                         else (name, data))
+        if name == "braincall_state":
+            sent["state"].append(data)
+        elif name == "braincall_messages_updated":  # from its own thread on every change of the inbox (#104)
+            sent["messages"].append(data)
+        else:
+            sent["events"].append((name, data))
     monkeypatch.setattr(main.ha, "fire_event", fire)
     monkeypatch.setattr(main.ha, "notify", lambda service, title, text: sent["notify"].append((service, title, text)))
     return sent
@@ -749,11 +753,75 @@ def test_unknown_paths(server):
     assert server("POST", "/health")[0] == 404
 
 
+# ---------------------------------------------------------------- the messages for Brain Assist (brainassist#9)
+@pytest.fixture
+def api_inbox(main, monkeypatch, tmp_path):
+    import inbox
+    box = inbox.Inbox(tmp_path / "inbox.json", main.cfg.country_code, main.cfg.timezone)
+    fired = []
+    monkeypatch.setattr(main, "owner_inbox", box)
+    monkeypatch.setattr(main.ha, "fire_event", lambda name, data: fired.append((name, data)))
+    box.on_change = main.announce_messages
+    box.fired = fired
+    return box
+
+
+def test_messages_api_lists_newest_first_with_the_counts(server, api_inbox):
+    old = api_inbox.add("04541 111", "Termin.", name="Erika Muster", callback=True,
+                        at=datetime.now(timezone.utc) - timedelta(days=10), duration=42.4)
+    new = api_inbox.add("0170 222", "Gruß.", name="Max")
+    api_inbox.heard([new["id"]])
+    status, body = server("GET", "/api/messages")
+    assert status == 200 and [m["id"] for m in body["messages"]] == [new["id"], old["id"]]
+    assert (body["open"], body["new"], body["callbacks"]) == (1, 1, 1)
+    assert body["messages"][1]["duration_s"] == 42 and body["messages"][1]["callback"] is True
+    assert [m["id"] for m in server("GET", "/api/messages?days=7")[1]["messages"]] == [new["id"]]
+    assert [m["id"] for m in server("GET", "/api/messages?open=1")[1]["messages"]] == [old["id"]]
+    assert server("GET", "/api/messages?days=0")[0] == 400
+    assert server("GET", "/api/messages?days=x")[0] == 400
+
+
+def test_a_call_back_ticked_off_in_home_assistant_is_done_on_the_phone_too(server, api_inbox):
+    e = api_inbox.add("04541 111", "Termin.", name="Erika Muster", callback=True)
+    status, body = server("PATCH", f"/api/messages/{e['id']}", {"done": True})
+    assert status == 200 and body["done"] and api_inbox.open() == []
+    assert "Messages: you took no calls for them that are still open" in api_inbox.note("Jan")
+    status, body = server("PATCH", f"/api/messages/{e['id'].upper()}", {"done": False})  # unticked again
+    assert status == 200 and "done" not in body and len(api_inbox.open()) == 1
+    assert server("PATCH", f"/api/messages/{e['id']}", {"heard": True})[1]["heard"]
+    assert wait_for(lambda: api_inbox.fired and api_inbox.fired[-1][1]["new"] == 0)
+    assert {name for name, _ in api_inbox.fired} == {"braincall_messages_updated"}
+    assert api_inbox.fired[-1][1] == {"open": 1, "new": 0, "callbacks": 1}
+
+
+@pytest.mark.parametrize("body", [{}, {"done": "yes"}, {"heard": 1}, {"other": True}])
+def test_messages_api_refuses_what_it_cannot_set(server, api_inbox, body):
+    e = api_inbox.add("04541 111", "Termin.")
+    assert server("PATCH", f"/api/messages/{e['id']}", body)[0] == 400
+
+
+def test_messages_api_deletes_and_knows_what_is_not_there(server, api_inbox):
+    e = api_inbox.add("04541 111", "Termin.")
+    assert server("DELETE", f"/api/messages/{e['id']}") == (200, {"deleted": e["id"]})
+    assert api_inbox.entries() == []
+    assert server("DELETE", f"/api/messages/{e['id']}")[0] == 404
+    assert server("PATCH", "/api/messages/zz99", {"done": True})[0] == 404
+    assert server("PATCH", "/api/messages", {"done": True})[0] == 404
+    assert server("GET", f"/api/messages/{e['id']}")[0] == 405
+    assert server("PATCH", "/api/other", {"done": True})[0] == 404
+
+
+def test_the_messages_are_not_on_the_ingress_port(main, ingress, monkeypatch):
+    monkeypatch.setattr(main, "INGRESS_PROXY", "127.0.0.1")  # even from Home Assistant's proxy: only the contacts
+    assert ingress("/api/messages")[0] == 404
+
+
 # ---------------------------------------------------------------- token for everything, Brain Assist (#50)
 @pytest.mark.parametrize("method, path", [
     ("POST", "/call"), ("GET", "/tasks"), ("POST", "/tasks"), ("DELETE", "/tasks/abc"), ("GET", "/api/tasks"),
     ("POST", "/api/tasks"), ("DELETE", "/api/tasks/abc"), ("GET", "/api/version"), ("POST", "/api/converse"),
-    ("GET", "/api/status"),
+    ("GET", "/api/status"), ("GET", "/api/messages"), ("PATCH", "/api/messages/ab12"),
+    ("DELETE", "/api/messages/ab12"),
 ])
 @pytest.mark.parametrize("token", [None, "wrong"])
 def test_every_endpoint_needs_the_token(server, method, path, token):
@@ -800,7 +868,7 @@ def test_version(server, main):
     status, body = server("GET", "/api/version")
     assert status == 200
     assert body == {"api": 1, "version": config.version(), "phone": True, "assistant": "Claudine",
-                    "home_assistant": False, "tasks": True, "line": True}
+                    "home_assistant": False, "tasks": True, "line": True, "messages": True}
     assert body["version"].count(".") == 2
 
 

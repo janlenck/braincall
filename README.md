@@ -175,6 +175,10 @@ folder (add-on: its config folder, part of Home Assistant's backups), one entry 
   count). Marking them happens only for words the owner finished saying; closing a call back after web content
   needs a yes, like every change. In Brain Assist the messages are only mentioned when asked. Messages are kept 30 days, an open call
   back up to 90. A call back for a planned call's task is reported with the task, not as a message.
+  Home Assistant gets the same list through `GET /api/messages` (Brain Assist's call list, brainassist#9) and the
+  event `braincall_messages_updated` (`open`, `new`, `callbacks`) on every change; a call back ticked off there
+  (`PATCH /api/messages/<id>`) is done on the phone too. The list has every caller's summary: whoever sees the
+  entities in Home Assistant reads them.
 - `caller_memory` (default `"none"`): remembers the summary of each call and each
   [Brain Assist](#brain-assist) conversation per person in `logs/calls.jsonl` and gives the last three calls and
   the last three Assist conversations to Claude the next time, e.g. so Maryna does not have to repeat last
@@ -606,11 +610,14 @@ such requests now get `401`, add the header.
 | `GET /health` | status without token: `status` (`ok` / `unhealthy`), `problems`, `sip`, `busy`, `line`, `phone`, `time`; `503` when unhealthy |
 | `GET /api/status` | the line: `line` (`idle` / `ringing` / `dialing` / `in_call`), `sip`, `phone` and `call` (`number`, `caller_name`, `direction` `in`/`out`, `since`; `null` while idle) |
 | `POST /call` | call a number now: `{"message": "…", "number": "…"}` |
-| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant`, `tasks`, `line` (`true`: `/api/status` and `braincall_state` exist) |
+| `GET /api/version` | `api` (version of this API), `version` (BrainCall), `phone`, `assistant`, `home_assistant`, `tasks`, `line` (`true`: `/api/status` and `braincall_state` exist), `messages` (`true`: `/api/messages` and `braincall_messages_updated` exist) |
 | `POST /api/converse` | one request of Home Assistant's assistant, see [Brain Assist](#brain-assist) |
 | `POST /api/tasks`, `GET /api/tasks`, `GET` / `DELETE /api/tasks/<id>` | [planned calls](#planned-calls-with-a-task) |
 | `GET /api/shopping/history`, `GET /api/shopping/forecast` | [automatic shopping list](#automatic-shopping-list) |
 | `DELETE /api/memory?number=…` / `ha_user=…` / `ha_device=…` | forgets what is remembered of a person; answers `{"forgotten": n}` |
+| `GET /api/messages?days=7&open=1` | the owner's messages, newest first: `id`, `time` (end of the call), `number`, `kind` (`message` / `missed`), `name`, `contact`, `summary`, `callback`, `when`, `note`, `duration_s`, `heard` / `done` (time, missing while not); plus `open`, `new`, `callbacks`. `days` (up to 90) limits the age, `open=1` to what is new or an open call back |
+| `PATCH /api/messages/<id>` `{"done": true}` | sets or clears `heard` and `done` (`true` / `false`), e.g. a call back ticked off in Home Assistant; answers the entry |
+| `DELETE /api/messages/<id>` | removes a message |
 | `GET /contacts` | the contacts page (asks for the token once) |
 | `GET /api/contacts`, `POST /api/contacts`, `PUT` / `DELETE /api/contacts/<id>`, `POST /api/contacts/<id>/merge` `{"other": id}` | [contacts](#callers-and-permissions); a refused change answers `400 {"errors": [{"field", "code", …}]}`, deleting a contact an open planned call needs `409` |
 
