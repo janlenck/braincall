@@ -237,7 +237,9 @@ def test_event_reason_says_the_call_limit_ended_the_call(main, after, monkeypatc
 
 
 def test_summary_is_told_the_direction_and_a_mailbox(after):
-    assert after("0999")["summarized"] == {"outbound": False, "mailbox": False, "unanswered": False}
+    # an unknown caller: also asked for their language and, for the owner's messages, name and call back (#104)
+    assert after("0999")["summarized"] == {"outbound": False, "mailbox": False, "unanswered": False, "spoken": {},
+                                           "facts": {}}
     s = session("0999 (mailbox): Bitte sprechen Sie nach dem Ton.", "Claudine: Hallo …", mailbox=True)
     assert after("0999", inbound=False, s=s)["summarized"] == {"outbound": True, "mailbox": True, "unanswered": False}
 
@@ -412,6 +414,124 @@ def test_memory_failure_does_not_stop_the_event(main, after, remembered, monkeyp
     monkeypatch.setattr(remembered, "recent", broken)
     assert after("0999")["events"][0][1]["summary"] == "Summary of 0999"
     assert main.previous("0999", main.GUEST) == ""
+
+
+# ---------------------------------------------------------------- the owner's messages (#104)
+@pytest.fixture
+def owner(main, events, monkeypatch, tmp_path):
+    """A fresh inbox and contacts file, a summary that says who called and whether they want a call back."""
+    import contacts
+    import inbox
+    monkeypatch.setitem(main.cfg, "callers", list(main.cfg.callers))
+    book = contacts.Contacts(main.cfg, tmp_path / "contacts.json", in_use=main.contact_in_use)
+    book.items = main.contact_store.all()
+    monkeypatch.setattr(main, "contact_store", book)
+    box = inbox.Inbox(tmp_path / "inbox.json", main.cfg.country_code, main.cfg.timezone)
+    monkeypatch.setattr(main, "owner_inbox", box)
+    monkeypatch.setattr(main.brain, "inbox", box)
+    said = {"name": "Erika Muster", "callback": True, "when": "Sonntag oder Montag"}
+
+    def summarize(transcript, caller, actions, lang, facts=None, spoken=None, **kw):
+        events.setdefault("asked", []).append({"facts": facts is not None, "spoken": spoken is not None})
+        if facts is not None:
+            facts.update(said)
+        if spoken is not None:
+            spoken["language"] = "en"
+        return f"Summary of {caller}"
+    monkeypatch.setattr(main.brain, "summarize", summarize)
+
+    def run(number, inbound=True, s=None, for_task=False):
+        s = s or session("caller: Hallo, hier ist Erika Muster", "Claudine: Hallo!")
+        ended = time.time()
+        main.after_call(True, number, ended - 30, ended, s, "test", main.find_caller(number), inbound, for_task)
+    return SimpleNamespace(run=run, box=box, book=book, said=said, events=events)
+
+
+def test_an_unknown_callers_message_is_kept_and_they_become_a_contact(main, owner):
+    owner.run("04541 999")
+    [entry] = owner.box.open()
+    assert (entry["name"], entry["number"], entry["callback"], entry["when"]) == (
+        "Erika Muster", "04541 999", True, "Sonntag oder Montag")
+    assert entry["summary"] == "Summary of 04541 999" and "saved as a new contact" in entry["note"]
+    contact = owner.book.by_number("04541999")
+    assert (contact["name"], contact["origin"], contact.get("access"), contact.get("language")) == (
+        "Erika Muster", "call", None, "en")
+    assert entry["contact"] == contact["id"]
+    assert main.find_caller("04541 999")["name"] == "Erika Muster"  # the next call knows her
+    [(_, title, text)] = owner.events["notify"]
+    assert title == "Anruf von Erika Muster (04541 999)" and text.endswith("\nNeu in den Kontakten: Erika Muster")
+
+
+def test_the_owner_is_told_about_the_message_when_calling_in(main, owner):
+    owner.run("04541 999")
+    note = main.previous("0151111", frozenset({"admin"}), main.find_caller("0151111"))
+    assert "Messages for Jan: calls you took for them (1 new, 1 open call back)" in note
+    assert "Erika Muster (04541 999)" in note and "wants a call back (Sonntag oder Montag): open" in note
+    assert "Messages for" not in main.previous("04541 999", main.GUEST)  # only the owner hears them
+    person = {"who": {"ha_user": "jan"}, "access": frozenset({"admin"}), "name": "Jan"}
+    assert "Mention them only if they ask" in main.recall(person)  # Brain Assist: no news at every request
+
+
+def test_a_name_that_is_taken_makes_no_second_contact(main, owner):
+    owner.book.save({"name": "Erika Muster", "numbers": [{"number": "0170 555"}]}, origin="page")
+    owner.run("04541 999")
+    assert owner.book.by_number("04541999") is None
+    assert "there already is a contact Erika Muster" in owner.box.open()[0]["note"]
+
+
+def test_no_contact_without_a_name(main, owner):
+    owner.said.update(name="", callback=False, when="")
+    owner.run("04541 999")
+    assert owner.book.by_number("04541999") is None
+    [entry] = owner.box.open()
+    assert "name" not in entry and entry["callback"] is False and "note" not in entry
+
+
+def test_a_known_callers_message_is_kept_without_asking_for_a_new_contact(main, owner):
+    owner.run("0171444")  # read access, notify: true
+    [entry] = owner.box.open()
+    assert entry["name"] == "Walter" and entry["callback"] is True
+    assert len(owner.book.all()) == len(main.contact_store.all())  # nobody added
+
+
+@pytest.mark.parametrize("number, inbound, for_task", [
+    ("0151111", True, False),   # the owner's own call
+    ("0160333", True, False),   # notify: false
+    ("0999", False, False),     # we called them
+    ("0999", True, True),       # a call back for a task: reported with the task
+])
+def test_calls_that_are_no_message_for_the_owner(main, owner, number, inbound, for_task):
+    owner.run(number, inbound=inbound, for_task=for_task)
+    assert owner.box.entries() == [] and owner.book.by_number(number) is None
+    assert all(not a["facts"] for a in owner.events["asked"])
+
+
+def test_a_task_call_back_is_still_notified(main, owner):
+    owner.run("0999", for_task=True)
+    assert len(owner.events["notify"]) == 1 and owner.box.entries() == []
+
+
+def test_talking_with_them_on_an_outgoing_call_settles_the_call_back(main, owner):
+    owner.run("04541 999")
+    owner.run("+494541999", inbound=False, s=session("mailbox: Bitte sprechen Sie", "Claudine: …", mailbox=True))
+    assert len(owner.box.open()) == 1  # a mailbox is no conversation
+    owner.run("+494541999", inbound=False)
+    assert owner.box.open() == [] and all(e.get("done") for e in owner.box.entries())
+
+
+def test_a_call_missed_on_a_busy_line_is_a_message(main, owner):
+    busy_rejected(main, "0171444")
+    busy_rejected(main, "0160333")  # notify: false
+    [entry] = owner.box.open()
+    assert (entry["kind"], entry["name"], entry["number"]) == ("missed", "Walter", "0171444")
+
+
+def test_a_broken_inbox_does_not_stop_the_notification(main, owner, monkeypatch):
+    def broken(*a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(owner.box, "add", broken)
+    owner.run("0999")
+    assert len(owner.events["notify"]) == 1 and owner.events["events"][0][1]["summary"] == "Summary of 0999"
 
 
 # ---------------------------------------------------------------- HTTP trigger

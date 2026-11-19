@@ -26,7 +26,7 @@ log = logging.getLogger("contacts")
 
 FILE = "contacts.json"
 RIGHTS = ("admin", "read", "calendar", "shopping")
-ORIGINS = ("settings", "page", "request", "task")
+ORIGINS = ("settings", "page", "request", "task", "call")
 MAX_NAME = 80
 MAX_LABEL = 30
 MAX_NUMBERS = 10

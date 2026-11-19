@@ -38,6 +38,7 @@ from pyVoIP.SIP import SIPMessageType  # noqa: E402
 import assist  # noqa: E402
 import config  # noqa: E402
 import contacts  # noqa: E402
+import inbox  # noqa: E402
 import discovery  # noqa: E402
 import fritz_sip  # noqa: E402
 import logfilter  # noqa: E402
@@ -92,6 +93,9 @@ speech = Speech(cfg)
 brain = Brain(cfg, ha)
 phrase_cache = phrases.PhraseCache(speech, cfg, _LOGDIR / "cache")
 calls = memory.CallMemory(_LOGDIR / "calls.jsonl", memory.parse_days(cfg.caller_memory), cfg.country_code)
+# the calls taken for the owner (#104): told when they call in, messages tool; whatever caller_memory is
+owner_inbox = inbox.Inbox(_LOGDIR / inbox.FILE, cfg.country_code, cfg.timezone)
+brain.inbox = owner_inbox
 task_store = tasks.TaskStore(_LOGDIR / "tasks.json", cfg) if cfg.tasks and PHONE else None
 brain.tasks = task_store
 
@@ -206,6 +210,7 @@ GUEST = frozenset({"guest"})
 SUMMARY_TITLE = {"de": "Anruf von {who}", "en": "Call from {who}", "uk": "Дзвінок від {who}"}
 MISSED_TITLE = {"de": "Verpasster Anruf von {who}", "en": "Missed call from {who}",
                 "uk": "Пропущений дзвінок від {who}"}
+NEW_CONTACT = {"de": "Neu in den Kontakten: {name}", "en": "New contact: {name}", "uk": "Новий контакт: {name}"}
 MISSED_TEXT = {"de": "Die Leitung war besetzt (ein anderes Gespräch lief), der Anruf wurde abgewiesen.",
                "en": "The line was busy (another call was going on), the call was rejected.",
                "uk": "Лінія була зайнята (тривала інша розмова), дзвінок відхилено."}
@@ -261,11 +266,12 @@ def previous(number: str, access, caller: dict | None = None) -> str:
     """What Claude remembers of earlier calls and Assist conversations with this caller, for the intro
     (memory.note). caller: the entry of the number, so the notes of its Home Assistant user are found too."""
     try:
-        return memory.note(calls.recent(memory.who(caller, number), access), OWNER_FIRST or "the owner",
+        text = memory.note(calls.recent(memory.who(caller, number), access), OWNER_FIRST or "the owner",
                            cfg.timezone, calls.enabled)
     except Exception:  # noqa: BLE001  the memory must never stop a call
         log.exception("Reading the caller memory failed")
-        return ""
+        text = ""
+    return text + (owner_inbox.note(OWNER_FIRST or "the owner") if "admin" in access else "")
 
 
 def same_person(whom: dict) -> list:
@@ -287,8 +293,9 @@ def same_person(whom: dict) -> list:
 
 def recall(person: dict) -> str:
     """What Claude remembers of the person of an Assist conversation (assist.identify), for its first note."""
-    return memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
+    text = memory.note(calls.recent(person["who"], person["access"]), OWNER_FIRST or "the owner", cfg.timezone,
                        calls.enabled, subject=assist.subject(person))
+    return text + (owner_inbox.note(OWNER_FIRST or "the owner", phone=False) if "admin" in person["access"] else "")
 
 
 def after_assist(conv):
@@ -366,37 +373,95 @@ def report(answered: bool, number: str, started: float, session=None, message=""
     })
 
 
+def for_owner(caller, inbound: bool = True) -> bool:
+    """Whether the owner hears about this incoming call (notification and messages, #104): everyone without admin
+    rights, unless their contact says notify: false (or an admin's says notify: true)."""
+    access = caller["access"] if caller else GUEST
+    notify = caller.get("notify") if caller else None
+    return inbound and (notify if notify is not None else "admin" not in access)
+
+
+def save_caller(number: str, name: str, rule) -> tuple[dict | None, str]:
+    """An unknown caller (the "*" entry) who gave their name becomes a contact (#104), with the rights of that
+    entry (never admin), so the next call knows them and the owner can have them called back by name.
+    Returns (the new contact or None, a note for the owner's messages: what was done)."""
+    name = " ".join(str(name or "").split())
+    if not name or not norm(number):
+        return None, ""
+    if contact_store.by_number(number):
+        return None, ""
+    twin = contact_store.by_name(name)
+    if twin:
+        return None, (f"not saved as a contact: there already is a contact {twin['name']} with another number "
+                      "(perhaps a new number of theirs, contact_edit can add it)")
+    rights = sorted(set(rule["access"] if rule else ()) - {"admin", "guest"})
+    saved, errors = contact_store.save({"name": name, "numbers": [{"number": number}], "access": rights},
+                                       origin="call")
+    if errors:
+        log.info("Caller %s (%s) not saved as a contact: %s", name, number, contacts.problems(errors))
+        return None, f"not saved as a contact ({contacts.problems(errors)})"
+    return saved, "saved as a new contact (name as understood on the phone; contact_edit can correct it)"
+
+
 def after_call(answered: bool, number: str, started: float, ended: float, session, message: str, caller,
-               inbound: bool):
-    """Summary, event, notification and call note; runs after the line is free again."""
+               inbound: bool, for_task: bool = False):
+    """Summary, event, notification, the owner's messages and call note; runs after the line is free again.
+    for_task: an incoming call that went on with a task (a call back we waited for): reported with the task."""
     try:
         access = caller["access"] if caller else GUEST
         summary = ""
+        notify = for_owner(caller, inbound)
+        owner_hears = notify and not for_task  # a task's call back is reported with the task, not as a message
         if session and session.caller_turns:
             lang = cfg.language if cfg.language in SUMMARY_TITLE else "de"
             name = caller_name(caller)
+            unknown = inbound and caller is not None and not name  # the "*" entry: may become a contact
+            talked = session.caller_turns >= 2 and not (session.mailbox or session.unanswered)
             # a contact's language follows what they spoke last (#93); not for a mailbox or a very short call
-            spoken = {} if caller and caller.get("id") and session.caller_turns >= 2 and not (
-                session.mailbox or session.unanswered) else None
+            spoken = {} if talked and ((caller and caller.get("id")) or unknown) else None
+            facts = {} if owner_hears else None  # name, call back, when (#104)
             try:
                 summary = brain.summarize(session.transcript, f"{name} ({number})" if name else number,
                                           session.actions, lang, outbound=not inbound, mailbox=session.mailbox,
                                           unanswered=session.unanswered,
-                                          **({"spoken": spoken} if spoken is not None else {}))
+                                          **({"spoken": spoken} if spoken is not None else {}),
+                                          **({"facts": facts} if facts is not None else {}))
             except Exception as e:  # noqa: BLE001
                 log.warning("Summary failed: %s", e)
-            if spoken and spoken.get("language"):
+            facts = facts or {}
+            contact, note = None, ""
+            if unknown and owner_hears and facts.get("name"):
                 try:
-                    contact_store.set_language(caller["id"], spoken["language"])
+                    contact, note = save_caller(number, facts["name"], caller)
+                except Exception:  # noqa: BLE001  the summary and the message still go out
+                    log.exception("Saving the caller %s as a contact failed", number)
+            target = (contact or {}).get("id") or (caller.get("id") if caller and name else "")
+            if spoken and spoken.get("language") and target:
+                try:
+                    contact_store.set_language(target, spoken["language"])
                 except OSError as e:
                     log.warning("Contacts: storing the language failed: %s", e)
-            notify = caller.get("notify") if caller else None
-            if inbound and (notify if notify is not None else "admin" not in access):
-                label = caller_label(caller, number)
+            if notify:
+                label = caller_label(caller, number) or facts.get("name", "")
                 title = SUMMARY_TITLE[lang].format(who=f"{label} ({number})" if label else number)
                 text = summary or "\n".join(session.transcript)[-1500:]
+                if contact:
+                    text += "\n" + NEW_CONTACT[lang].format(name=contact["name"])
                 for service in cfg.notify_services or []:
                     ha.notify(str(service), title, text)
+            if owner_hears:
+                try:
+                    owner_inbox.add(number, summary or "\n".join(session.transcript)[-inbox.MAX_SUMMARY:],
+                                    name=name or facts.get("name", ""), contact=target,
+                                    callback=facts.get("callback", False), when=facts.get("when", ""), note=note,
+                                    at=datetime.fromtimestamp(ended, timezone.utc))
+                except Exception:  # noqa: BLE001
+                    log.exception("Saving the message in %s failed", owner_inbox.path)
+            elif not inbound and talked:  # we talked with them: a call back they wanted is done
+                try:
+                    owner_inbox.settle(number)
+                except Exception:  # noqa: BLE001
+                    log.exception("Settling the call backs to %s failed", number)
             if summary:
                 log.info("Summary: %s", summary)
                 try:
@@ -417,9 +482,11 @@ def after_call(answered: bool, number: str, started: float, ended: float, sessio
         log.exception("After-call handling failed")
 
 
-def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool):
+def finish(answered: bool, number: str, started: float, session, message: str, caller, inbound: bool,
+           for_task: bool = False):
     threading.Thread(target=after_call, name="after call", daemon=True,
-                     args=(answered, number, started, time.time(), session, message, caller, inbound)).start()
+                     args=(answered, number, started, time.time(), session, message, caller, inbound,
+                           for_task)).start()
 
 
 # ---------------------------------------------------------------------- line state (#100)
@@ -732,14 +799,15 @@ def rejected_busy(call, number: str, caller):
         pass
     try:
         report(False, number, time.time(), message="rejected: line busy", caller=caller)
-        access = caller["access"] if caller else GUEST
-        notify = caller.get("notify") if caller else None
-        if notify if notify is not None else "admin" not in access:
+        if for_owner(caller):
             lang = cfg.language if cfg.language in MISSED_TITLE else "de"
             label = caller_label(caller, number)
             title = MISSED_TITLE[lang].format(who=f"{label} ({number})" if label else number)
             for service in cfg.notify_services or []:
                 ha.notify(str(service), title, MISSED_TEXT[lang])
+            owner_inbox.add(number, "missed call: the line was busy, no message", name=caller_name(caller),
+                            contact=(caller.get("id") or "") if caller and caller_name(caller) else "",
+                            kind=inbox.MISSED)
     except Exception:  # noqa: BLE001
         log.exception("Reporting the rejected call from %s failed", number)
 
@@ -794,7 +862,8 @@ def on_incoming(call):
         log.exception("Incoming call failed")
     finally:
         set_line(IDLE)
-        finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True)
+        finish(True, number, started, session, f"incoming (access {access})", caller, inbound=True,
+               for_task=bool(task))
         busy.release()
         if task:
             threading.Thread(target=settle_task, args=(task, session), name="task", daemon=True).start()

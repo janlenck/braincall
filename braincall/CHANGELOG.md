@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.20.0
+
+Bug fixed: a caller asked for a call back, but when the owner called in and asked "Gibt es was Offenes?" or "Hat
+jemand angerufen?", Claudine said nobody had called, and the caller was not saved as a contact (#104). New: the
+owner's messages (#31).
+
+- Every call that is notified is also kept as a message in `inbox.json`: who called, the summary, whether they want a
+  call back and when it suits them (the summary now also writes down name, call back and time). Calls rejected on a
+  busy line too. Independent of `caller_memory`
+- When an `admin` calls in, Claudine says in her first answer what is new and which call backs are open. New tool
+  `messages` for `admin` (phone and Brain Assist): `new` (and marks them heard), `recent` (the last days, also heard
+  and done ones), `done`. A call back stays open until it is done or BrainCall talked with that number on an
+  outgoing call. In Brain Assist the messages are only mentioned when asked
+- An unknown caller (the `"*"` entry) who gives their name is saved as a contact (`origin: call`, the rights of the
+  `"*"` entry, never `admin`; on the contacts page "from a call"). The notification adds "Neu in den Kontakten: …";
+  a name that is already a contact with another number is not saved twice, the message says so
+- A call back for a planned call's task is reported with the task, not as a message (still notified as before)
+
 ## 1.19.1
 
 Bug fixed: a task with an action "after asking me" (e.g. open the garage) got no call back, and in a call back
